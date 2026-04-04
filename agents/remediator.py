@@ -63,6 +63,40 @@ def _build_policy_source_context(validation_results: list[dict]) -> str:
         return "No policy source context found for current findings."
     return "\n\n".join(sections)
 
+
+def _build_validation_errors_text(state: GraphState) -> str:
+    error_blocks: list[str] = []
+
+    for result in state["validation_results"]:
+        if result["passed"]:
+            continue
+        errors_text = "\n".join(f"  - {error}" for error in result["errors"])
+        error_blocks.append(f"### {result['stage'].upper()} Errors\n{errors_text}")
+
+    deploy_result = state.get("deploy_validation_result")
+    if deploy_result and not deploy_result["passed"] and deploy_result["target"] != "skipped":
+        deploy_errors: list[str] = []
+
+        if deploy_result.get("error_message"):
+            deploy_errors.append(str(deploy_result["error_message"]))
+
+        for failed in deploy_result.get("failed_resources", []):
+            resource = str(failed.get("resource") or "unknown")
+            reason = str(failed.get("reason") or "no reason provided")
+            deploy_errors.append(f"{resource}: {reason}")
+
+        if not deploy_errors:
+            deploy_errors.append("Deployment failed with no structured error details.")
+
+        errors_text = "\n".join(f"  - {error}" for error in deploy_errors)
+        error_blocks.append(
+            f"### DEPLOYABILITY Errors ({deploy_result['target'].upper()})\n{errors_text}"
+        )
+
+    if not error_blocks:
+        return "No validation errors reported."
+    return "\n\n".join(error_blocks)
+
 def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     """
     Analyzes validation errors against the Grounded Objectives Document
@@ -71,13 +105,8 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     iteration = state["current_iteration"]
     print(f"\n[Remediator] Analyzing errors and generating fix suggestions (iteration {iteration})...")
 
-    # Format all validation errors for the prompt
-    error_blocks = []
-    for r in state["validation_results"]:
-        if not r["passed"]:
-            errors_text = "\n".join(f"  - {e}" for e in r["errors"])
-            error_blocks.append(f"### {r['stage'].upper()} Errors\n{errors_text}")
-    validation_errors_text = "\n\n".join(error_blocks)
+    # Format all validation errors for the prompt (static + deployability)
+    validation_errors_text = _build_validation_errors_text(state)
 
     # Format remediation history
     history_text = "No previous remediations." if not state["remediation_history"] else \

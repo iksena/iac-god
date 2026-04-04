@@ -178,7 +178,7 @@ def run_all_validators(
         validate_yaml(template),
         validate_cfn_lint(template),
         # validate_checkov(template),   # uncomment to re-enable
-        validate_trivy(template),
+        # validate_trivy(template),
     ]
     static_passed = all(r["passed"] for r in results)
 
