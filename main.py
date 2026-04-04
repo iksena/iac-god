@@ -5,7 +5,6 @@ from graph import build_graph
 from state import GraphState
 from tracking.recorder import ResearchRecorder
 from config import DEFAULT_CONFIG, DEFAULT_DEPLOY_CONFIG, LLMProvider, DeployTarget, DeployConfig
-from functools import partial
 
 def run_pipeline(
     user_request: str,
@@ -58,7 +57,10 @@ def run_pipeline(
     print(f"{'='*60}")
 
     # Execute the graph
-    final_state = graph.invoke(initial_state)
+    final_state = graph.invoke(
+        initial_state,
+        config={"configurable": {"thread_id": run_id}},
+    )
 
     # Persist final template
     final_state["final_template"] = final_state["cloudformation_template"]

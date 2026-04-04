@@ -1,6 +1,7 @@
 # graph.py
 from functools import partial
 from langgraph.graph import StateGraph, END
+from langgraph.checkpoint.memory import MemorySaver
 from config import DEFAULT_DEPLOY_CONFIG, DeployConfig
 from state import GraphState
 from agents.planner import planner_agent
@@ -48,4 +49,5 @@ def build_graph(recorder: ResearchRecorder, deploy_config: DeployConfig = DEFAUL
     # Remediator feeds back to Engineer (closing the iteration loop)
     graph.add_edge("remediator", "engineer")
 
-    return graph.compile()
+    # MemorySaver stores per-thread execution history for short-term memory.
+    return graph.compile(checkpointer=MemorySaver())
