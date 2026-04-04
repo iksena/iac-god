@@ -25,7 +25,8 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     # Format remediation history
     history_text = "No previous remediations." if not state["remediation_history"] else \
         "\n".join(
-            f"Iteration {h['iteration']}: {h['suggestion'][:200]}..."
+            # f"Iteration {h['iteration']}: {h['suggestion'][:200]}..."
+            f"Iteration {h['iteration']}: {h['suggestion']}"
             for h in state["remediation_history"]
         )
 

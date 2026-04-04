@@ -25,7 +25,7 @@ REMEDIATOR_USER = """## Grounded Objectives
 {template}
 ```
 
-## Validation Errors
+## Current Validation Errors
 {validation_errors}
 
 ## Remediation History (previous iterations)

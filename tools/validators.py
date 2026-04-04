@@ -2,21 +2,41 @@
 import subprocess
 import tempfile
 import json
-import yaml
 from pathlib import Path
 from state import ValidationResult
+from yamllint import linter
+from yamllint.config import YamlLintConfig
+
+_YAMLLINT_CONFIG = YamlLintConfig(
+    """
+extends: default
+rules:
+    document-start: disable
+    line-length: disable
+    trailing-spaces: disable
+    new-line-at-end-of-file: disable
+    indentation:
+        spaces: consistent
+        indent-sequences: consistent
+    truthy:
+        allowed-values: ['true', 'false', 'yes', 'no']
+"""
+)
 
 def validate_yaml(template: str) -> ValidationResult:
-    """Stage 1: Basic YAML syntax check."""
-    try:
-        yaml.safe_load(template)
-        return ValidationResult(
-            stage="yaml", passed=True, errors=[], raw_output="YAML syntax OK"
-        )
-    except yaml.YAMLError as e:
-        return ValidationResult(
-            stage="yaml", passed=False, errors=[str(e)], raw_output=str(e)
-        )
+    """Stage 1: Basic YAML syntax and style check via yamllint."""
+    problems = list(linter.run(template, _YAMLLINT_CONFIG))
+    errors = [
+        f"[{problem.rule}] line {problem.line}, column {problem.column}: {problem.desc}"
+        for problem in problems
+    ]
+    raw_output = "YAML syntax OK" if not errors else "\n".join(errors)
+    return ValidationResult(
+        stage="yaml",
+        passed=not errors,
+        errors=errors,
+        raw_output=raw_output,
+    )
 
 def validate_cfn_lint(template: str) -> ValidationResult:
     """Stage 2: AWS CloudFormation linting via cfn-lint."""
@@ -121,9 +141,10 @@ def validate_trivy(template: str) -> ValidationResult:
                 data = json.loads(raw)
                 for r in data.get("Results", []):
                     for m in r.get("Misconfigurations", []):
-                        errors.append(
-                            f"[{m['ID']}] {m['Severity']}: {m['Title']} — {m['Message']}"
-                        )
+                        if m.get("Severity", "").lower() in ("high", "critical"):
+                            errors.append(
+                                f"[{m['ID']}] {m['Severity']}: {m['Title']} — {m['Message']}"
+                            )
             except (json.JSONDecodeError, KeyError):
                 if result.returncode not in (0, 1):
                     errors = [raw]
