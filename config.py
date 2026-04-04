@@ -14,8 +14,8 @@ class LLMProvider(Enum):
 class LLMConfig:
     provider: LLMProvider = LLMProvider.OPENROUTER
     model: str = "arcee-ai/trinity-large-preview:free"   # or "claude-3-5-sonnet-20241022"
-    temperature: float = 0.2
-    max_tokens: int = 4096
+    temperature: float = 0.1
+    max_tokens: int = 8192
 
     # OpenRouter
     openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY", "")

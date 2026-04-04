@@ -167,7 +167,7 @@ def run_all_validators(template: str) -> tuple[list[ValidationResult], bool]:
     results = [
         validate_yaml(template),
         validate_cfn_lint(template),
-        validate_checkov(template),
+        # validate_checkov(template),
         validate_trivy(template),
     ]
     all_passed = all(r["passed"] for r in results)

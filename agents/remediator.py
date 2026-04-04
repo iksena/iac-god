@@ -1,10 +1,67 @@
 # agents/remediator.py
 from datetime import datetime, timezone
+import json
 from state import GraphState, RemediationHistory
 from config import DEFAULT_CONFIG, LLMProvider
 from prompts.remediator_prompt import REMEDIATOR_SYSTEM, REMEDIATOR_USER
 from tracking.recorder import ResearchRecorder
 from agents.engineer import _build_client, _call_llm
+from tools.checkov_context import get_checkov_policy_context
+from tools.trivy_context import get_trivy_policy_context
+
+
+def _extract_checkov_findings(validation_results: list[dict]) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    for result in validation_results:
+        if result.get("stage") != "checkov":
+            continue
+        raw = result.get("raw_output", "")
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        failed = data.get("results", {}).get("failed_checks", [])
+        for item in failed:
+            check_id = str(item.get("check_id") or "").strip()
+            if check_id:
+                findings.append({"check_id": check_id})
+    return findings
+
+
+def _extract_trivy_findings(validation_results: list[dict]) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    for result in validation_results:
+        if result.get("stage") != "trivy":
+            continue
+        raw = result.get("raw_output", "")
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        for r in data.get("Results", []):
+            for misconfig in r.get("Misconfigurations", []):
+                check_id = str(misconfig.get("ID") or "").strip()
+                if check_id:
+                    findings.append({"check_id": check_id})
+    return findings
+
+
+def _build_policy_source_context(validation_results: list[dict]) -> str:
+    checkov_context = get_checkov_policy_context(
+        _extract_checkov_findings(validation_results)
+    )
+    trivy_context = get_trivy_policy_context(
+        _extract_trivy_findings(validation_results)
+    )
+
+    sections: list[str] = []
+    if checkov_context:
+        sections.append(f"### Checkov Policy Source\n{checkov_context}")
+    if trivy_context:
+        sections.append(f"### Trivy Policy Source\n{trivy_context}")
+    if not sections:
+        return "No policy source context found for current findings."
+    return "\n\n".join(sections)
 
 def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     """
@@ -33,11 +90,13 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     objectives_text = "\n".join(
         f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"])
     )
+    policy_source_context = _build_policy_source_context(state["validation_results"])
     prompt = REMEDIATOR_USER.format(
         objectives=objectives_text,
         iteration=iteration,
         template=state["cloudformation_template"],
         validation_errors=validation_errors_text,
+        policy_source_context=policy_source_context,
         remediation_history=history_text,
     )
 

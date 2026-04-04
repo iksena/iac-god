@@ -1,0 +1,3256 @@
+check_id,check_name,source_file_url,source_code
+CKV_AWS_100,Ensure AWS EKS node group does not have implicit SSH access from 0.0.0.0/0,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/EKSNodeGroupRemoteAccess.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class EKSNodeGroupRemoteAccess(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure AWS EKS node group does not have implicit SSH access from 0.0.0.0/0""
+        id = ""CKV_AWS_100""
+        supported_resources = ('AWS::EKS::Nodegroup',)
+        categories = (CheckCategories.KUBERNETES,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        if 'Properties' in conf.keys():
+            if 'RemoteAccess' in conf['Properties'].keys():
+                if 'Ec2SshKey' in conf['Properties']['RemoteAccess'].keys():
+                    if 'SourceSecurityGroups' in conf['Properties']['RemoteAccess'].keys():
+                        return CheckResult.PASSED
+                    else:
+                        return CheckResult.FAILED
+        return CheckResult.PASSED
+
+    def get_evaluated_keys(self) -> list[str]:
+        return [""Properties/RemoteAccess/Ec2SshKey"", ""Properties/RemoteAccess/SourceSecurityGroups""]
+
+
+check = EKSNodeGroupRemoteAccess()
+"
+CKV_AWS_101,Ensure Neptune logging is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/NeptuneClusterLogging.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.models.enums import CheckResult, CheckCategories
+
+
+class NeptuneClusterLogging(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Neptune logging is enabled""
+        id = ""CKV_AWS_101""
+        supported_resources = (""AWS::Neptune::DBCluster"",)
+        categories = (CheckCategories.LOGGING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        logs_exports = conf.get(""Properties"", {}).get(""EnableCloudwatchLogsExports"", [])
+        if ""audit"" in logs_exports:
+            return CheckResult.PASSED
+
+        return CheckResult.FAILED
+
+    def get_evaluated_keys(self) -> list[str]:
+        return [""Properties/EnableCloudwatchLogsExports""]
+
+
+check = NeptuneClusterLogging()
+"
+CKV_AWS_103,Ensure that Load Balancer Listener is using at least TLS v1.2,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ALBListenerTLS12.py,"from __future__ import annotations
+
+from typing import Any, List
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.util.type_forcers import force_list
+from checkov.cloudformation.parser.cfn_keywords import ConditionFunctions, IntrinsicFunctions
+
+supported_policy_prefixes = {
+    # ALBs support TLS v1.2 and 1.3
+    'HTTPS': (""ELBSecurityPolicy-FS-1-2"", ""ELBSecurityPolicy-TLS-1-2"", ""ELBSecurityPolicy-TLS13-1-2"",
+              ""ELBSecurityPolicy-TLS13-1-3""),
+    # NLBs support TLS v1.2 and 1.3
+    'TLS': (""ELBSecurityPolicy-TLS13-1-3-2021-06"", ""ELBSecurityPolicy-TLS13-1-2"", ""ELBSecurityPolicy-FS-1-2"",
+            ""ELBSecurityPolicy-TLS-1-2"")
+}
+
+
+class ALBListenerTLS12(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure that Load Balancer Listener is using at least TLS v1.2""
+        id = ""CKV_AWS_103""
+        supported_resources = ('AWS::ElasticLoadBalancingV2::Listener',)
+        categories = (CheckCategories.GENERAL_SECURITY,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        """"""
+            validates that ElasticLoadBalancing V2 Listener is using at least TLS v1.2
+            https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticloadbalancingv2-listener.html
+      "
+CKV_AWS_104,Ensure DocumentDB has audit logs enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/DocDBAuditLogs.py,"from typing import Any, List
+
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class DocDBAuditLogs(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure DocumentDB has audit logs enabled""
+        id = ""CKV_AWS_104""
+        supported_resources = [""AWS::DocDB::DBClusterParameterGroup""]
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/Parameters/audit_logs""
+
+    def get_expected_values(self) -> List[Any]:
+        return [""all"", ""ddl"", ""dml_read"", ""dml_write"", ""enabled""]
+
+
+check = DocDBAuditLogs()
+"
+CKV_AWS_105,Ensure Redshift uses SSL,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/RedShiftSSL.py,"from typing import List
+
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.parsers.node import DictNode
+from checkov.common.models.enums import CheckCategories, CheckResult
+
+
+class RedShiftSSL(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Redshift uses SSL""
+        id = ""CKV_AWS_105""
+        supported_resources = [""AWS::Redshift::ClusterParameterGroup""]
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: DictNode) -> CheckResult:
+        params = conf.get(""Properties"", {}).get(""Parameters"", {})
+
+        for param in params:
+            if param.get(""ParameterName"") == ""require_ssl"":
+                value = param.get(""ParameterValue"")
+                if isinstance(value, bool):
+                    value = str(value).lower()
+                if value == ""true"":
+                    return CheckResult.PASSED
+
+        return CheckResult.FAILED
+
+    def get_evaluated_keys(self) -> List[str]:
+        return ['Properties', 'Properties/Parameters']
+
+
+check = RedShiftSSL()
+"
+CKV_AWS_107,Ensure IAM policies does not allow credentials exposure,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/IAMCredentialsExposure.py,"from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+from checkov.cloudformation.checks.resource.BaseCloudsplainingIAMCheck import BaseCloudsplainingIAMCheck
+
+if TYPE_CHECKING:
+    from cloudsplaining.scan.policy_document import PolicyDocument
+
+
+class cloudsplainingCredentialsExposure(BaseCloudsplainingIAMCheck):
+    excluded_actions = {  # noqa: CCE003  # a static attribute
+        ""ecr:GetAuthorizationToken""
+    }
+
+    def __init__(self) -> None:
+        name = ""Ensure IAM policies does not allow credentials exposure""
+        id = ""CKV_AWS_107""
+        super().__init__(name=name, id=id)
+
+    def cloudsplaining_analysis(self, policy: PolicyDocument) -> list[str]:
+        credentials_exposure_actions = policy.credentials_exposure
+        return [
+            x for x in credentials_exposure_actions
+            if x not in cloudsplainingCredentialsExposure.excluded_actions
+        ]
+
+
+check = cloudsplainingCredentialsExposure()
+"
+CKV_AWS_108,Ensure IAM policies does not allow data exfiltration,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/IAMDataExfiltration.py,"from checkov.cloudformation.checks.resource.BaseCloudsplainingIAMCheck import BaseCloudsplainingIAMCheck
+
+
+class cloudsplainingDataExfiltration(BaseCloudsplainingIAMCheck):
+
+    def __init__(self):
+        name = ""Ensure IAM policies does not allow data exfiltration""
+        id = ""CKV_AWS_108""
+        super().__init__(name=name, id=id)
+
+    def cloudsplaining_analysis(self, policy):
+        return policy.allows_data_exfiltration_actions
+
+
+check = cloudsplainingDataExfiltration()
+"
+CKV_AWS_109,Ensure IAM policies does not allow permissions management without constraints,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/IAMPermissionsManagement.py,"from checkov.cloudformation.checks.resource.BaseCloudsplainingIAMCheck import BaseCloudsplainingIAMCheck
+
+
+class cloudsplainingPermissionsManagement(BaseCloudsplainingIAMCheck):
+
+    def __init__(self):
+        name = ""Ensure IAM policies does not allow permissions management without constraints""
+        id = ""CKV_AWS_109""
+        super().__init__(name=name, id=id)
+
+    def cloudsplaining_analysis(self, policy):
+        return policy.permissions_management_without_constraints
+
+
+check = cloudsplainingPermissionsManagement()
+"
+CKV_AWS_110,Ensure IAM policies does not allow privilege escalation,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/IAMPrivilegeEscalation.py,"from checkov.cloudformation.checks.resource.BaseCloudsplainingIAMCheck import BaseCloudsplainingIAMCheck
+
+
+class cloudsplainingPrivilegeEscalation(BaseCloudsplainingIAMCheck):
+
+    def __init__(self):
+        name = ""Ensure IAM policies does not allow privilege escalation""
+        id = ""CKV_AWS_110""
+        super().__init__(name=name, id=id)
+
+    def cloudsplaining_analysis(self, policy):
+        escalations = policy.allows_privilege_escalation
+        flattened_escalations: list[str] = []
+        if escalations:
+            for escalation in escalations:
+                if isinstance(escalation, dict):
+                    flattened_escalations.extend(escalation.get('actions'))
+                else:
+                    flattened_escalations.append(escalation)
+        return flattened_escalations
+
+
+check = cloudsplainingPrivilegeEscalation()
+"
+CKV_AWS_111,Ensure IAM policies does not allow write access without constraints,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/IAMWriteAccess.py,"from checkov.cloudformation.checks.resource.BaseCloudsplainingIAMCheck import BaseCloudsplainingIAMCheck
+
+
+class cloudsplainingWriteAccess(BaseCloudsplainingIAMCheck):
+
+    def __init__(self):
+        name = ""Ensure IAM policies does not allow write access without constraints""
+        id = ""CKV_AWS_111""
+        super().__init__(name=name, id=id)
+
+    def cloudsplaining_analysis(self, policy):
+        return policy.write_actions_without_constraints
+
+
+check = cloudsplainingWriteAccess()
+"
+CKV_AWS_115,Ensure that AWS Lambda function is configured for function-level concurrent execution limit,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/LambdaFunctionLevelConcurrentExecutionLimit.py,"from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+from checkov.common.models.enums import CheckCategories
+
+
+class LambdaFunctionLevelConcurrentExecutionLimit(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure that AWS Lambda function is configured for function-level concurrent execution limit""
+        id = ""CKV_AWS_115""
+        supported_resources = (""AWS::Lambda::Function"", ""AWS::Serverless::Function"")
+        categories = (CheckCategories.GENERAL_SECURITY,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/ReservedConcurrentExecutions""
+
+    def get_expected_value(self) -> Any:
+        return ANY_VALUE
+
+
+check = LambdaFunctionLevelConcurrentExecutionLimit()
+"
+CKV_AWS_116,Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ),https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/LambdaDLQConfigured.py,"from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+from checkov.common.models.enums import CheckCategories
+
+
+class LambdaDLQConfigured(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure that AWS Lambda function is configured for a Dead Letter Queue(DLQ)""
+        id = ""CKV_AWS_116""
+        supported_resources = (""AWS::Lambda::Function"", ""AWS::Serverless::Function"")
+        categories = (CheckCategories.GENERAL_SECURITY,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        if self.entity_type == ""AWS::Lambda::Function"":
+            return ""Properties/DeadLetterConfig/TargetArn""
+        elif self.entity_type == ""AWS::Serverless::Function"":
+            return ""Properties/DeadLetterQueue/TargetArn""
+
+        return """"
+
+    def get_expected_value(self) -> Any:
+        return ANY_VALUE
+
+
+check = LambdaDLQConfigured()
+"
+CKV_AWS_117,Ensure that AWS Lambda function is configured inside a VPC,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/LambdaInVPC.py,"from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+from checkov.common.models.enums import CheckCategories
+
+
+class LambdaInVPC(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure that AWS Lambda function is configured inside a VPC""
+        id = ""CKV_AWS_117""
+        supported_resources = (""AWS::Lambda::Function"", ""AWS::Serverless::Function"")
+        categories = (CheckCategories.GENERAL_SECURITY,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/VpcConfig""
+
+    def get_expected_value(self) -> Any:
+        return ANY_VALUE
+
+
+check = LambdaInVPC()
+"
+CKV_AWS_118,Ensure that enhanced monitoring is enabled for Amazon RDS instances,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/RDSEnhancedMonitorEnabled.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class RDSEnhancedMonitorEnabled(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure that enhanced monitoring is enabled for Amazon RDS instances""
+        id = ""CKV_AWS_118""
+        supported_resources = (""AWS::RDS::DBInstance"",)  # AWS::RDS::DBCluster doesn't support this config
+        categories = (CheckCategories.LOGGING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/MonitoringInterval""
+
+    def get_expected_values(self) -> list[Any]:
+        # supports int and str
+        return [1, 5, 10, 15, 30, 60, ""1"", ""5"", ""10"", ""15"", ""30"", ""60""]
+
+
+check = RDSEnhancedMonitorEnabled()
+"
+CKV_AWS_119,Ensure DynamoDB Tables are encrypted using a KMS Customer Managed CMK,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/DynamoDBTablesEncrypted.py,"from typing import List
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class DynamoDBTablesEncrypted(BaseResourceCheck):
+    def __init__(self):
+        name = ""Ensure DynamoDB Tables are encrypted using a KMS Customer Managed CMK""
+        id = ""CKV_AWS_119""
+        supported_resources = [""AWS::DynamoDB::Table""]
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf):
+        properties = conf.get('Properties')
+        if properties is not None:
+            sse_config = properties.get('SSESpecification')
+            if sse_config is not None:
+                sse_enabled = sse_config.get('SSEEnabled')
+                sse_key = sse_config.get('KMSMasterKeyId')
+                if sse_enabled and sse_key is not None:
+                    return CheckResult.PASSED
+        return CheckResult.FAILED
+
+    def get_evaluated_keys(self) -> List[str]:
+        return [""Properties/SSESpecification/SSEEnabled"", ""Properties/SSESpecification/KMSMasterKeyId""]
+
+
+check = DynamoDBTablesEncrypted()
+"
+CKV_AWS_120,Ensure API Gateway caching is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/APIGatewayCacheEnable.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class APIGatewayCacheEnable(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure API Gateway caching is enabled""
+        id = ""CKV_AWS_120""
+        supported_resources = ['AWS::ApiGateway::Stage', ""AWS::Serverless::Api""]
+        categories = [CheckCategories.BACKUP_AND_RECOVERY]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/CacheClusterEnabled'
+
+
+check = APIGatewayCacheEnable()
+"
+CKV_AWS_123,Ensure that VPC Endpoint Service is configured for Manual Acceptance,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/VPCEndpointAcceptanceConfigured.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class VPCEndpointAcceptanceConfigured(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure that VPC Endpoint Service is configured for Manual Acceptance""
+        id = ""CKV_AWS_123""
+        supported_resources = ['AWS::EC2::VPCEndpointService']
+        categories = [CheckCategories.NETWORKING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/AcceptanceRequired'
+
+
+check = VPCEndpointAcceptanceConfigured()
+"
+CKV_AWS_131,Ensure that ALB drops HTTP headers,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ALBDropHttpHeaders.py,"from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class ALBDropHttpHeaders(BaseResourceCheck):
+
+    def __init__(self):
+        name = ""Ensure that ALB drops HTTP headers""
+        id = ""CKV_AWS_131""
+        supported_resources = [""AWS::ElasticLoadBalancingV2::LoadBalancer""]
+        categories = [CheckCategories.NETWORKING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf):
+        # ALB is default loadbalancer type if not explicitly set
+        alb = True
+
+        properties = conf.get(""Properties"")
+        lb_type = properties.get(""Type"")
+        if lb_type and lb_type != 'application':
+            alb = False
+
+        # If lb is alb then drop headers must be present and true
+        self.evaluated_keys = ['Properties']
+        if alb:
+            lb_attributes = properties.get('LoadBalancerAttributes', {})
+            if isinstance(lb_attributes, list):
+                self.evaluated_keys = ['Properties/LoadBalancerAttributes']
+                for item in lb_attributes:
+                    key = item.get('Key')
+                    if key == 'routing.http.drop_invalid_header_fields.enabled':
+                        value = item.get('Value')
+                        if isinstance(value, bool):
+                            value = str(value).lower()
+                        if"
+CKV_AWS_136,Ensure that ECR repositories are encrypted using KMS,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ECRRepositoryEncrypted.py,"from typing import Any
+
+from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class ECRRepositoryEncrypted(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure that ECR repositories are encrypted using KMS""
+        id = ""CKV_AWS_136""
+        supported_resources = (""AWS::ECR::Repository"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/EncryptionConfiguration/EncryptionType""
+
+    def get_expected_value(self) -> Any:
+        return ""KMS""
+
+
+check = ECRRepositoryEncrypted()
+"
+CKV_AWS_149,Ensure that Secrets Manager secret is encrypted using KMS CMK,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/SecretManagerSecretEncrypted.py,"from typing import List
+
+from checkov.common.parsers.node import DictNode
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class SecretManagerSecretEncrypted(BaseResourceCheck):
+    def __init__(self):
+        name = ""Ensure that Secrets Manager secret is encrypted using KMS CMK""
+        id = ""CKV_AWS_149""
+        supported_resources = [""AWS::SecretsManager::Secret""]
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: DictNode) -> CheckResult:
+        aws_kms_alias = ""aws/""
+        properties = conf.get(""Properties"")
+        if properties:
+            kms_key_id = properties.get(""KmsKeyId"")
+            if kms_key_id and aws_kms_alias not in kms_key_id:
+                return CheckResult.PASSED
+        return CheckResult.FAILED
+
+    def get_evaluated_keys(self) -> List[str]:
+        return ['Properties/KmsKeyId']
+
+
+check = SecretManagerSecretEncrypted()
+"
+CKV_AWS_154,Ensure Redshift is not deployed outside of a VPC,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/RedshiftInEc2ClassicMode.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+from checkov.common.models.enums import CheckCategories
+
+
+class RedshiftInEc2ClassicMode(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Redshift is not deployed outside of a VPC""
+        id = ""CKV_AWS_154""
+        supported_resources = [""AWS::Redshift::Cluster""]
+        categories = [CheckCategories.NETWORKING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/ClusterSubnetGroupName""
+
+    def get_expected_value(self) -> str:
+        return ANY_VALUE
+
+
+check = RedshiftInEc2ClassicMode()
+"
+CKV_AWS_155,Ensure that Workspace user volumes are encrypted,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/WorkspaceUserVolumeEncrypted.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class WorkspaceUserVolumeEncrypted(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure that Workspace user volumes are encrypted""
+        id = ""CKV_AWS_155""
+        supported_resources = ['AWS::WorkSpaces::Workspace']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/UserVolumeEncryptionEnabled'
+
+
+check = WorkspaceUserVolumeEncrypted()
+"
+CKV_AWS_156,Ensure that Workspace root volumes are encrypted,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/WorkspaceRootVolumeEncrypted.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class WorkspaceRootVolumeEncrypted(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure that Workspace root volumes are encrypted""
+        id = ""CKV_AWS_156""
+        supported_resources = ['AWS::WorkSpaces::Workspace']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/RootVolumeEncryptionEnabled'
+
+
+check = WorkspaceRootVolumeEncrypted()
+"
+CKV_AWS_157,Ensure that RDS instances have Multi-AZ enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/RDSMultiAZEnabled.py,"from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class RDSMultiAZEnabled(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure that RDS instances have Multi-AZ enabled""
+        id = ""CKV_AWS_157""
+        supported_resources = (""AWS::RDS::DBInstance"",)
+        categories = (CheckCategories.NETWORKING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf):
+        # Aurora is replicated across all AZs and doesn't require MultiAZ to be set
+        # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-dbinstance.html#cfn-rds-dbinstance-multiaz
+        if 'Properties' in conf.keys():
+            if 'Engine' in conf['Properties'].keys():
+                if 'aurora' in conf['Properties']['Engine']:
+                    return CheckResult.UNKNOWN
+        # Database is not Aurora; Use base class implementation
+        return super().scan_resource_conf(conf)
+
+    def get_inspected_key(self) -> str:
+        return 'Properties/MultiAZ'
+
+
+check = RDSMultiAZEnabled()
+"
+CKV_AWS_158,Ensure that CloudWatch Log Group is encrypted by KMS,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/CloudWatchLogGroupKMSKey.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+
+
+class CloudWatchLogGroupKMSKey(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure that CloudWatch Log Group is encrypted by KMS""
+        id = ""CKV_AWS_158""
+        supported_resource = ['AWS::Logs::LogGroup']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resource)
+
+    def get_inspected_key(self):
+        return 'Properties/KmsKeyId'
+
+    def get_expected_value(self):
+        return ANY_VALUE
+
+
+check = CloudWatchLogGroupKMSKey()
+"
+CKV_AWS_16,Ensure all data stored in the RDS is securely encrypted at rest,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/RDSEncryption.py,"from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class RDSEncryption(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure all data stored in the RDS is securely encrypted at rest""
+        id = ""CKV_AWS_16""
+        supported_resources = ['AWS::RDS::DBInstance']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf):
+        # If DB is Aurora then Encryption is set in other resource
+        # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-rds-database-instance.html#cfn-rds-dbinstance-storageencrypted
+        if 'Properties' in conf.keys():
+            if 'Engine' in conf['Properties'].keys():
+                if 'aurora' in conf['Properties']['Engine']:
+                    return CheckResult.UNKNOWN
+        # Database is not Aurora; Use base class implementation
+        return super().scan_resource_conf(conf)
+
+    def get_inspected_key(self):
+        return 'Properties/StorageEncrypted'
+
+
+check = RDSEncryption()
+"
+CKV_AWS_160,Ensure that Timestream database is encrypted with KMS CMK,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/TimestreamDatabaseKMSKey.py,"from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+from checkov.common.models.enums import CheckCategories
+
+
+class TimestreamDatabaseKMSKey(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure that Timestream database is encrypted with KMS CMK""
+        id = ""CKV_AWS_160""
+        supported_resources = [""AWS::Timestream::Database""]
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/KmsKeyId""
+
+    def get_expected_value(self) -> Any:
+        return ANY_VALUE
+
+
+check = TimestreamDatabaseKMSKey()
+"
+CKV_AWS_161,Ensure RDS database has IAM authentication enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/RDSIAMAuthentication.py,"from checkov.common.parsers.node import DictNode
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class RDSIAMAuthentication(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure RDS database has IAM authentication enabled""
+        id = ""CKV_AWS_161""
+        supported_resources = [""AWS::RDS::DBInstance""]
+        categories = [CheckCategories.IAM]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/EnableIAMDatabaseAuthentication""
+
+    def scan_resource_conf(self, conf: DictNode) -> CheckResult:
+        # IAM authentication is only supported for MySQL and PostgreSQL
+        engine = conf.get(""Properties"", {}).get(""Engine"", {})
+        if engine not in (""mysql"", ""postgres""):
+            return CheckResult.UNKNOWN
+
+        return super().scan_resource_conf(conf)
+
+
+check = RDSIAMAuthentication()
+"
+CKV_AWS_162,Ensure RDS cluster has IAM authentication enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/RDSClusterIAMAuthentication.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class RDSClusterIAMAuthentication(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure RDS cluster has IAM authentication enabled""
+        id = ""CKV_AWS_162""
+        supported_resources = [""AWS::RDS::DBCluster""]
+        categories = [CheckCategories.IAM]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/EnableIAMDatabaseAuthentication""
+
+
+check = RDSClusterIAMAuthentication()
+"
+CKV_AWS_163,Ensure ECR image scanning on push is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ECRImageScanning.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class ECRImageScanning(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure ECR image scanning on push is enabled""
+        id = ""CKV_AWS_163""
+        supported_resources = [""AWS::ECR::Repository""]
+        categories = [CheckCategories.GENERAL_SECURITY]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return ""Properties/ImageScanningConfiguration/ScanOnPush""
+
+
+check = ECRImageScanning()
+"
+CKV_AWS_164,Ensure Transfer Server is not exposed publicly.,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/TransferServerIsPublic.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class TransferServerIsPublic(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure Transfer Server is not exposed publicly.""
+        id = ""CKV_AWS_164""
+        supported_resources = ['AWS::Transfer::Server']
+        categories = [CheckCategories.GENERAL_SECURITY]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/EndpointType'
+
+    def get_expected_values(self):
+        return [""VPC"", ""VPC_ENDPOINT""]
+
+
+check = TransferServerIsPublic()
+"
+CKV_AWS_165,Ensure DynamoDB global table point in time recovery (backup) is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/DynamodbGlobalTableRecovery.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class DynamodbGlobalTableRecovery(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure DynamoDB global table point in time recovery (backup) is enabled""
+        id = ""CKV_AWS_165""
+        supported_resources = ['AWS::DynamoDB::GlobalTable']
+        categories = [CheckCategories.BACKUP_AND_RECOVERY]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/Replicas/[0]/PointInTimeRecoverySpecification/PointInTimeRecoveryEnabled'
+
+
+check = DynamodbGlobalTableRecovery()
+"
+CKV_AWS_166,Ensure Backup Vault is encrypted at rest using KMS CMK,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/BackupVaultEncrypted.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+from checkov.common.models.consts import ANY_VALUE
+
+
+class BackupVaultEncrypted(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure Backup Vault is encrypted at rest using KMS CMK""
+        id = ""CKV_AWS_166""
+        supported_resources = ['AWS::Backup::BackupVault']
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/EncryptionKeyArn'
+
+    def get_expected_value(self):
+        return ANY_VALUE
+
+
+check = BackupVaultEncrypted()
+"
+CKV_AWS_17,Ensure all data stored in RDS is not publicly accessible,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/RDSPubliclyAccessible.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckResult, CheckCategories
+
+
+class RDSPubliclyAccessible(BaseResourceValueCheck):
+
+    def __init__(self):
+        name = ""Ensure all data stored in RDS is not publicly accessible""
+        id = ""CKV_AWS_17""
+        supported_resources = ['AWS::RDS::DBInstance']
+        categories = [CheckCategories.NETWORKING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources,
+                         missing_block_result=CheckResult.PASSED)
+
+    def get_expected_value(self):
+        return False
+
+    def get_inspected_key(self):
+        return 'Properties/PubliclyAccessible'
+
+
+check = RDSPubliclyAccessible()
+"
+CKV_AWS_170,Ensure QLDB ledger permissions mode is set to STANDARD,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/QLDBLedgerPermissionsMode.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class QLDBLedgerPermissionsMode(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure QLDB ledger permissions mode is set to STANDARD""
+        id = ""CKV_AWS_170""
+        supported_resources = [""AWS::QLDB::Ledger""]
+        categories = [CheckCategories.IAM]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/PermissionsMode""
+
+    def get_expected_value(self) -> str:
+        return ""STANDARD""
+
+
+check = QLDBLedgerPermissionsMode()
+"
+CKV_AWS_172,Ensure QLDB ledger has deletion protection enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/QLDBLedgerDeletionProtection.py,"from typing import Dict
+
+from checkov.common.parsers.node import StrNode, DictNode
+from checkov.common.models.enums import CheckCategories, CheckResult
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class QLDBLedgerDeletionProtection(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure QLDB ledger has deletion protection enabled""
+        id = ""CKV_AWS_172""
+        supported_resources = [""AWS::QLDB::Ledger""]
+        categories = [CheckCategories.GENERAL_SECURITY]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: Dict[StrNode, DictNode]) -> CheckResult:
+        # deletion protection is enabled on default
+        if ""DeletionProtection"" not in conf.get(""Properties"", {}):
+            return CheckResult.PASSED
+        return super().scan_resource_conf(conf)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/DeletionProtection""
+
+
+check = QLDBLedgerDeletionProtection()
+"
+CKV_AWS_173,Check encryption settings for Lambda environment variable,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/LambdaEnvironmentEncryptionSettings.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class LambdaEnvironmentEncryptionSettings(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Check encryption settings for Lambda environment variable""
+        id = ""CKV_AWS_173""
+        supported_resources = (""AWS::Lambda::Function"", ""AWS::Serverless::Function"")
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        properties = conf.get(""Properties"")
+        if properties is not None:
+            env = properties.get(""Environment"")
+            if env is not None:
+                if not isinstance(env, dict):
+                    return CheckResult.UNKNOWN
+                elif env.get(""Variables"") and not properties.get(""KmsKeyArn""):
+                    return CheckResult.FAILED
+        return CheckResult.PASSED
+
+    def get_evaluated_keys(self) -> list[str]:
+        return [""Properties/KmsKeyArn""]
+
+
+check = LambdaEnvironmentEncryptionSettings()
+"
+CKV_AWS_174,Verify CloudFront Distribution Viewer Certificate is using TLS v1.2 or higher,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/CloudFrontTLS12.py,"from typing import Any, Dict
+import re
+
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories, CheckResult
+
+_SECURE_RE = re.compile(r""^TLSv1\.(?:2|3)_\d{4}$"")
+
+
+class CloudFrontTLS12(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Verify CloudFront Distribution Viewer Certificate is using TLS v1.2 or higher""
+        id = ""CKV_AWS_174""
+        supported_resources = [""AWS::CloudFront::Distribution""]
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/DistributionConfig/ViewerCertificate/MinimumProtocolVersion""
+
+    @staticmethod
+    def validate_value(value: Any) -> bool:
+        return isinstance(value, str) and bool(_SECURE_RE.match(value))
+
+    def get_evaluated_keys(self):
+        return [self.get_inspected_key()]
+
+    def scan_resource_conf(self, conf: Dict[str, Any]) -> CheckResult:
+        # Navigate CFN structure safely
+        props = conf.get(""Properties"")
+        if not isinstance(props, dict):
+            return CheckResult.FAILED
+
+        dist_cfg = props.get(""DistributionConfig"")
+        if not isinstance(dist_cfg, dict):
+            return CheckResult.FAILED
+
+        viewer_cert = dist_cfg.get(""ViewerCertificate"")
+        if not isinstance(viewer_cert, dict):
+         "
+CKV_AWS_18,Ensure the S3 bucket has access logging enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/S3AccessLogs.py,"from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+from checkov.common.models.enums import CheckCategories
+
+
+class S3AccessLogs(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure the S3 bucket has access logging enabled""
+        id = ""CKV_AWS_18""
+        supported_resources = ['AWS::S3::Bucket']
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/LoggingConfiguration""
+
+    def get_expected_value(self) -> Any:
+        return ANY_VALUE
+
+
+check = S3AccessLogs()
+"
+CKV_AWS_187,Ensure Sagemaker domain and notebook instance are encrypted by KMS using a customer managed Key (CMK),https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/SagemakerNotebookEncryptedWithCMK.py,"from typing import List
+
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+from checkov.common.models.enums import CheckCategories
+
+
+class SagemakerNotebookEncryptedWithCMK(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure Sagemaker domain and notebook instance are encrypted by KMS using a customer managed Key (CMK)""
+        id = ""CKV_AWS_187""
+        supported_resources = (""AWS::SageMaker::NotebookInstance"", ""AWS::SageMaker::Domain"")
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/KmsKeyId'
+
+    def get_expected_value(self):
+        return ANY_VALUE
+
+    def get_evaluated_keys(self) -> List[str]:
+        return ['Properties/KmsKeyId']
+
+
+check = SagemakerNotebookEncryptedWithCMK()
+"
+CKV_AWS_19,Ensure the S3 bucket has server-side-encryption enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/S3Encryption.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories, CheckResult
+
+
+class S3Encryption(BaseResourceValueCheck):
+
+    def __init__(self):
+        name = ""Ensure the S3 bucket has server-side-encryption enabled""
+        id = ""CKV_AWS_19""
+        supported_resources = ['AWS::S3::Bucket']
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+        self.missing_block_result = CheckResult.PASSED  # The default value for this resource is to encrypt
+
+    def get_inspected_key(self):
+        return 'Properties/BucketEncryption/ServerSideEncryptionConfiguration/[0]/ServerSideEncryptionByDefault/SSEAlgorithm'
+
+    def get_expected_value(self):
+        return 'AES256'
+
+    def get_expected_values(self):
+        return [self.get_expected_value(), 'aws:kms']
+
+
+check = S3Encryption()
+"
+CKV_AWS_192,Ensure WAF prevents message lookup in Log4j2. See CVE-2021-44228 aka log4jshell,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/WAFACLCVE202144228.py,"from typing import Dict, Any
+
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.models.enums import CheckResult, CheckCategories
+
+
+class WAFACLCVE202144228(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure WAF prevents message lookup in Log4j2. See CVE-2021-44228 aka log4jshell""
+        id = ""CKV_AWS_192""
+        supported_resources = [""AWS::WAFv2::WebACL""]
+        categories = [CheckCategories.APPLICATION_SECURITY]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: Dict[str, Any]) -> CheckResult:
+        self.evaluated_keys = [""Properties/Rules""]
+        properties = conf.get(""Properties"")
+        if properties:
+            rules = properties.get(""Rules"") or []
+            for idx_rule, rule in enumerate(rules):
+                self.evaluated_keys = [f""Properties/Rules/[{idx_rule}]/Statement""]
+                statement = rule.get(""Statement"")
+                if statement:
+                    self.evaluated_keys = [f""Properties/Rules/[{idx_rule}]/Statement/ManagedRuleGroupStatement""]
+                    managed_group = statement.get(""ManagedRuleGroupStatement"")
+                    if managed_group:
+                        self.evaluated_keys = [
+                            f""Properties/Rules/[{idx_rule}]/Statement/ManagedRuleGroupStatement/Name""
+                        ]
+                        if m"
+CKV_AWS_193,Ensure AppSync has Logging enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/AppSyncLogging.py,"from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+from checkov.common.models.enums import CheckCategories
+
+
+class AppSyncLogging(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure AppSync has Logging enabled""
+        id = ""CKV_AWS_193""
+        supported_resources = (""AWS::AppSync::GraphQLApi"",)
+        categories = (CheckCategories.LOGGING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/LogConfig/CloudWatchLogsRoleArn""
+
+    def get_expected_value(self) -> Any:
+        return ANY_VALUE
+
+
+check = AppSyncLogging()
+"
+CKV_AWS_194,Ensure AppSync has Field-Level logs enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/AppSyncFieldLevelLogs.py,"from typing import Any, List
+
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class AppSyncFieldLevelLogs(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure AppSync has Field-Level logs enabled""
+        id = ""CKV_AWS_194""
+        supported_resources = (""AWS::AppSync::GraphQLApi"",)
+        categories = (CheckCategories.LOGGING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/LogConfig/FieldLogLevel""
+
+    def get_expected_values(self) -> List[Any]:
+        return [""ALL"", ""ERROR""]
+
+
+check = AppSyncFieldLevelLogs()
+"
+CKV_AWS_195,Ensure Glue component has a security configuration associated,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/GlueSecurityConfigurationEnabled.py,"from typing import Any
+
+from checkov.common.models.consts import ANY_VALUE
+from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class GlueSecurityConfigurationEnabled(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Glue component has a security configuration associated""
+        id = ""CKV_AWS_195""
+        supported_resources = (""AWS::Glue::Crawler"", ""AWS::Glue::DevEndpoint"", ""AWS::Glue::Job"")
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        if self.entity_type == ""AWS::Glue::Crawler"":
+            return ""Properties/CrawlerSecurityConfiguration""
+        elif self.entity_type in (""AWS::Glue::DevEndpoint"", ""AWS::Glue::Job""):
+            return ""Properties/SecurityConfiguration""
+
+        return """"
+
+    def get_expected_value(self) -> Any:
+        return ANY_VALUE
+
+
+check = GlueSecurityConfigurationEnabled()
+"
+CKV_AWS_197,Ensure MQ Broker Audit logging is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/MQBrokerAuditLogging.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories, CheckResult
+
+
+class MQBrokerAuditLogging(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure MQ Broker Audit logging is enabled""
+        id = ""CKV_AWS_197""
+        supported_resources = (""AWS::AmazonMQ::Broker"",)
+        categories = (CheckCategories.LOGGING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        # https://docs.aws.amazon.com/amazon-mq/latest/developer-guide/security-logging-monitoring-rabbitmq.html
+        # Audit logging is not supported for RabbitMQ brokers.
+        engine_type = conf.get(""Properties"", {}).get(""EngineType"")
+        if isinstance(engine_type, str) and engine_type.upper() == ""RABBITMQ"":
+            return CheckResult.UNKNOWN
+        return super().scan_resource_conf(conf)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/Logs/Audit""
+
+
+check = MQBrokerAuditLogging()
+"
+CKV_AWS_2,Ensure ALB protocol is HTTPS,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ALBListenerHTTPS.py,"from __future__ import annotations
+
+from typing import Any, List
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.cloudformation.parser.cfn_keywords import ConditionFunctions, IntrinsicFunctions
+
+
+class ALBListenerHTTPS(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure ALB protocol is HTTPS""
+        id = ""CKV_AWS_2""
+        supported_resources = (""AWS::ElasticLoadBalancingV2::Listener"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        """"""
+            validates ALB protocol is HTTPS
+            https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticloadbalancingv2-listener.html
+        :param conf: aws_alb_listener configuration
+        :return: <CheckResult>
+        """"""
+        properties = conf.get(""Properties"")
+        if properties and isinstance(properties, dict):
+            protocol = properties.get(""Protocol"")
+            if protocol:
+                if protocol in (""HTTPS"", ""TLS"", ""TCP"", ""UDP"", ""TCP_UDP""):
+                    return CheckResult.PASSED
+                else:
+                    if isinstance(properties.get(""DefaultActions"", {}), dict):
+                        default_actions = properties.get(""D"
+CKV_AWS_20,Ensure the S3 bucket does not allow READ permissions to everyone,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/S3PublicACLRead.py,"from checkov.cloudformation.checks.resource.base_resource_negative_value_check import BaseResourceNegativeValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class S3PublicACLRead(BaseResourceNegativeValueCheck):
+
+    def __init__(self):
+        name = ""Ensure the S3 bucket does not allow READ permissions to everyone""
+        id = ""CKV_AWS_20""
+        supported_resources = ['AWS::S3::Bucket']
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_forbidden_values(self):
+        return ['PublicReadWrite', 'PublicRead']
+
+    def get_inspected_key(self):
+        return 'Properties/AccessControl'
+
+
+check = S3PublicACLRead()
+"
+CKV_AWS_21,Ensure the S3 bucket has versioning enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/S3Versioning.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class S3Versioning(BaseResourceValueCheck):
+
+    def __init__(self):
+        name = ""Ensure the S3 bucket has versioning enabled""
+        id = ""CKV_AWS_21""
+        supported_resources = ['AWS::S3::Bucket']
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/VersioningConfiguration/Status'
+
+    def get_expected_value(self):
+        """"""
+        Returns the default expected value, governed by provider best practices
+        """"""
+
+        return 'Enabled'
+
+
+check = S3Versioning()
+"
+CKV_AWS_23,Ensure every security groups rule has a description,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/SecurityGroupRuleDescription.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class SecurityGroupRuleDescription(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure every security groups rule has a description""
+        id = ""CKV_AWS_23""
+        supported_resource = ('AWS::EC2::SecurityGroup', 'AWS::EC2::SecurityGroupIngress', 'AWS::EC2::SecurityGroupEgress')
+        categories = (CheckCategories.NETWORKING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resource)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        """"""
+            Looks for description in security group rules :
+            https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-ec2-security-group.html
+        :param conf: aws_security_group configuration
+        :return: <CheckResult>
+        """"""
+
+        if conf['Type'] == 'AWS::EC2::SecurityGroup':
+            if 'Properties' in conf:
+                self.evaluated_keys = ['Properties']
+                security_group_ingress_rules = conf.get('Properties', {}).get('SecurityGroupIngress')
+                if security_group_ingress_rules:
+                    for rule in security_group_ingress_rules:
+                        if isinstance(rule, dict) and ('Description' not in rule or not rule['Descriptio"
+CKV_AWS_258,Ensure that Lambda function URLs AuthType is not None,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/LambdaFunctionURLAuth.py,"from checkov.cloudformation.checks.resource.base_resource_negative_value_check import BaseResourceNegativeValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class LambdaFunctionURLAuth(BaseResourceNegativeValueCheck):
+
+    def __init__(self):
+        name = ""Ensure that Lambda function URLs AuthType is not None""
+        id = ""CKV_AWS_258""
+        supported_resources = ['AWS::Lambda::Url']
+        categories = [CheckCategories.GENERAL_SECURITY]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return ""Properties/AuthType""
+
+    def get_forbidden_values(self):
+        return [""NONE""]
+
+
+check = LambdaFunctionURLAuth()
+"
+CKV_AWS_26,Ensure all data stored in the SNS topic is encrypted,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/SNSTopicEncryption.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+
+
+class SNSTopicEncryption(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure all data stored in the SNS topic is encrypted""
+        id = ""CKV_AWS_26""
+        supported_resources = ['AWS::SNS::Topic']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/KmsMasterKeyId'
+
+    def get_expected_value(self):
+        return ANY_VALUE
+
+
+check = SNSTopicEncryption()
+"
+CKV_AWS_27,Ensure all data stored in the SQS queue is encrypted,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/SQSQueueEncryption.py,"from typing import Any
+
+from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+
+
+class SQSQueueEncryption(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure all data stored in the SQS queue is encrypted""
+        id = ""CKV_AWS_27""
+        supported_resources = ['AWS::SQS::Queue']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return 'Properties/KmsMasterKeyId'
+
+    def get_expected_value(self) -> Any:
+        return ANY_VALUE
+
+
+check = SQSQueueEncryption()
+"
+CKV_AWS_28,Ensure DynamoDB point in time recovery (backup) is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/DynamodbRecovery.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class DynamodbRecovery(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure DynamoDB point in time recovery (backup) is enabled""
+        id = ""CKV_AWS_28""
+        supported_resources = ['AWS::DynamoDB::Table']
+        categories = [CheckCategories.BACKUP_AND_RECOVERY]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/PointInTimeRecoverySpecification/PointInTimeRecoveryEnabled'
+
+
+check = DynamodbRecovery()
+"
+CKV_AWS_29,Ensure all data stored in the ElastiCache Replication Group is securely encrypted at rest,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ElasticacheReplicationGroupEncryptionAtRest.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class ElasticacheReplicationGroupEncryptionAtRest(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure all data stored in the ElastiCache Replication Group is securely encrypted at rest""
+        id = ""CKV_AWS_29""
+        supported_resources = ['AWS::ElastiCache::ReplicationGroup']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/AtRestEncryptionEnabled'
+
+
+check = ElasticacheReplicationGroupEncryptionAtRest()
+"
+CKV_AWS_291,Ensure MSK nodes are private,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/MSKClusterNodesArePrivate.py,"from typing import Any, List
+
+from checkov.cloudformation.checks.resource.base_resource_negative_value_check import BaseResourceNegativeValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class MSKClusterNodesArePrivate(BaseResourceNegativeValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure MSK nodes are private""
+        id = ""CKV_AWS_291""
+        supported_resources = ['AWS::MSK::Cluster']
+        categories = [CheckCategories.NETWORKING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return 'Properties/BrokerNodeGroupInfo/ConnectivityInfo/PublicAccess/Type'
+
+    def get_forbidden_values(self) -> List[Any]:
+        return [""SERVICE_PROVIDED_EIPS""]
+
+
+check = MSKClusterNodesArePrivate()
+"
+CKV_AWS_3,Ensure all data stored in the EBS is securely encrypted,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/EBSEncryption.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class EBSEncryption(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure all data stored in the EBS is securely encrypted""
+        id = ""CKV_AWS_3""
+        supported_resources = (""AWS::EC2::Volume"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/Encrypted""
+
+
+check = EBSEncryption()
+"
+CKV_AWS_30,Ensure all data stored in the ElastiCache Replication Group is securely encrypted at transit,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ElasticacheReplicationGroupEncryptionAtTransit.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class ElasticacheReplicationGroupEncryptionAtTransit(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure all data stored in the ElastiCache Replication Group is securely encrypted at transit""
+        id = ""CKV_AWS_30""
+        supported_resources = (""AWS::ElastiCache::ReplicationGroup"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/TransitEncryptionEnabled""
+
+
+check = ElasticacheReplicationGroupEncryptionAtTransit()
+"
+CKV_AWS_31,Ensure all data stored in the ElastiCache Replication Group is securely encrypted at transit and has auth token,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ElasticacheReplicationGroupEncryptionAtTransitAuthToken.py,"from __future__ import annotations
+
+from typing import Any, List
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class ElasticacheReplicationGroupEncryptionAtTransitAuthToken(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure all data stored in the ElastiCache Replication Group is securely encrypted at transit and has auth token""
+        id = ""CKV_AWS_31""
+        supported_resources = (""AWS::ElastiCache::ReplicationGroup"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        """"""
+            Looks for encryption configuration at aws_elasticache_replication_group:
+            https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-replicationgroup.html
+        :param conf: aws_elasticache_replication_group configuration
+        :return: <CheckResult>
+        """"""
+        properties = conf. get(""Properties"")
+        if properties and isinstance(properties, dict):
+            if ""TransitEncryptionEnabled"" in properties.keys() and (""AuthToken"" in properties.keys() or
+                                                                    ""UserGroupIds"" in properties.keys()):
+                if conf[""Properties""][""TransitEncryptionEnabled"
+CKV_AWS_317,Ensure Elasticsearch Domain Audit Logging is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ElasticsearchDomainAuditLogging.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class ElasticsearchDomainAuditLogging(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Elasticsearch Domain Audit Logging is enabled""
+        id = ""CKV_AWS_317""
+        supported_resources = (""AWS::Elasticsearch::Domain"", ""AWS::OpenSearchService::Domain"")
+        categories = (CheckCategories.LOGGING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/LogPublishingOptions/AUDIT_LOGS/Enabled""
+
+
+check = ElasticsearchDomainAuditLogging()
+"
+CKV_AWS_32,Ensure ECR policy is not set to public,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ECRPolicy.py,"from __future__ import annotations
+
+import json
+import logging
+import re
+from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.models.consts import SLS_DEFAULT_VAR_PATTERN
+from checkov.common.models.enums import CheckResult, CheckCategories
+
+
+class ECRPolicy(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure ECR policy is not set to public""
+        id = ""CKV_AWS_32""
+        supported_resources = (""AWS::ECR::Repository"",)
+        categories = (CheckCategories.GENERAL_SECURITY,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        """"""
+            Looks for public * policy for ecr repository:
+            https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ecr-repository.html
+        :param conf: aws_ecr_repository configuration
+        :return: <CheckResult>
+        """"""
+        self.evaluated_keys = [""Properties/RepositoryPolicyText/Statement""]
+        properties = conf.get(""Properties"")
+        if not properties or not isinstance(properties, dict):
+            return CheckResult.PASSED
+        policy_text = properties.get(""RepositoryPolicyText"")
+        if not policy_text:
+            return CheckResult.PASSED
+        if isinstance(policy_text, str):
+            try:
+                policy_text = json.loads(str(policy_tex"
+CKV_AWS_33,Ensure KMS key policy does not contain wildcard (*) principal,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/KMSKeyWildCardPrincipal.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class KMSKeyWildCardPrincipal(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure KMS key policy does not contain wildcard (*) principal""
+        id = ""CKV_AWS_33""
+        supported_resources = (""AWS::KMS::Key"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/KeyPolicy/Statement/Principal""
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        properties = conf.get(""Properties"")
+        if properties and isinstance(properties, dict):
+            policy_block = properties.get(""KeyPolicy"")
+            if policy_block and isinstance(policy_block, dict):
+                statements = policy_block.get(""Statement"")
+                if statements and isinstance(statements, list):
+                    for statement in statements:
+                        principal = statement.get(""Principal"")
+                        if not principal:
+                            continue
+                        if statement.get(""Effect"") == ""Deny"":
+                            continue
+
+                        if isinstance(principal, dict) and ""AWS"" i"
+CKV_AWS_34,Ensure CloudFront Distribution ViewerProtocolPolicy is set to HTTPS,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/CloudfrontDistributionEncryption.py,"from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class CloudfrontDistributionEncryption(BaseResourceCheck):
+    def __init__(self):
+        name = ""Ensure CloudFront Distribution ViewerProtocolPolicy is set to HTTPS""
+        id = ""CKV_AWS_34""
+        supported_resources = ['AWS::CloudFront::Distribution']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf):
+        """"""
+            Looks for ViewerProtocolPolicy configuration at cloudfront distributions:
+            https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-cloudfront-distribution-cachebehavior.html
+            https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-cloudfront-distribution-defaultcachebehavior.html
+        :param conf: cloudfront configuration
+        :return: <CheckResult>
+        """"""
+
+        self.evaluated_keys = [""Properties""]
+        if 'Properties' in conf.keys():
+            if 'DistributionConfig' in conf['Properties'].keys():
+                if 'DefaultCacheBehavior' in conf['Properties']['DistributionConfig'].keys():
+                    if 'ViewerProtocolPolicy' in conf['Properties']['DistributionConfig']['DefaultCacheBehavior'].keys():
+                        if conf['Properties']['Distribut"
+CKV_AWS_35,Ensure CloudTrail logs are encrypted at rest using KMS CMKs,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/CloudtrailEncryption.py,"from typing import Any
+
+from checkov.common.models.consts import ANY_VALUE
+from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class CloudtrailEncryption(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure CloudTrail logs are encrypted at rest using KMS CMKs""
+        id = ""CKV_AWS_35""
+        supported_resources = (""AWS::CloudTrail::Trail"",)
+        categories = (CheckCategories.LOGGING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/KMSKeyId""
+
+    def get_expected_value(self) -> Any:
+        return ANY_VALUE
+
+
+check = CloudtrailEncryption()
+"
+CKV_AWS_36,Ensure CloudTrail log file validation is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/CloudtrailLogValidation.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class CloudtrailLogValidation(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure CloudTrail log file validation is enabled""
+        id = ""CKV_AWS_36""
+        supported_resources = ['AWS::CloudTrail::Trail']
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/EnableLogFileValidation'
+
+
+check = CloudtrailLogValidation()
+"
+CKV_AWS_360,Ensure DocumentDB has an adequate backup retention period,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/DocDBBackupRetention.py,"from checkov.common.models.enums import CheckCategories, CheckResult
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class DocDBBackupRetention(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure DocumentDB has an adequate backup retention period""
+        id = ""CKV_AWS_360""
+        supported_resources = (""AWS::DocDB::DBCluster"",)
+        categories = (CheckCategories.BACKUP_AND_RECOVERY,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/BackupRetentionPeriod""
+
+    def scan_resource_conf(self, conf) -> CheckResult:
+        properties = conf.get(""Properties"")
+        if properties:
+            backup_retention_period = properties.get(""BackupRetentionPeriod"", 1)
+            if backup_retention_period >= 7:
+                return CheckResult.PASSED
+        return CheckResult.FAILED
+
+
+check = DocDBBackupRetention()
+"
+CKV_AWS_361,Ensure that Neptune DB cluster has automated backups enabled with adequate retention,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/NeptuneClusterBackupRetention.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.models.enums import CheckResult, CheckCategories
+
+
+class NeptuneClusterBackupRetention(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure that Neptune DB cluster has automated backups enabled with adequate retention""
+        id = ""CKV_AWS_361""
+        supported_resources = (""AWS::Neptune::DBCluster"",)
+        categories = (CheckCategories.BACKUP_AND_RECOVERY,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        backup_retention = conf.get(""Properties"", {}).get(""BackupRetentionPeriod"", 1)
+        if backup_retention >= 7:
+            return CheckResult.PASSED
+
+        return CheckResult.FAILED
+
+    def get_evaluated_keys(self) -> list[str]:
+        return [""Properties/BackupRetentionPeriod""]
+
+
+check = NeptuneClusterBackupRetention()
+"
+CKV_AWS_363,Ensure Lambda Runtime is not deprecated,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/DeprecatedLambdaRuntime.py,"from typing import List, Any
+
+from checkov.cloudformation.checks.resource.base_resource_negative_value_check import BaseResourceNegativeValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class DeprecatedLambdaRuntime(BaseResourceNegativeValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Lambda Runtime is not deprecated""
+        id = ""CKV_AWS_363""
+        supported_resources = ['AWS::Lambda::Function', 'AWS::Serverless::Function']
+        categories = [CheckCategories.GENERAL_SECURITY]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/Runtime""
+
+    def get_forbidden_values(self) -> List[Any]:
+        # Source: https://docs.aws.amazon.com/lambda/latest/dg/lambda-runtimes.html
+        return [""dotnetcore3.1"", ""nodejs12.x"", ""python3.6"", ""python2.7"", ""dotnet5.0"", ""dotnetcore2.1"", ""ruby2.5"",
+                ""nodejs10.x"", ""nodejs8.10"", ""nodejs4.3"", ""nodejs6.10"", ""dotnetcore1.0"", ""dotnetcore2.0"",
+                ""nodejs4.3-edge"", ""nodejs"", ""java8"", ""python3.7"", ""go1.x"", ""provided"", ""ruby2.7"", ""nodejs14.x"",
+                ""nodejs16.x"", ""python3.9"", ""dotnet7"", ""dotnet6""
+                # , ""nodejs18.x"" # Uncomment on Sept 1, 2025
+                # , ""provided.al2"" # Uncomment on Jun 30, 2026
+                # , ""python3.9"" # Uncomment on Nov 3, 2025
+                ]
+
+
+check = DeprecatedLambdaRuntime()
+"
+CKV_AWS_364,Ensure that AWS Lambda function permissions delegated to AWS services are limited by SourceArn or SourceAccount,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/LambdaServicePermission.py,"from __future__ import annotations
+
+from typing import List, Any
+
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.models.enums import CheckCategories, CheckResult
+
+
+class LambdaServicePermission(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure that AWS Lambda function permissions delegated to AWS services are limited by SourceArn or SourceAccount""
+        id = ""CKV_AWS_364""
+        supported_resources = (""AWS::Lambda::Permission"",)
+        categories = (CheckCategories.IAM,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        properties = conf.get('Properties')
+        if properties and isinstance(properties, dict):
+            principal = properties.get('Principal')
+            if principal and isinstance(principal, str):
+                principal_parts = principal.split('.')
+                try:
+                    if principal_parts[1] == 'amazonaws' and principal_parts[2] == 'com':
+                        if properties.get('SourceArn') or properties.get('SourceAccount'):
+                            return CheckResult.PASSED
+                        else:
+                            return CheckResult.FAILED
+                except IndexError:
+                    # Not a service principal, so pass.
+                    return CheckResult.UNKNOWN
+        retu"
+CKV_AWS_366,Ensure AWS Cognito identity pool does not allow unauthenticated guest access,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/CognitoUnauthenticatedIdentities.py,"from typing import Any
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class CognitoUnauthenticatedIdentities(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure AWS Cognito identity pool does not allow unauthenticated guest access""
+        id = ""CKV_AWS_366""
+        supported_resources = ('AWS::Cognito::IdentityPool',)
+        categories = (CheckCategories.IAM,)
+        super().__init__(
+            name=name,
+            id=id,
+            categories=categories,
+            supported_resources=supported_resources,
+            missing_block_result=CheckResult.FAILED,
+        )
+
+    def get_expected_value(self) -> Any:
+        return False
+
+    def get_inspected_key(self) -> str:
+        return 'Properties/AllowUnauthenticatedIdentities'
+
+
+check = CognitoUnauthenticatedIdentities()
+"
+CKV_AWS_367,Ensure Amazon Sagemaker Data Quality Job uses KMS to encrypt model artifacts,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/SagemakerDataQualityJobDefinitionEncryption.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+from checkov.common.models.enums import CheckCategories
+
+
+class SagemakerDataQualityJobDefinitionEncryption(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure Amazon Sagemaker Data Quality Job uses KMS to encrypt model artifacts""
+        id = ""CKV_AWS_367""
+        supported_resources = [""AWS::SageMaker::DataQualityJobDefinition""]
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/DataQualityJobOutputConfig/KmsKeyId'
+
+    def get_expected_value(self):
+        return ANY_VALUE
+
+
+check = SagemakerDataQualityJobDefinitionEncryption()
+"
+CKV_AWS_368,Ensure Amazon Sagemaker Data Quality Job uses KMS to encrypt data on attached storage volume,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/SagemakerDataQualityJobDefinitionVolumeEncryption.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+from checkov.common.models.enums import CheckCategories
+
+
+class SagemakerDataQualityJobDefinitionVolumeEncryption(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure Amazon Sagemaker Data Quality Job uses KMS to encrypt data on attached storage volume""
+        id = ""CKV_AWS_368""
+        supported_resources = [""AWS::SageMaker::DataQualityJobDefinition""]
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/JobResources/ClusterConfig/VolumeKmsKeyId'
+
+    def get_expected_value(self):
+        return ANY_VALUE
+
+
+check = SagemakerDataQualityJobDefinitionVolumeEncryption()
+"
+CKV_AWS_369,Ensure Amazon Sagemaker Data Quality Job encrypts all communications between instances used for monitoring jobs,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/SagemakerDataQualityJobDefinitionTrafficEncryption.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class SagemakerDataQualityJobDefinitionTrafficEncryption(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure Amazon Sagemaker Data Quality Job encrypts all communications between instances used for monitoring jobs""
+        id = ""CKV_AWS_369""
+        supported_resources = [""AWS::SageMaker::DataQualityJobDefinition""]
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/NetworkConfig/EnableInterContainerTrafficEncryption'
+
+
+check = SagemakerDataQualityJobDefinitionTrafficEncryption()
+"
+CKV_AWS_370,Ensure Amazon SageMaker model uses network isolation,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/SagemakerModelWithNetworkIsolation.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class SagemakerModelWithNetworkIsolation(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure Amazon SageMaker model uses network isolation""
+        id = ""CKV_AWS_370""
+        supported_resources = [""AWS::SageMaker::Model""]
+        categories = [CheckCategories.NETWORKING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/EnableNetworkIsolation'
+
+
+check = SagemakerModelWithNetworkIsolation()
+"
+CKV_AWS_371,Ensure Amazon SageMaker Notebook Instance only allows for IMDSv2,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/SagemakerNotebookInstanceAllowsIMDSv2.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class SagemakerNotebookInstanceAllowsIMDSv2(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure Amazon SageMaker Notebook Instance only allows for IMDSv2""
+        id = ""CKV_AWS_371""
+        supported_resources = [""AWS::SageMaker::NotebookInstance""]
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/InstanceMetadataServiceConfiguration/MinimumInstanceMetadataServiceVersion'
+
+    def get_expected_value(self):
+        return ""2""
+
+
+check = SagemakerNotebookInstanceAllowsIMDSv2()
+"
+CKV_AWS_373,Ensure Bedrock Agent is encrypted with a CMK,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/BedrockAgentEncrypted.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+from checkov.common.models.consts import ANY_VALUE
+
+
+class BedrockAgentEncrypted(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure Bedrock Agent is encrypted with a CMK""
+        id = ""CKV_AWS_373""
+        supported_resources = ['AWS::Bedrock::Agent']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/CustomerEncryptionKeyArn'
+
+    def get_expected_value(self):
+        return ANY_VALUE
+
+
+check = BedrockAgentEncrypted()
+"
+CKV_AWS_384,Ensure no hard-coded secrets exist in Parameter Store values,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ParameterStoreCredentials.py,"from __future__ import annotations
+
+import re
+from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.common.util.secrets import AWS, GENERAL, PASSWORD, get_secrets_from_string
+
+
+class ParameterStoreCredentials(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure no hard-coded secrets exist in Parameter Store values""
+        id = ""CKV_AWS_384""
+        supported_resources = (""AWS::SSM::Parameter"",)
+        categories = (CheckCategories.GENERAL_SECURITY,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def is_dynamic_value(self, value: str) -> bool:
+        patterns = [
+            r""\$\{.*?\}"",  # ${...}
+            r""\{\{.*?\}\}"",  # {{...}}
+            r""\$\(.*?\)"",  # $(...)
+            r""!Ref\s+\w+"",  # !Ref SomeResource
+            r""!Sub\s+'.*?'"",  # !Sub '...'
+        ]
+        return any(re.search(pattern, value) for pattern in patterns)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        self.evaluated_keys = [""Properties/Value""]
+        properties = conf.get(""Properties"")
+        if isinstance(properties, dict):
+            name = properties.get(""Name"")
+            if name and re.match(""(?i).*secret.*|.*api_?key.*"", str(name)):
+                value = properties.get(""Value"")
+                if value:
+                  "
+CKV_AWS_40,Ensure IAM policies are attached only to groups or roles (Reducing access management complexity may in-turn reduce opportunity for a principal to inadvertently receive or retain excessive privileges.),https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/IAMPolicyAttachedToGroupOrRoles.py,"from typing import List, Any
+
+from checkov.cloudformation.checks.resource.base_resource_negative_value_check import BaseResourceNegativeValueCheck
+from checkov.common.models.consts import ANY_VALUE
+from checkov.common.models.enums import CheckCategories
+
+
+class IAMPolicyAttachedToGroupOrRoles(BaseResourceNegativeValueCheck):
+    def __init__(self):
+        name = ""Ensure IAM policies are attached only to groups or roles (Reducing access management complexity may "" \
+               ""in-turn reduce opportunity for a principal to inadvertently receive or retain excessive privileges.)""
+        id = ""CKV_AWS_40""
+        supported_resources = ['AWS::IAM::Policy']
+        categories = [CheckCategories.IAM]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    """"""
+    Looks for users attached to an IAM policy
+    https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iam-policy.html
+    """"""
+    def get_inspected_key(self) -> str:
+        return ""Properties/Users""
+
+    def get_forbidden_values(self) -> List[Any]:
+        return [ANY_VALUE]
+
+
+check = IAMPolicyAttachedToGroupOrRoles()
+"
+CKV_AWS_42,Ensure EFS is securely encrypted,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/EFSEncryptionEnabled.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class EFSEncryption(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure EFS is securely encrypted""
+        id = ""CKV_AWS_42""
+        supported_resources = ['AWS::EFS::FileSystem']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/Encrypted'
+
+
+check = EFSEncryption()
+"
+CKV_AWS_43,Ensure Kinesis Stream is securely encrypted,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/KinesisStreamEncryptionType.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class KinesisStreamEncryptionType(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure Kinesis Stream is securely encrypted""
+        id = ""CKV_AWS_43""
+        supported_resources = ['AWS::Kinesis::Stream']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/StreamEncryption/EncryptionType'
+
+    def get_expected_value(self):
+        return 'KMS'
+
+
+check = KinesisStreamEncryptionType()
+"
+CKV_AWS_44,Ensure Neptune storage is securely encrypted,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/NeptuneClusterStorageEncrypted.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class NeptuneClusterStorageEncrypted(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Neptune storage is securely encrypted""
+        id = ""CKV_AWS_44""
+        supported_resources = (""AWS::Neptune::DBCluster"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/StorageEncrypted""
+
+
+check = NeptuneClusterStorageEncrypted()
+"
+CKV_AWS_45,Ensure no hard-coded secrets exist in Lambda environment,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/LambdaEnvironmentCredentials.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.common.util.secrets import AWS, GENERAL, get_secrets_from_string
+
+
+class LambdaEnvironmentCredentials(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure no hard-coded secrets exist in Lambda environment""
+        id = ""CKV_AWS_45""
+        supported_resources = (""AWS::Lambda::Function"", ""AWS::Serverless::Function"")
+        categories = (CheckCategories.SECRETS,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        self.evaluated_keys = [""Properties/Environment/Variables""]
+        properties = conf.get(""Properties"")
+        if isinstance(properties, dict):
+            environment = properties.get(""Environment"")
+            if environment and isinstance(environment, dict):
+                variables = environment.get(""Variables"")
+                if variables and isinstance(variables, dict):
+                    for var_name, value in variables.items():
+                        if isinstance(value, dict):
+                            # if it is a resolved intrinsic function like !Ref: xyz, then it can't be a secret
+                            continue
+
+                        # Skip checking if the valu"
+CKV_AWS_46,Ensure no hard-coded secrets exist in EC2 user data,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/EC2Credentials.py,"from typing import List
+from base64 import b64decode
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.util.secrets import AWS, GENERAL, get_secrets_from_string
+
+
+class EC2Credentials(BaseResourceCheck):
+    def __init__(self):
+        name = ""Ensure no hard-coded secrets exist in EC2 user data""
+        id = ""CKV_AWS_46""
+        supported_resources = ['AWS::EC2::Instance']
+        categories = [CheckCategories.SECRETS]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf):
+        if 'Properties' in conf.keys():
+            if 'UserData' in conf['Properties'].keys():
+                user_data = conf['Properties']['UserData']
+                # In some case, the UserData might be a base64 encoded string which will slow down (3 minutes)
+                # the get_secrets_from_string function.
+                try:
+                    user_data_str = b64decode(user_data).decode()
+                except Exception:
+                    # Cast to string as user data object can look slightly different depending
+                    # on Yaml or JSON CF Templates and how the B64 conversion is done.
+                    user_data_str = str(user_data)
+
+                if isinstance(user_data_str, str):
+                    secrets = get_secrets_from_string(str(user_data_str)"
+CKV_AWS_47,Ensure DAX is encrypted at rest (default is unencrypted),https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/DAXEncryption.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class DAXEncryption(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure DAX is encrypted at rest (default is unencrypted)""
+        id = ""CKV_AWS_47""
+        supported_resources = ['AWS::DAX::Cluster']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/SSESpecification/SSEEnabled'
+
+    def get_expected_value(self):
+        return True
+
+
+check = DAXEncryption()
+"
+CKV_AWS_5,Ensure all data stored in the Elasticsearch is securely encrypted at rest,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ElasticsearchEncryption.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class ElasticsearchEncryption(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure all data stored in the Elasticsearch is securely encrypted at rest""
+        id = ""CKV_AWS_5""
+        supported_resources = ['AWS::Elasticsearch::Domain']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/EncryptionAtRestOptions/Enabled'
+
+
+check = ElasticsearchEncryption()
+"
+CKV_AWS_51,Ensure ECR Image Tags are immutable,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ECRImmutableTags.py,"from typing import Any
+
+from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class ECRImmutableTags(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure ECR Image Tags are immutable""
+        id = ""CKV_AWS_51""
+        supported_resources = (""AWS::ECR::Repository"",)
+        categories = (CheckCategories.GENERAL_SECURITY,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/ImageTagMutability""
+
+    def get_expected_value(self) -> Any:
+        return ""IMMUTABLE""
+
+
+check = ECRImmutableTags()
+"
+CKV_AWS_53,Ensure S3 bucket has block public ACLs enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/S3BlockPublicACLs.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class S3BlockPublicACLs(BaseResourceValueCheck):
+
+    def __init__(self):
+        name = ""Ensure S3 bucket has block public ACLs enabled""
+        id = ""CKV_AWS_53""
+        supported_resources = ['AWS::S3::Bucket']
+        categories = [CheckCategories.GENERAL_SECURITY]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/PublicAccessBlockConfiguration/BlockPublicAcls'
+
+
+check = S3BlockPublicACLs()
+"
+CKV_AWS_54,Ensure S3 bucket has block public policy enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/S3BlockPublicPolicy.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class S3BlockPublicPolicy(BaseResourceValueCheck):
+
+    def __init__(self):
+        name = ""Ensure S3 bucket has block public policy enabled""
+        id = ""CKV_AWS_54""
+        supported_resources = ['AWS::S3::Bucket']
+        categories = [CheckCategories.GENERAL_SECURITY]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/PublicAccessBlockConfiguration/BlockPublicPolicy'
+
+
+check = S3BlockPublicPolicy()
+"
+CKV_AWS_55,Ensure S3 bucket has ignore public ACLs enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/S3IgnorePublicACLs.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class S3IgnorePublicACLs(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure S3 bucket has ignore public ACLs enabled""
+        id = ""CKV_AWS_55""
+        supported_resources = (""AWS::S3::Bucket"",)
+        categories = (CheckCategories.GENERAL_SECURITY,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/PublicAccessBlockConfiguration/IgnorePublicAcls""
+
+
+check = S3IgnorePublicACLs()
+"
+CKV_AWS_56,Ensure S3 bucket has RestrictPublicBuckets enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/S3RestrictPublicBuckets.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class S3RestrictPublicBuckets(BaseResourceValueCheck):
+
+    def __init__(self):
+        name = ""Ensure S3 bucket has RestrictPublicBuckets enabled""
+        id = ""CKV_AWS_56""
+        supported_resources = ['AWS::S3::Bucket']
+        categories = [CheckCategories.GENERAL_SECURITY]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/PublicAccessBlockConfiguration/RestrictPublicBuckets'
+
+
+check = S3RestrictPublicBuckets()
+"
+CKV_AWS_57,Ensure the S3 bucket does not allow WRITE permissions to everyone,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/S3PublicACLWrite.py,"from typing import List, Any
+
+from checkov.cloudformation.checks.resource.base_resource_negative_value_check import BaseResourceNegativeValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class S3PublicACLWrite(BaseResourceNegativeValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure the S3 bucket does not allow WRITE permissions to everyone""
+        id = ""CKV_AWS_57""
+        supported_resources = (""AWS::S3::Bucket"",)
+        categories = (CheckCategories.LOGGING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_forbidden_values(self) -> List[Any]:
+        return [""PublicReadWrite""]
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/AccessControl""
+
+
+check = S3PublicACLWrite()
+"
+CKV_AWS_58,Ensure EKS Cluster has Secrets Encryption Enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/EKSSecretsEncryption.py,"from typing import List
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class EKSSecretsEncryption(BaseResourceCheck):
+    def __init__(self):
+        name = ""Ensure EKS Cluster has Secrets Encryption Enabled""
+        id = ""CKV_AWS_58""
+        supported_resources = ['AWS::EKS::Cluster']
+        categories = [CheckCategories.KUBERNETES]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf):
+        """"""
+            Looks for eks secrets encryption
+            https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-eks-cluster-encryptionconfig.html
+        :param conf: AWS::EKS::Cluster configuration
+        :return: <CheckResult>
+        """"""
+        encryption_config = list(conf.get('Properties', {}).get('EncryptionConfig', []))
+        encryption_config_resources = [p[""Resources""] for p in encryption_config if ""Resources"" in p]
+        if isinstance(encryption_config_resources, list) and any('secrets' in r for r in encryption_config_resources):
+            return CheckResult.PASSED
+        return CheckResult.FAILED
+
+    def get_evaluated_keys(self) -> List[str]:
+        return [""Properties/EncryptionConfig/Resources""]
+
+
+check = EKSSecretsEncryption()
+"
+CKV_AWS_59,Ensure there is no open access to back-end resources through API,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/APIGatewayAuthorization.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class APIGatewayAuthorization(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure there is no open access to back-end resources through API""
+        id = ""CKV_AWS_59""
+        supported_resources = ('AWS::ApiGateway::Method',)
+        categories = (CheckCategories.GENERAL_SECURITY,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        self.evaluated_keys = [""Properties""]
+        if 'Properties' in conf.keys():
+            if 'HttpMethod' in conf['Properties'].keys() and 'AuthorizationType' in conf['Properties'].keys():
+                if conf['Properties']['HttpMethod'] != ""OPTIONS"" and conf['Properties']['AuthorizationType'] == ""NONE"":
+                    if 'ApiKeyRequired' not in conf['Properties'].keys() or conf['Properties']['ApiKeyRequired'] is False:
+                        self.evaluated_keys = [""Properties/HttpMethod"", ""Properties/AuthorizationType"",
+                                               ""Properties/ApiKeyRequired""]
+                        return CheckResult.FAILED
+        return CheckResult.PASSED
+
+
+check = APIGatewayAuthorization()
+"
+CKV_AWS_6,Ensure all Elasticsearch has node-to-node encryption enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ElasticsearchNodeToNodeEncryption.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class ElasticsearchNodeToNodeEncryption(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure all Elasticsearch has node-to-node encryption enabled""
+        id = ""CKV_AWS_6""
+        supported_resources = (""AWS::Elasticsearch::Domain"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/NodeToNodeEncryptionOptions/Enabled""
+
+
+check = ElasticsearchNodeToNodeEncryption()
+"
+CKV_AWS_60,Ensure IAM role allows only specific services or principals to assume it,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/IAMRoleAllowsPublicAssume.py,"import json
+from typing import Dict, Any
+
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.models.enums import CheckResult, CheckCategories
+
+
+class IAMRoleAllowsPublicAssume(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure IAM role allows only specific services or principals to assume it""
+        id = ""CKV_AWS_60""
+        supported_resources = (""AWS::IAM::Role"",)
+        categories = (CheckCategories.IAM,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: Dict[str, Any]) -> CheckResult:
+        self.evaluated_keys = [""Properties/AssumeRolePolicyDocument/Statement""]
+        properties = conf.get(""Properties"")
+        if isinstance(properties, dict):
+            assume_role_policy_doc = properties.get(""AssumeRolePolicyDocument"")
+            if isinstance(assume_role_policy_doc, str):
+                try:
+                    assume_role_policy_doc = json.loads(assume_role_policy_doc)
+                except Exception:
+                    return CheckResult.UNKNOWN
+            if isinstance(assume_role_policy_doc, dict) and assume_role_policy_doc.get(""Statement""):
+                statements = assume_role_policy_doc[""Statement""]
+                if isinstance(statements, list):
+                    for statement_index, statement in enumerate(statements):
+                        if not isinstance(statemen"
+CKV_AWS_61,Ensure AWS IAM policy does not allow assume role permission across all services,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/IAMRoleAllowAssumeFromAccount.py,"from __future__ import annotations
+
+import json
+import re
+from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.models.enums import CheckResult, CheckCategories
+
+ACCOUNT_ACCESS = re.compile(r'\d{12}|arn:aws:iam::\d{12}:root')
+
+
+class IAMRoleAllowAssumeFromAccount(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure AWS IAM policy does not allow assume role permission across all services""
+        id = ""CKV_AWS_61""
+        supported_resources = ('AWS::IAM::Role',)
+        categories = (CheckCategories.IAM,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        self.evaluated_keys = ['Properties']
+        properties = conf.get('Properties')
+        if properties and 'AssumeRolePolicyDocument' in properties:
+            assume_role_policy_doc = properties['AssumeRolePolicyDocument']
+            if isinstance(assume_role_policy_doc, dict) and 'Fn::Sub' in assume_role_policy_doc.keys():
+                policy_fn_sub_block = assume_role_policy_doc['Fn::Sub']
+                if isinstance(policy_fn_sub_block, list) and len(policy_fn_sub_block) == 2:
+                    assume_role_block = json.loads(policy_fn_sub_block[0])
+                else:
+                    assume_role_block = json.loads(policy_fn_sub_block)
+            elif isinstance(assume_role"
+CKV_AWS_62,"Ensure no IAM policies that allow full ""*-*"" administrative privileges are not created",https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/IAMAdminPolicyDocument.py,"from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.common.util.type_forcers import force_list
+
+
+class IAMAdminPolicyDocument(BaseResourceCheck):
+    def __init__(self):
+        name = ""Ensure no IAM policies that allow full \""*-*\"" administrative privileges are not created""
+        id = ""CKV_AWS_62""
+        supported_resources = ['AWS::IAM::Policy', 'AWS::IAM::Group', 'AWS::IAM::Role', 'AWS::IAM::User']
+        categories = [CheckCategories.IAM]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf):
+        my_properties = conf.get(""Properties"")
+        type = conf['Type']
+
+        # catch for inline policies
+        if isinstance(my_properties, dict) and type != 'AWS::IAM::Policy':
+            self.evaluated_keys = ['Properties']
+            if 'Policies' in my_properties.keys():
+                self.evaluated_keys = ['Properties/Policies']
+                policies = my_properties['Policies']
+                if len(policies) > 0:
+                    for idx, policy in enumerate(policies):
+                        if not isinstance(policy, dict):
+                            return CheckResult.UNKNOWN
+                        if policy.get('PolicyDocument'):
+                            self.evaluated_keys = [f'Properties/Policies/[{idx}]/PolicyDocument']
+               "
+CKV_AWS_63,"Ensure no IAM policies documents allow ""*"" as a statement's actions",https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/IAMStarActionPolicyDocument.py,"from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.common.util.type_forcers import force_list
+import ast
+
+
+class IAMStarActionPolicyDocument(BaseResourceCheck):
+    def __init__(self):
+        name = ""Ensure no IAM policies documents allow \""*\"" as a statement's actions""
+        id = ""CKV_AWS_63""
+        supported_resources = ['AWS::IAM::Policy', 'AWS::IAM::Group', 'AWS::IAM::Role', 'AWS::IAM::User']
+        categories = [CheckCategories.IAM]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf):
+        myproperties = conf.get(""Properties"")
+        type = conf['Type']
+        self.evaluated_keys = ['Properties']
+
+        # catch for inline policies
+        if type != 'AWS::IAM::Policy':
+            if isinstance(myproperties, dict) and 'Policies' in myproperties.keys():
+                policies = myproperties['Policies']
+                if len(policies) > 0:
+                    for idx, policy in enumerate(policies):
+                        self.evaluated_keys = [""Properties/Policies""]
+                        if not isinstance(policy, dict):
+                            return CheckResult.UNKNOWN
+                        if policy.get('PolicyDocument'):
+                            self.evaluated_keys = [f""Properties/Policies/{idx}/PolicyDocument""]
+                    "
+CKV_AWS_64,Ensure all data stored in the Redshift cluster is securely encrypted at rest,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/RedshiftClusterEncryption.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class RedshiftClusterEncryption(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure all data stored in the Redshift cluster is securely encrypted at rest""
+        id = ""CKV_AWS_64""
+        supported_resources = [""AWS::Redshift::Cluster""]
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/Encrypted""
+
+
+check = RedshiftClusterEncryption()
+"
+CKV_AWS_65,Ensure container insights are enabled on ECS cluster,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ECSClusterContainerInsights.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class ECSClusterContainerInsights(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure container insights are enabled on ECS cluster""
+        id = ""CKV_AWS_65""
+        supported_resources = (""AWS::ECS::Cluster"",)
+        categories = (CheckCategories.LOGGING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        """"""
+            Looks for container insights configuration on ECS cluster:
+            https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ecs-cluster.html#cfn-ecs-cluster-clustersettings
+        :param conf: AWS::ECS::Cluster configuration
+        :return: <CheckResult>
+        """"""
+        self.evaluated_keys = [""Properties""]
+        properties = conf.get(""Properties"")
+        if properties and isinstance(properties, dict):
+            settings = properties.get(""ClusterSettings"")
+            if settings and isinstance(settings, list):
+                self.evaluated_keys = [""Properties/ClusterSettings""]
+                for setting in settings:
+                    if setting[""Name""] == ""containerInsights"" and setting[""Value""] in [""enhanced"", ""enabled""]:
+                       "
+CKV_AWS_66,Ensure that CloudWatch Log Group specifies retention days,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/CloudWatchLogGroupRetention.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+
+
+class CloudWatchLogGroupRetention(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure that CloudWatch Log Group specifies retention days""
+        id = ""CKV_AWS_66""
+        supported_resource = ['AWS::Logs::LogGroup']
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resource)
+
+    def get_inspected_key(self):
+        return 'Properties/RetentionInDays'
+
+    def get_expected_value(self):
+        return ANY_VALUE
+
+
+check = CloudWatchLogGroupRetention()
+"
+CKV_AWS_67,Ensure CloudTrail is enabled in all Regions,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/CloudtrailMultiRegion.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class CloudtrailMultiRegion(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure CloudTrail is enabled in all Regions""
+        id = ""CKV_AWS_67""
+        supported_resources = ['AWS::CloudTrail::Trail']
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/IsMultiRegionTrail'
+
+
+check = CloudtrailMultiRegion()
+"
+CKV_AWS_68,CloudFront Distribution should have WAF enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/WAFEnabled.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+
+
+class WAFEnabled(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""CloudFront Distribution should have WAF enabled""
+        id = ""CKV_AWS_68""
+        supported_resources = ['AWS::CloudFront::Distribution']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/DistributionConfig/WebACLId'
+
+    def get_expected_value(self):
+        return ANY_VALUE
+
+
+check = WAFEnabled()
+"
+CKV_AWS_69,Ensure Amazon MQ Broker should not have public access,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/AmazonMQBrokerPublicAccess.py,"from typing import Any
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class AmazonMQBrokerPublicAccess(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Amazon MQ Broker should not have public access""
+        id = ""CKV_AWS_69""
+        supported_resources = ('AWS::AmazonMQ::Broker',)
+        categories = (CheckCategories.GENERAL_SECURITY,)
+        super().__init__(
+            name=name,
+            id=id,
+            categories=categories,
+            supported_resources=supported_resources,
+            missing_block_result=CheckResult.FAILED,
+        )
+
+    def get_expected_value(self) -> Any:
+        return False
+
+    def get_inspected_key(self) -> str:
+        """"""
+            validates Amazon MQ Broker should not have public access
+            https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-amazonmq-broker.html
+        :return: <CheckResult>
+        """"""
+        return 'Properties/PubliclyAccessible'
+
+
+check = AmazonMQBrokerPublicAccess()
+"
+CKV_AWS_7,Ensure rotation for customer created CMKs is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/KMSRotation.py,"from checkov.common.models.enums import CheckCategories, CheckResult
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class KMSRotation(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure rotation for customer created CMKs is enabled""
+        id = ""CKV_AWS_7""
+        supported_resources = (""AWS::KMS::Key"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/EnableKeyRotation""
+
+    def scan_resource_conf(self, conf):
+        # Only symmetric keys support auto rotation. The attribute is optional and defaults to symmetric.
+        properties = conf.get(""Properties"")
+        if properties and isinstance(properties, dict):
+            spec = properties.get(""KeySpec"")
+            if spec and isinstance(spec, str):
+                if 'SYMMETRIC_DEFAULT' not in spec and 'HMAC' not in spec:
+                    return CheckResult.UNKNOWN
+        return super().scan_resource_conf(conf)
+
+
+check = KMSRotation()
+"
+CKV_AWS_71,Ensure Redshift Cluster logging is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/RedshiftClusterLogging.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+from checkov.common.models.enums import CheckCategories
+
+
+class RedshiftClusterLogging(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Redshift Cluster logging is enabled""
+        id = ""CKV_AWS_71""
+        supported_resources = [""AWS::Redshift::Cluster""]
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/LoggingProperties/BucketName""
+
+    def get_expected_value(self) -> str:
+        return ANY_VALUE
+
+
+check = RedshiftClusterLogging()
+"
+CKV_AWS_73,Ensure API Gateway has X-Ray Tracing enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/APIGatewayXray.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class APIGatewayXray(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure API Gateway has X-Ray Tracing enabled""
+        id = ""CKV_AWS_73""
+        supported_resources = ['AWS::ApiGateway::Stage', ""AWS::Serverless::Api""]
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/TracingEnabled'
+
+    def get_expected_value(self):
+        return True
+
+
+check = APIGatewayXray()
+"
+CKV_AWS_74,Ensure DocumentDB is encrypted at rest (default is unencrypted),https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/DocDBEncryption.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class DocDBEncryption(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure DocumentDB is encrypted at rest (default is unencrypted)""
+        id = ""CKV_AWS_74""
+        supported_resources = (""AWS::DocDB::DBCluster"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/StorageEncrypted""
+
+
+check = DocDBEncryption()
+"
+CKV_AWS_76,Ensure API Gateway has Access Logging enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/APIGatewayAccessLogging.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+from checkov.common.models.consts import ANY_VALUE
+
+
+class APIGatewayAccessLogging(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure API Gateway has Access Logging enabled""
+        id = ""CKV_AWS_76""
+        supported_resources = ['AWS::ApiGateway::Stage', ""AWS::Serverless::Api""]
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/AccessLogSetting/DestinationArn'
+
+    def get_expected_value(self):
+        return ANY_VALUE
+
+
+check = APIGatewayAccessLogging()
+"
+CKV_AWS_78,Ensure that CodeBuild Project encryption is not disabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/CodeBuildProjectEncryption.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class CodeBuildProjectEncryption(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure that CodeBuild Project encryption is not disabled""
+        id = ""CKV_AWS_78""
+        supported_resources = (""AWS::CodeBuild::Project"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        # Only Fail if Artifact Type is S3 and EncryptionDisabled is True.
+        artifact_type = """"
+        encryption_disabled = False
+        properties = conf.get(""Properties"")
+        if properties:
+            self.evaluated_keys = [""Properties""]
+            artifacts = properties.get(""Artifacts"")
+            if artifacts and isinstance(artifacts, dict):
+                self.evaluated_keys = [""Properties/Artifacts""]
+                if ""Type"" in artifacts.keys():
+                    artifact_type = artifacts[""Type""]
+                if ""EncryptionDisabled"" in artifacts.keys():
+                    encryption_disabled = artifacts[""EncryptionDisabled""]
+                if artifact_type == ""S3"" and encryption_disabled is True:
+                    return CheckResult.FAILED
+        return CheckRes"
+CKV_AWS_79,Ensure Instance Metadata Service Version 1 is not enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/IMDSv1Disabled.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.common.util.data_structures_utils import find_in_dict
+
+
+class IMDSv1Disabled(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Instance Metadata Service Version 1 is not enabled""
+        id = ""CKV_AWS_79""
+        supported_resources = (""AWS::EC2::LaunchTemplate"",)
+        categories = (CheckCategories.IAM,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        # IMDS can be disabled or IMDSv2 can be enabled
+        http_endpoint = find_in_dict(
+            input_dict=conf,
+            key_path=""Properties/LaunchTemplateData/MetadataOptions/HttpEndpoint"",
+        )
+        if http_endpoint == ""disabled"":
+            return CheckResult.PASSED
+
+        return super().scan_resource_conf(conf)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/LaunchTemplateData/MetadataOptions/HttpTokens""
+
+    def get_expected_value(self) -> Any:
+        return ""required""
+
+
+check = IMDSv1Disabled()
+"
+CKV_AWS_8,Ensure all data stored in the Launch configuration EBS is securely encrypted,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/LaunchConfigurationEBSEncryption.py,"from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class LaunchConfigurationEBSEncryption(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure all data stored in the Launch configuration EBS is securely encrypted""
+        id = ""CKV_AWS_8""
+        supported_resources = ['AWS::AutoScaling::LaunchConfiguration']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf) -> CheckResult:
+        """"""
+        Looks for encryption configuration of device block mapping in an AWS launch configurations
+        https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-as-launchconfig-blockdev-template.html
+        :param conf: aws_launch_configuration configuration
+        :return: <CheckResult>
+        """"""
+        self.evaluated_keys = ['Properties']
+        properties = conf.get('Properties', {})
+        if properties is None:
+            return CheckResult.UNKNOWN
+        block_device_mappings = properties.get('BlockDeviceMappings')
+        if block_device_mappings is None:
+            return CheckResult.UNKNOWN
+        if not isinstance(block_device_mappings, list):
+            return CheckResult.UNKNOWN
+        for idx, block_device_mapping in enumerate(block_device_mappings):
+            if not isi"
+CKV_AWS_80,Ensure MSK Cluster logging is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/MSKClusterLogging.py,"from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class MSKClusterLogging(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure MSK Cluster logging is enabled""
+        id = ""CKV_AWS_80""
+        supported_resources = ['AWS::MSK::Cluster']
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf) -> CheckResult:
+        if 'Properties' in conf.keys():
+            self.evaluated_keys = ['Properties']
+            if 'LoggingInfo' in conf['Properties'].keys():
+                self.evaluated_keys = ['Properties/LoggingInfo']
+                if 'BrokerLogs' in conf['Properties']['LoggingInfo'].keys():
+                    logging = conf['Properties']['LoggingInfo']['BrokerLogs']
+                    types = [""CloudWatchLogs"", ""Firehose"", ""S3""]
+                    for x in types:
+                        if x in logging and 'Enabled' in logging[x] and logging[x]['Enabled'] is True:
+                            return CheckResult.PASSED
+        return CheckResult.FAILED
+
+
+check = MSKClusterLogging()
+"
+CKV_AWS_81,Ensure MSK Cluster encryption in rest and transit is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/MSKClusterEncryption.py,"from typing import Any, List
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class MSKClusterEncryption(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure MSK Cluster encryption in rest and transit is enabled""
+        id = ""CKV_AWS_81""
+        supported_resources = ['AWS::MSK::Cluster']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf) -> Any:
+        # Note: As long as the 'EncryptionInfo' block is specified, the cluster
+        # will be encrypted at rest even if 'DataVolumeKMSKeyId' is not specified
+        if 'Properties' in conf.keys():
+            if 'EncryptionInfo' in conf['Properties'].keys():
+                encryption = conf['Properties']['EncryptionInfo']
+                if 'EncryptionInTransit' in encryption:
+                    transit = encryption['EncryptionInTransit']
+                    if 'ClientBroker' in transit and transit['ClientBroker'] != 'TLS' or \
+                            'InCluster' in transit and transit['InCluster'] is False:
+                        return CheckResult.FAILED
+                return CheckResult.PASSED
+        return CheckResult.FAILED
+
+    def get_evaluated_keys(self) -> List[str]:
+        return ['Properties/EncryptionInfo/EncryptionInTransit/Client"
+CKV_AWS_82,Ensure Athena Workgroup should enforce configuration to prevent client disabling encryption,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/AthenaWorkgroupConfiguration.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class AthenaWorkgroupConfiguration(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Athena Workgroup should enforce configuration to prevent client disabling encryption""
+        id = ""CKV_AWS_82""
+        supported_resources = (""AWS::Athena::WorkGroup"",)
+        categories = (CheckCategories.GENERAL_SECURITY,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/WorkGroupConfiguration/EnforceWorkGroupConfiguration""
+
+
+check = AthenaWorkgroupConfiguration()
+"
+CKV_AWS_83,Ensure Elasticsearch Domain enforces HTTPS,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ElasticsearchDomainEnforceHTTPS.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class ElasticsearchDomainEnforceHTTPS(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Elasticsearch Domain enforces HTTPS""
+        id = ""CKV_AWS_83""
+        supported_resources = (""AWS::Elasticsearch::Domain"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/DomainEndpointOptions/EnforceHTTPS""
+
+
+check = ElasticsearchDomainEnforceHTTPS()
+"
+CKV_AWS_84,Ensure Elasticsearch Domain Logging is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ElasticsearchDomainLogging.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.common.models.enums import CheckCategories, CheckResult
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class ElasticsearchDomainLogging(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Elasticsearch Domain Logging is enabled""
+        id = ""CKV_AWS_84""
+        supported_resources = (""AWS::Elasticsearch::Domain"", ""AWS::OpenSearchService::Domain"")
+        categories = (CheckCategories.LOGGING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        properties = conf.get(""Properties"")
+        if properties:
+            self.evaluated_keys = [""Properties""]
+            options = properties.get(""LogPublishingOptions"")
+            if options:
+                self.evaluated_keys = [""Properties/LogPublishingOptions""]
+                for option_conf in options.values():
+                    if isinstance(option_conf, dict) and option_conf.get(""Enabled""):
+                        return CheckResult.PASSED
+        return CheckResult.FAILED
+
+
+check = ElasticsearchDomainLogging()
+"
+CKV_AWS_85,Ensure DocumentDB Logging is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/DocDBLogging.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+LOG_TYPES = (""profiler"", ""audit"")
+
+
+class DocDBLogging(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure DocumentDB Logging is enabled""
+        id = ""CKV_AWS_85""
+        supported_resources = (""AWS::DocDB::DBCluster"",)
+        categories = (CheckCategories.LOGGING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        properties = conf.get(""Properties"")
+        if properties:
+            logs_exports = properties.get(""EnableCloudwatchLogsExports"")
+            if logs_exports:
+                if any(elem in logs_exports for elem in LOG_TYPES):
+                    return CheckResult.PASSED
+        return CheckResult.FAILED
+
+    def get_evaluated_keys(self) -> list[str]:
+        return [""Properties/EnableCloudwatchLogsExports""]
+
+
+check = DocDBLogging()
+"
+CKV_AWS_86,Ensure CloudFront Distribution has Access Logging enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/CloudfrontDistributionLogging.py,"from checkov.common.models.enums import CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.consts import ANY_VALUE
+
+
+class CloudfrontDistributionLogging(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure CloudFront Distribution has Access Logging enabled""
+        id = ""CKV_AWS_86""
+        supported_resources = ['AWS::CloudFront::Distribution']
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/DistributionConfig/Logging/Bucket'
+
+    def get_expected_value(self):
+        return ANY_VALUE
+
+
+check = CloudfrontDistributionLogging()
+"
+CKV_AWS_87,Redshift cluster should not be publicly accessible,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/RedshiftClusterPubliclyAccessible.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class RedshiftClusterPubliclyAccessible(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Redshift cluster should not be publicly accessible""
+        id = ""CKV_AWS_87""
+        supported_resources = [""AWS::Redshift::Cluster""]
+        categories = [CheckCategories.NETWORKING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/PubliclyAccessible""
+
+    def get_expected_value(self):
+        return False
+
+
+check = RedshiftClusterPubliclyAccessible()
+"
+CKV_AWS_88,EC2 instance should not have public IP.,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/EC2PublicIP.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class EC2PublicIP(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""EC2 instance should not have public IP.""
+        id = ""CKV_AWS_88""
+        supported_resources = ('AWS::EC2::Instance', 'AWS::EC2::LaunchTemplate')
+        categories = (CheckCategories.NETWORKING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        self.evaluated_keys = ['Properties']
+        properties = conf.get('Properties')
+        if properties:
+            # For AWS::EC2::Instance
+            if 'NetworkInterfaces' in properties.keys():
+                network_interfaces = properties['NetworkInterfaces']
+                if isinstance(network_interfaces, list):
+                    for idx, network_interface in enumerate(network_interfaces):
+                        if 'AssociatePublicIpAddress' in network_interface.keys():
+                            if network_interface['AssociatePublicIpAddress'] is True:
+                                self.evaluated_keys = [f'Properties/NetworkInterfaces/[{idx}]/AssociatePublicIpAddress']
+                                return CheckResult.FAILED
+                        else:
+                         "
+CKV_AWS_89,DMS replication instance should not be publicly accessible,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/DMSReplicationInstancePubliclyAccessible.py,"from typing import Any
+
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class DMSReplicationInstancePubliclyAccessible(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""DMS replication instance should not be publicly accessible""
+        id = ""CKV_AWS_89""
+        supported_resources = (""AWS::DMS::ReplicationInstance"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/PubliclyAccessible""
+
+    def get_expected_value(self) -> Any:
+        return False
+
+
+check = DMSReplicationInstancePubliclyAccessible()
+"
+CKV_AWS_90,Ensure DocumentDB TLS is not disabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/DocDBTLS.py,"from typing import List, Any
+
+from checkov.cloudformation.checks.resource.base_resource_negative_value_check import BaseResourceNegativeValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class DocDBTLS(BaseResourceNegativeValueCheck):
+    def __init__(self):
+        name = ""Ensure DocumentDB TLS is not disabled""
+        id = ""CKV_AWS_90""
+        supported_resources = ['AWS::DocDB::DBClusterParameterGroup']
+        categories = [CheckCategories.ENCRYPTION]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self) -> str:
+        return ""Properties/Parameters/tls""
+
+    def get_forbidden_values(self) -> List[Any]:
+        return [""disabled""]
+
+
+check = DocDBTLS()
+"
+CKV_AWS_91,Ensure the ELBv2 (Application/Network) has access logging enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ELBv2AccessLogs.py,"from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class ELBv2AccessLogs(BaseResourceCheck):
+    def __init__(self):
+        name = ""Ensure the ELBv2 (Application/Network) has access logging enabled""
+        id = ""CKV_AWS_91""
+        supported_resources = ['AWS::ElasticLoadBalancingV2::LoadBalancer']
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf):
+        if 'Properties' in conf.keys():
+            self.evaluated_keys = ['Properties']
+            if 'LoadBalancerAttributes' in conf['Properties'].keys():
+                self.evaluated_keys = ['Properties/LoadBalancerAttributes']
+                if isinstance(conf['Properties']['LoadBalancerAttributes'], list):
+                    for item in conf['Properties']['LoadBalancerAttributes']:
+                        if 'Key' in item.keys() and 'Value' in item.keys():
+                            if item['Key'] == ""access_logs.s3.enabled"":
+                                value = item['Value']
+                                if isinstance(value, bool):
+                                    value = str(value).lower()
+                                if value == ""true"":
+                                    return CheckResult.PASSED
+        return CheckResult.FAILED
+
+
+check = ELBv2AccessLogs"
+CKV_AWS_92,Ensure the ELB has access logging enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ELBAccessLogs.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+
+
+class ELBAccessLogs(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure the ELB has access logging enabled""
+        id = ""CKV_AWS_92""
+        supported_resources = ['AWS::ElasticLoadBalancing::LoadBalancer']
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/AccessLoggingPolicy/Enabled'
+
+
+check = ELBAccessLogs()
+"
+CKV_AWS_94,Ensure Glue Data Catalog Encryption is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/GlueDataCatalogEncryption.py,"from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class GlueDataCatalogEncryption(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Glue Data Catalog Encryption is enabled""
+        id = ""CKV_AWS_94""
+        supported_resources = ['AWS::Glue::DataCatalogEncryptionSettings']
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf) -> CheckResult:
+        connection_encrypted = False
+        encrypted_at_rest = False
+        if 'Properties' in conf.keys():
+            self.evaluated_keys = ['Properties']
+            if 'DataCatalogEncryptionSettings' in conf['Properties'].keys():
+                self.evaluated_keys = ['Properties/DataCatalogEncryptionSettings']
+                dc_enc_settings = conf['Properties']['DataCatalogEncryptionSettings']
+                if 'ConnectionPasswordEncryption' in dc_enc_settings.keys():
+                    con_pass_enc = dc_enc_settings['ConnectionPasswordEncryption']
+                    if 'ReturnConnectionPasswordEncrypted' in con_pass_enc.keys():
+                        if con_pass_enc['ReturnConnectionPasswordEncrypted'] is True:
+                            connection_encrypted = True
+
+                if 'EncryptionAtRest' in dc_enc_settings.keys():
+                    enc_"
+CKV_AWS_95,Ensure API Gateway V2 has Access Logging enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/APIGatewayV2AccessLogging.py,"from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+from checkov.common.models.enums import CheckCategories
+from checkov.common.models.consts import ANY_VALUE
+
+
+class APIGatewayV2AccessLogging(BaseResourceValueCheck):
+    def __init__(self):
+        name = ""Ensure API Gateway V2 has Access Logging enabled""
+        id = ""CKV_AWS_95""
+        supported_resources = ['AWS::ApiGatewayV2::Stage', ""AWS::Serverless::HttpApi""]
+        categories = [CheckCategories.LOGGING]
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def get_inspected_key(self):
+        return 'Properties/AccessLogSettings/DestinationArn'
+
+    def get_expected_value(self):
+        return ANY_VALUE
+
+
+check = APIGatewayV2AccessLogging()
+"
+CKV_AWS_96,Ensure all data stored in Aurora is securely encrypted at rest,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/AuroraEncryption.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_value_check import BaseResourceValueCheck
+
+
+class AuroraEncryption(BaseResourceValueCheck):
+    def __init__(self) -> None:
+        name = ""Ensure all data stored in Aurora is securely encrypted at rest""
+        id = ""CKV_AWS_96""
+        supported_resources = (""AWS::RDS::DBCluster"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, dict[str, Any]]) -> CheckResult:
+        # If you specify the SnapshotIdentifier or SourceDBInstanceIdentifier property, don't specify this property.
+        # The value is inherited from the snapshot or source DB instance.
+        # https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-dbcluster.html#cfn-rds-dbcluster-storageencrypted
+        # Doc refers to 'SourceDBInstanceIdentifier' but that is not an available field. This is a doc error. 'SourceDBClusterIdentifier' is correct.
+        properties = conf.get(""Properties"")
+        if properties:
+            if ""SnapshotIdentifier"" in properties.keys() or ""SourceDBClusterIdentifier"" in properties.keys():
+                return CheckResult.UNKNOWN
+        # No snapshot or source DB; Use base class implementation
+        return super"
+CKV_AWS_97,Ensure Encryption in transit is enabled for EFS volumes in ECS Task definitions,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/ECSTaskDefinitionEFSVolumeEncryption.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+
+
+class ECSTaskDefinitionEFSVolumeEncryption(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Encryption in transit is enabled for EFS volumes in ECS Task definitions""
+        id = ""CKV_AWS_97""
+        supported_resources = (""AWS::ECS::TaskDefinition"",)
+        categories = (CheckCategories.ENCRYPTION,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        properties = conf.get(""Properties"")
+        if properties and isinstance(properties, dict):
+            self.evaluated_keys = [""Properties""]
+            volumes = properties.get(""Volumes"")
+            if volumes and isinstance(volumes, list):
+                self.evaluated_keys = [""Properties/Volumes""]
+                for idx, volume in enumerate(volumes):
+                    efs_config = volume.get(""EFSVolumeConfiguration"")
+                    if efs_config and isinstance(efs_config, dict):
+                        self.evaluated_keys = [f""Properties/Volumes/[{idx}]/EFSVolumeConfiguration""]
+                        if efs_config.get(""TransitEncryption"") == ""ENABLED"":
+                            return CheckResult.PASSED
+                        else:
+     "
+CKV_AWS_99,Ensure Glue Security Configuration Encryption is enabled,https://raw.githubusercontent.com/bridgecrewio/checkov/main/checkov/cloudformation/checks/resource/aws/GlueSecurityConfiguration.py,"from __future__ import annotations
+
+from typing import Any
+
+from checkov.common.models.enums import CheckResult, CheckCategories
+from checkov.cloudformation.checks.resource.base_resource_check import BaseResourceCheck
+from checkov.common.util.type_forcers import force_list
+
+
+class GlueSecurityConfiguration(BaseResourceCheck):
+    def __init__(self) -> None:
+        name = ""Ensure Glue Security Configuration Encryption is enabled""
+        id = ""CKV_AWS_99""
+        supported_resources = ('AWS::Glue::SecurityConfiguration',)
+        categories = (CheckCategories.LOGGING,)
+        super().__init__(name=name, id=id, categories=categories, supported_resources=supported_resources)
+
+    def scan_resource_conf(self, conf: dict[str, Any]) -> CheckResult:
+        s3_enc = False
+        cw_enc = False
+        book_enc = False
+        if 'Properties' in conf.keys():
+            self.evaluated_keys = ['Properties']
+            if 'EncryptionConfiguration' in conf['Properties'].keys():
+                self.evaluated_keys = ['Properties/EncryptionConfiguration']
+                enc_conf = conf['Properties']['EncryptionConfiguration']
+
+                if 'CloudWatchEncryption' in enc_conf.keys():
+                    if 'CloudWatchEncryptionMode' in enc_conf['CloudWatchEncryption'].keys():
+                        if enc_conf['CloudWatchEncryption']['CloudWatchEncryptionMode'] != 'DISABLED':
+                            cw_enc = True
+
+                if 'JobBookmarksEncryption' in enc_conf.keys("
