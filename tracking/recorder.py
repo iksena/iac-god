@@ -44,6 +44,7 @@ class ResearchRecorder:
             "cloudformation_template": state["cloudformation_template"],
             "validation_results": state["validation_results"],
             "validation_passed": state["validation_passed"],
+            "deploy_validation_result": state.get("deploy_validation_result"),
             "remediation_history": state["remediation_history"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -62,6 +63,7 @@ class ResearchRecorder:
             "llm_calls_total": len(state["llm_call_log"]),
             "llm_call_log": state["llm_call_log"],
             "validation_results": state["validation_results"],
+            "deploy_validation_result": state.get("deploy_validation_result"),
         }
         (self.output_dir / "final_report.json").write_text(
             json.dumps(report, indent=2)

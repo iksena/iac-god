@@ -6,6 +6,9 @@ from pathlib import Path
 from state import ValidationResult
 from yamllint import linter
 from yamllint.config import YamlLintConfig
+from config import DeployConfig, DeployTarget, DEFAULT_DEPLOY_CONFIG
+from tools.deploy_validator import validate_deployment
+from state import ValidationResult, DeployValidationResult
 
 _YAMLLINT_CONFIG = YamlLintConfig(
     """
@@ -162,13 +165,37 @@ def validate_trivy(template: str) -> ValidationResult:
                 raw_output="TOOL_NOT_FOUND",
             )
 
-def run_all_validators(template: str) -> tuple[list[ValidationResult], bool]:
-    """Run all 4 validation stages. Returns (results, all_passed)."""
+# Replace only run_all_validators:
+def run_all_validators(
+    template: str,
+    deploy_config: DeployConfig = DEFAULT_DEPLOY_CONFIG,
+) -> tuple[list[ValidationResult], bool, DeployValidationResult]:
+    """
+    Run all validation stages. Returns (static_results, all_passed, deploy_result).
+    Deploy stage only runs if all static validators pass.
+    """
     results = [
         validate_yaml(template),
         validate_cfn_lint(template),
-        # validate_checkov(template),
+        # validate_checkov(template),   # uncomment to re-enable
         validate_trivy(template),
     ]
-    all_passed = all(r["passed"] for r in results)
-    return results, all_passed
+    static_passed = all(r["passed"] for r in results)
+
+    # Stage 5: Deployability check (only if static stages pass)
+    if static_passed and deploy_config.target != DeployTarget.NONE:
+        deploy_result = validate_deployment(template, deploy_config)
+    else:
+        deploy_result = DeployValidationResult(
+            target="skipped",
+            passed=True,
+            stack_id=None,
+            completed_resources=[],
+            failed_resources=[],
+            error_message=None if static_passed else "Skipped: static validation failed",
+            duration_seconds=0.0,
+            deployment_logs=[],
+        )
+
+    all_passed = static_passed and deploy_result["passed"]
+    return results, all_passed, deploy_result

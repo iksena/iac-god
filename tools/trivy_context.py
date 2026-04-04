@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,28 @@ def _extract_check_id(finding: Any) -> str:
     ).strip()
 
 
+def _id_candidates(check_id: str) -> list[str]:
+    raw = (check_id or "").strip()
+    if not raw:
+        return []
+
+    base = raw.upper()
+    candidates: list[str] = [base]
+
+    # CKV/CKV2 may appear with either hyphens or underscores.
+    if base.startswith("CKV"):
+        candidates.append(base.replace("-", "_"))
+        candidates.append(base.replace("_", "-"))
+
+    # Trivy IDs are usually AVD-AWS-####, but findings may include AWS-####.
+    if re.fullmatch(r"AWS-\d{4}", base):
+        candidates.append(f"AVD-{base}")
+    if re.fullmatch(r"AVD-AWS-\d{4}", base):
+        candidates.append(base.removeprefix("AVD-"))
+
+    return list(dict.fromkeys(candidates))
+
+
 @lru_cache(maxsize=1)
 def _load_policy_map() -> dict[str, dict]:
     """Load CSV once and return {check_id: policy_row}."""
@@ -24,7 +47,11 @@ def _load_policy_map() -> dict[str, dict]:
         return {}
     with _CSV_PATH.open(encoding="utf-8") as fh:
         reader = csv.DictReader(fh)
-        return {row["check_id"]: row for row in reader if row.get("check_id")}
+        return {
+            str(row["check_id"]).strip().upper(): row
+            for row in reader
+            if row.get("check_id")
+        }
 
 
 def get_trivy_policy_context(findings: list[Any]) -> str:
@@ -42,10 +69,14 @@ def get_trivy_policy_context(findings: list[Any]) -> str:
             continue
         seen.add(check_id)
 
-        row = policy_map.get(check_id)
+        row = None
+        for candidate in _id_candidates(check_id):
+            row = policy_map.get(candidate)
+            if row:
+                break
         if row:
             blocks.append(
-                f"### [{check_id}] {row.get('check_name', '')}\n"
+                f"### [{row.get('check_id', check_id)}] {row.get('check_name', '')}\n"
                 f"```rego\n{row.get('source_code', '')}\n```"
             )
 

@@ -8,6 +8,16 @@ class ValidationResult(TypedDict):
     errors: list[str]
     raw_output: str
 
+class DeployValidationResult(TypedDict):
+    target: str                     # "localstack" | "aws" | "skipped"
+    passed: bool
+    stack_id: Optional[str]
+    completed_resources: list[str]
+    failed_resources: list[dict]    # [{"resource": str, "reason": str}]
+    error_message: Optional[str]
+    duration_seconds: float
+    deployment_logs: list[str]
+
 class RemediationHistory(TypedDict):
     iteration: int
     errors: list[ValidationResult]
@@ -34,6 +44,7 @@ class GraphState(TypedDict):
     # --- Validation state ---
     validation_results: list[ValidationResult]
     validation_passed: bool
+    deploy_validation_result: Optional[DeployValidationResult]
     
     # --- Remediation history (all iterations) ---
     remediation_history: list[RemediationHistory]

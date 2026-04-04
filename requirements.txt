@@ -1,9 +1,11 @@
 langgraph>=0.2.0
 langchain>=0.2.0
-openai>=1.30.0          # For OpenRouter (OpenAI-compatible)
-anthropic>=0.30.0       # For Claude direct
+openai>=1.30.0
+anthropic>=0.30.0
 pyyaml>=6.0
 cfn-lint>=1.0.0
 checkov>=3.2.0
-dotenv
-yamllint
+python-dotenv>=1.0.0
+yamllint>=1.35.0
+boto3>=1.34.0
+requests>=2.31.0 

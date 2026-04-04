@@ -1,17 +1,19 @@
 # main.py
 import uuid
-import json
 import argparse
 from graph import build_graph
 from state import GraphState
 from tracking.recorder import ResearchRecorder
-from config import DEFAULT_CONFIG, LLMProvider
+from config import DEFAULT_CONFIG, DEFAULT_DEPLOY_CONFIG, LLMProvider, DeployTarget, DeployConfig
+from functools import partial
 
 def run_pipeline(
     user_request: str,
     max_iterations: int = 5,
     provider: str = "openrouter",
     model: str | None = None,
+    deploy_target: str = "localstack",
+    localstack_endpoint: str | None = None,
 ) -> GraphState:
 
     # Configure provider
@@ -21,10 +23,16 @@ def run_pipeline(
     else:
         DEFAULT_CONFIG.provider = LLMProvider.OPENROUTER
         DEFAULT_CONFIG.model = model or "arcee-ai/trinity-large-preview:free"
+    
+    # Configure deploy target
+    deploy_config = DeployConfig(
+        target=DeployTarget(deploy_target),
+        localstack_endpoint=localstack_endpoint or DEFAULT_DEPLOY_CONFIG.localstack_endpoint,
+    )
 
     run_id = str(uuid.uuid4())[:8]
     recorder = ResearchRecorder(run_id=run_id)
-    graph = build_graph(recorder)
+    graph = build_graph(recorder, deploy_config=deploy_config)
 
     # Initialize the Grounded Objectives Document
     initial_state: GraphState = {
@@ -39,12 +47,14 @@ def run_pipeline(
         "llm_call_log": [],
         "final_template": None,
         "run_id": run_id,
+        "deploy_validation_result": None,
     }
 
     print(f"\n{'='*60}")
     print(f"IaC Multi-Agent System | Run ID: {run_id}")
     print(f"Model: {DEFAULT_CONFIG.model}")
     print(f"Max iterations: {max_iterations}")
+    print(f"Deploy target: {deploy_target.upper()}")
     print(f"{'='*60}")
 
     # Execute the graph
@@ -71,6 +81,18 @@ if __name__ == "__main__":
     parser.add_argument("--provider", choices=["openrouter", "claude"],
                         default="openrouter")
     parser.add_argument("--model", type=str, default=None)
+    parser.add_argument(
+        "--deploy-target",
+        choices=["none", "localstack", "aws"],
+        default="localstack",
+        help="Deploy each iteration's template to validate actual deployability",
+    )
+    parser.add_argument(
+        "--localstack-endpoint",
+        type=str,
+        default=None,
+        help="Override LocalStack endpoint (default: http://localhost:4566)",
+    )
     args = parser.parse_args()
 
     result = run_pipeline(
@@ -78,4 +100,6 @@ if __name__ == "__main__":
         max_iterations=args.max_iterations,
         provider=args.provider,
         model=args.model,
+        deploy_target=args.deploy_target,
+        localstack_endpoint=args.localstack_endpoint,
     )
