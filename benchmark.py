@@ -21,6 +21,24 @@ class BenchmarkConfig:
     model: str | None
 
 
+CSV_RESULT_FIELDS = [
+    "row_number",
+    "ground_truth_path",
+    "run_id",
+    "status",
+    "final_validation_passed",
+    "iterations_used",
+    "llm_calls_total",
+    "token_all_tokens",
+    "token_input_tokens",
+    "token_output_tokens",
+    "token_prompt_tokens",
+    "token_completion_tokens",
+    "duration_seconds",
+    "error_message",
+]
+
+
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
@@ -103,8 +121,86 @@ def _row_slice(rows: list[dict[str, str]], start_row: int, max_rows: int | None)
     return sliced
 
 
+def _build_summary(
+    config: BenchmarkConfig,
+    selected_row_count: int,
+    attempted: int,
+    pass_count: int,
+    pass_at_1_count: int,
+    total_iterations: int,
+    total_llm_calls: int,
+    aggregate_tokens: dict[str, int],
+    started_at: str,
+    completed_at: str,
+    elapsed: float,
+) -> dict[str, Any]:
+    return {
+        "dataset": str(config.dataset_path),
+        "started_at": started_at,
+        "completed_at": completed_at,
+        "duration_seconds": elapsed,
+        "provider": config.provider,
+        "model": config.model,
+        "max_iterations": config.max_iterations,
+        "rows_requested": selected_row_count,
+        "rows_attempted": attempted,
+        "rows_passed": pass_count,
+        "pass_rate": (pass_count / attempted) if attempted else 0.0,
+        "pass_at_1": (pass_at_1_count / attempted) if attempted else 0.0,
+        "total_iterations": total_iterations,
+        "avg_iterations": (total_iterations / attempted) if attempted else 0.0,
+        "total_llm_calls": total_llm_calls,
+        "avg_llm_calls": (total_llm_calls / attempted) if attempted else 0.0,
+        "token_usage_total": aggregate_tokens,
+        "token_usage_avg": {
+            key: (value / attempted if attempted else 0.0)
+            for key, value in aggregate_tokens.items()
+        },
+    }
+
+
+def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(payload) + "\n")
+
+
+def _row_to_csv(payload: dict[str, Any]) -> dict[str, Any]:
+    token_usage = payload.get("token_usage", {})
+    return {
+        "row_number": payload.get("row_number"),
+        "ground_truth_path": payload.get("ground_truth_path"),
+        "run_id": payload.get("run_id"),
+        "status": payload.get("status"),
+        "final_validation_passed": payload.get("final_validation_passed"),
+        "iterations_used": payload.get("iterations_used"),
+        "llm_calls_total": payload.get("llm_calls_total"),
+        "token_all_tokens": token_usage.get("all_tokens"),
+        "token_input_tokens": token_usage.get("input_tokens"),
+        "token_output_tokens": token_usage.get("output_tokens"),
+        "token_prompt_tokens": token_usage.get("prompt_tokens"),
+        "token_completion_tokens": token_usage.get("completion_tokens"),
+        "duration_seconds": payload.get("duration_seconds"),
+        "error_message": payload.get("error_message"),
+    }
+
+
+def _append_csv(path: Path, payload: dict[str, Any]) -> None:
+    with path.open("a", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=CSV_RESULT_FIELDS)
+        writer.writerow(_row_to_csv(payload))
+
+
 def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
     config.output_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = config.output_dir / "summary.json"
+    jsonl_path = config.output_dir / "results.jsonl"
+    csv_path = config.output_dir / "results.csv"
+
+    # Initialize incremental output files.
+    jsonl_path.write_text("", encoding="utf-8")
+    with csv_path.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=CSV_RESULT_FIELDS)
+        writer.writeheader()
 
     with config.dataset_path.open(newline="", encoding="utf-8") as fh:
         reader = csv.DictReader(fh)
@@ -131,12 +227,68 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
     print(f"Benchmark start | rows={len(selected_rows)} | dataset={config.dataset_path}")
     print(f"{'=' * 80}")
 
+    # Write an initial empty summary so dashboards can start polling immediately.
+    initial_summary = _build_summary(
+        config=config,
+        selected_row_count=len(selected_rows),
+        attempted=0,
+        pass_count=0,
+        pass_at_1_count=0,
+        total_iterations=0,
+        total_llm_calls=0,
+        aggregate_tokens=aggregate_tokens,
+        started_at=started_at,
+        completed_at=started_at,
+        elapsed=0.0,
+    )
+    summary_path.write_text(json.dumps(initial_summary, indent=2), encoding="utf-8")
+
     for i, row in enumerate(selected_rows, start=1):
         row_number = _safe_int(row.get("row_number"), config.start_row + i - 1)
         prompt = (row.get("prompt") or "").strip()
 
         if not prompt:
             print(f"\n[Benchmark] Skipping row {row_number}: empty prompt")
+            result_payload = {
+                "row_number": row_number,
+                "ground_truth_path": row.get("ground_truth_path"),
+                "prompt": prompt,
+                "run_id": None,
+                "status": "skipped_empty_prompt",
+                "error_message": "Prompt is empty",
+                "final_validation_passed": False,
+                "iterations_used": 0,
+                "llm_calls_total": 0,
+                "token_usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "all_tokens": 0,
+                },
+                "iteration_records": [],
+                "validation_results_final": [],
+                "remediation_history": [],
+                "duration_seconds": 0.0,
+            }
+            rows_out.append(result_payload)
+            _append_jsonl(jsonl_path, result_payload)
+            _append_csv(csv_path, result_payload)
+
+            interim_summary = _build_summary(
+                config=config,
+                selected_row_count=len(selected_rows),
+                attempted=len(rows_out),
+                pass_count=pass_count,
+                pass_at_1_count=pass_at_1_count,
+                total_iterations=total_iterations,
+                total_llm_calls=total_llm_calls,
+                aggregate_tokens=aggregate_tokens,
+                started_at=started_at,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                elapsed=round(time.time() - started_ts, 3),
+            )
+            summary_path.write_text(json.dumps(interim_summary, indent=2), encoding="utf-8")
             continue
 
         print(f"\n[Benchmark] ({i}/{len(selected_rows)}) Running row {row_number}")
@@ -205,33 +357,41 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
 
         rows_out.append(result_payload)
 
+        # Incremental persistence after every finished row.
+        _append_jsonl(jsonl_path, result_payload)
+        _append_csv(csv_path, result_payload)
+        interim_summary = _build_summary(
+            config=config,
+            selected_row_count=len(selected_rows),
+            attempted=len(rows_out),
+            pass_count=pass_count,
+            pass_at_1_count=pass_at_1_count,
+            total_iterations=total_iterations,
+            total_llm_calls=total_llm_calls,
+            aggregate_tokens=aggregate_tokens,
+            started_at=started_at,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            elapsed=round(time.time() - started_ts, 3),
+        )
+        summary_path.write_text(json.dumps(interim_summary, indent=2), encoding="utf-8")
+
     completed_at = datetime.now(timezone.utc).isoformat()
     elapsed = round(time.time() - started_ts, 3)
     attempted = len(rows_out)
 
-    summary = {
-        "dataset": str(config.dataset_path),
-        "started_at": started_at,
-        "completed_at": completed_at,
-        "duration_seconds": elapsed,
-        "provider": config.provider,
-        "model": config.model,
-        "max_iterations": config.max_iterations,
-        "rows_requested": len(selected_rows),
-        "rows_attempted": attempted,
-        "rows_passed": pass_count,
-        "pass_rate": (pass_count / attempted) if attempted else 0.0,
-        "pass_at_1": (pass_at_1_count / attempted) if attempted else 0.0,
-        "total_iterations": total_iterations,
-        "avg_iterations": (total_iterations / attempted) if attempted else 0.0,
-        "total_llm_calls": total_llm_calls,
-        "avg_llm_calls": (total_llm_calls / attempted) if attempted else 0.0,
-        "token_usage_total": aggregate_tokens,
-        "token_usage_avg": {
-            key: (value / attempted if attempted else 0.0)
-            for key, value in aggregate_tokens.items()
-        },
-    }
+    summary = _build_summary(
+        config=config,
+        selected_row_count=len(selected_rows),
+        attempted=attempted,
+        pass_count=pass_count,
+        pass_at_1_count=pass_at_1_count,
+        total_iterations=total_iterations,
+        total_llm_calls=total_llm_calls,
+        aggregate_tokens=aggregate_tokens,
+        started_at=started_at,
+        completed_at=completed_at,
+        elapsed=elapsed,
+    )
 
     # Persist benchmark outputs.
     (config.output_dir / "results.json").write_text(
@@ -239,14 +399,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         encoding="utf-8",
     )
 
-    with (config.output_dir / "results.jsonl").open("w", encoding="utf-8") as fh:
-        for row in rows_out:
-            fh.write(json.dumps(row) + "\n")
-
-    (config.output_dir / "summary.json").write_text(
-        json.dumps(summary, indent=2),
-        encoding="utf-8",
-    )
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     print(f"\n[Benchmark] Finished in {elapsed}s")
     print(f"[Benchmark] Output dir: {config.output_dir}")
