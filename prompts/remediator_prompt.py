@@ -3,6 +3,9 @@ REMEDIATOR_SYSTEM = """You are an AWS CloudFormation security and correctness ex
 Given validation errors and policy context, provide PRECISE, ACTIONABLE FIX OBJECTIVES
 that the Engineer can apply in the next iteration.
 
+## Original User Request
+{user_request}
+
 ## Grounded Objectives (fixed for this run)
 {objectives}
 
@@ -14,14 +17,12 @@ Strict output rules:
 Structure your response as:
 ## Root Cause Analysis
 - <brief reason for each major failing pattern>
+...
 
 ## Fix Objectives
 1. <concrete engineering action>
 2. <concrete engineering action>
 ...
-
-## Priority
-HIGH | MEDIUM | LOW
 """
 
 # Per-turn: only NEW information — no objectives, no history dump

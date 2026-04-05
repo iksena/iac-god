@@ -30,11 +30,10 @@ def validator_agent(
         print(f"  [{'deploy':10s}] {deploy_status} ({deploy_result['duration_seconds']}s)")
 
     updated_state = {
-        **state,
         "validation_results": results,
         "validation_passed": all_passed,
         "deploy_validation_result": deploy_result,
     }
 
-    recorder.save_iteration_snapshot(updated_state)
+    recorder.save_iteration_snapshot({**state, **updated_state})
     return updated_state

@@ -1,6 +1,5 @@
 # state.py
-from typing import TypedDict, Annotated, Optional
-import operator
+from typing import TypedDict, Optional
 
 class ValidationResult(TypedDict):
     stage: str          # "yaml" | "cfn-lint" | "checkov" | "trivy"
@@ -48,6 +47,14 @@ def compact_message_history(history: list[Message]) -> list[Message]:
 
     return compacted
 
+MAX_HISTORY_PAIRS = 5  # keep last 5 user+assistant pairs = 10 messages
+
+def append_and_cap(history: list[Message], user_msg: Message, assistant_msg: Message) -> list[Message]:
+    updated = history + [user_msg, assistant_msg]
+    # Always keep system msg if present, then cap the tail
+    pairs = updated[-MAX_HISTORY_PAIRS * 2:]
+    return pairs
+
 class GraphState(TypedDict):
     # --- Core inputs ---
     user_request: str
@@ -69,14 +76,14 @@ class GraphState(TypedDict):
     max_iterations: int
     
     # --- Research tracking (all LLM conversations) ---
-    llm_call_log: Annotated[list[LLMCallRecord], operator.add]
+    llm_call_log: list[LLMCallRecord]
 
     # --- Per-agent conversation histories (NEW) ---
     # Each agent returns only the new [user_msg, assistant_msg] pair.
     # operator.add means LangGraph concatenates the returned pair onto the accumulated history.
-    planner_history:    Annotated[list[Message], operator.add]
-    engineer_history:   Annotated[list[Message], operator.add]
-    remediator_history: Annotated[list[Message], operator.add]
+    planner_history:    list[Message]
+    engineer_history:   list[Message]
+    remediator_history: list[Message]
     
     # --- Final output ---
     final_template: Optional[str]

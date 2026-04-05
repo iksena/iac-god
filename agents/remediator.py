@@ -1,12 +1,23 @@
 # agents/remediator.py
 from datetime import datetime, timezone
 import json
-from state import GraphState, RemediationHistory, Message, compact_message_history
+from state import GraphState, RemediationHistory, Message, compact_message_history, append_and_cap
 from prompts.remediator_prompt import REMEDIATOR_SYSTEM, REMEDIATOR_USER
 from tracking.recorder import ResearchRecorder
 from agents.engineer import _build_client, _call_llm_with_history
 from tools.checkov_context import get_checkov_policy_context
 from tools.trivy_context import get_trivy_policy_context
+
+
+def _dedupe_preserve_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
 
 
 def _extract_checkov_findings(validation_results: list[dict]) -> list[dict[str, str]]:
@@ -69,7 +80,12 @@ def _build_validation_errors_text(state: GraphState) -> str:
     for result in state["validation_results"]:
         if result["passed"]:
             continue
-        errors_text = "\n".join(f"  - {error}" for error in result["errors"])
+        deduped_errors = _dedupe_preserve_order(
+            [str(error) for error in result.get("errors", []) if str(error).strip()]
+        )
+        if not deduped_errors:
+            continue
+        errors_text = "\n".join(f"  - {error}" for error in deduped_errors)
         error_blocks.append(f"### {result['stage'].upper()} Errors\n{errors_text}")
 
     deploy_result = state.get("deploy_validation_result")
@@ -87,7 +103,8 @@ def _build_validation_errors_text(state: GraphState) -> str:
         if not deploy_errors:
             deploy_errors.append("Deployment failed with no structured error details.")
 
-        errors_text = "\n".join(f"  - {error}" for error in deploy_errors)
+        deduped_deploy_errors = _dedupe_preserve_order(deploy_errors)
+        errors_text = "\n".join(f"  - {error}" for error in deduped_deploy_errors)
         error_blocks.append(
             f"### DEPLOYABILITY Errors ({deploy_result['target'].upper()})\n{errors_text}"
         )
@@ -102,6 +119,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
 
     # Objectives injected ONCE into system prompt
     system = REMEDIATOR_SYSTEM.format(
+        user_request=state["user_request"],
         objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"]))
     )
 
@@ -142,9 +160,8 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
 
     print(f"[Remediator] Suggestions generated. Routing back to Engineer.")
     return {
-        **state,
         "remediation_history": state["remediation_history"] + [new_history_entry],
         "current_iteration": iteration + 1,
         "llm_call_log": state["llm_call_log"] + [llm_record],
-        "remediator_history": [user_msg, assistant_msg],
+        "remediator_history": append_and_cap(state["remediator_history"], user_msg, assistant_msg),
     }

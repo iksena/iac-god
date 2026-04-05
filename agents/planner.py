@@ -1,5 +1,5 @@
 # agents/planner.py
-from state import GraphState, Message, compact_message_history
+from state import GraphState, Message, compact_message_history, append_and_cap
 from config import DEFAULT_CONFIG, LLMProvider
 from prompts.planner_prompt import PLANNER_SYSTEM, PLANNER_USER
 from tracking.recorder import ResearchRecorder
@@ -74,8 +74,7 @@ def planner_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
 
     print(f"[Planner] Generated {len(objectives)} objectives.")
     return {
-        **state,
         "objectives": objectives,
         "llm_call_log": state["llm_call_log"] + [llm_record],
-        "planner_history": [user_msg, assistant_msg],
+        "planner_history": append_and_cap(state["planner_history"], user_msg, assistant_msg),
     }

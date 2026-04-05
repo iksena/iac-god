@@ -1,5 +1,5 @@
 # agents/engineer.py
-from state import GraphState, Message, compact_message_history
+from state import GraphState, Message, compact_message_history, append_and_cap
 from config import DEFAULT_CONFIG, LLMProvider
 from prompts.engineer_prompt import (
     ENGINEER_SYSTEM, ENGINEER_USER_INITIAL,
@@ -15,6 +15,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     client, model = _build_client()
 
     system = ENGINEER_SYSTEM.format(
+        user_request=state["user_request"],
         objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"]))
     )
 
@@ -53,10 +54,9 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
 
     print(f"[Engineer] Template generated ({len(template.splitlines())} lines).")
     return {
-        **state,
         "cloudformation_template": template,
         "llm_call_log": state["llm_call_log"] + [llm_record],
-        "engineer_history": [user_msg, assistant_msg],
+        "engineer_history": append_and_cap(state["engineer_history"], user_msg, assistant_msg),
     }
 
 
