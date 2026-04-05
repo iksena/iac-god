@@ -7,6 +7,7 @@ from tracking.recorder import ResearchRecorder
 from agents.engineer import _build_client, _call_llm_with_history
 from tools.checkov_context import get_checkov_policy_context
 from tools.trivy_context import get_trivy_policy_context
+from tools.cfn_graph_context import get_cfn_graph_context_for_state  # ← NEW
 
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
@@ -113,32 +114,34 @@ def _build_validation_errors_text(state: GraphState) -> str:
         return "No validation errors reported."
     return "\n\n".join(error_blocks)
 
+
 def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     iteration = state["current_iteration"]
     print(f"\n[Remediator] Analyzing errors (iteration {iteration})...")
 
-    # Objectives injected ONCE into system prompt
     system = REMEDIATOR_SYSTEM.format(
         user_request=state["user_request"],
         objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"]))
     )
 
-    # Only NEW information goes in user turn:
-    # - current template (not in remediator's own history — cross-agent boundary)
-    # - current validation errors (brand new this iteration)
-    # - policy context (brand new this iteration)
     validation_errors_text = _build_validation_errors_text(state)
-    policy_source_context = _build_policy_source_context(state["validation_results"])
+    policy_source_context  = _build_policy_source_context(state["validation_results"])
+
+    cfn_graph_context  = get_cfn_graph_context_for_state(
+        validation_results=state.get("validation_results"),
+        deploy_validation_result=state.get("deploy_validation_result"),
+    )
+    print(f"[Remediator] CFN graph context: {len(cfn_graph_context)} chars")
 
     user_content = REMEDIATOR_USER.format(
         iteration=iteration,
         template=state["cloudformation_template"],
         validation_errors=validation_errors_text,
         policy_source_context=policy_source_context,
+        cfn_graph_context=cfn_graph_context,
     )
     user_msg: Message = {"role": "user", "content": user_content}
 
-    # Full accumulated history + new user turn
     messages = compact_message_history(state["remediator_history"]) + [user_msg]
 
     client, model = _build_client()

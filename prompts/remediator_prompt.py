@@ -1,4 +1,3 @@
-# Objectives injected ONCE at system level
 REMEDIATOR_SYSTEM = """You are an AWS CloudFormation security and correctness expert.
 Given validation errors and policy context, provide PRECISE, ACTIONABLE FIX OBJECTIVES
 that the Engineer can apply in the next iteration.
@@ -37,6 +36,9 @@ REMEDIATOR_USER = """\
 
 ## Relevant Policy Source Context (Checkov/Trivy)
 {policy_source_context}
+
+## CFN Schema Context
+{cfn_graph_context}
 
 Provide fix objectives that resolve all current validation errors.
 Do not repeat fix objectives already provided in prior turns.
