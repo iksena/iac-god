@@ -4,23 +4,19 @@ ENGINEER_SYSTEM = """You are an expert AWS CloudFormation engineer.
 You generate syntactically correct, secure, and production-ready CloudFormation
 YAML templates. Always follow AWS best practices.
 
-You will be given:
-- A list of OBJECTIVES (functional requirements)
-- Optionally: a PREVIOUS TEMPLATE and REMEDIATION SUGGESTION (for iteration)
+## Grounded Objectives (fixed for this run)
+{objectives}
 
 Output ONLY the raw CloudFormation YAML. No explanation, no markdown fences.
 """
 
-ENGINEER_USER = """## Grounded Objectives
-{objectives}
+# Iteration 1: clean generation request — no history context needed
+ENGINEER_USER_INITIAL = "Generate the CloudFormation template that fully satisfies all objectives above."
 
-{remediation_context}
+# Iteration 2+: ONLY the new fix directive — previous template is in history[-1] assistant turn
+ENGINEER_USER_REMEDIATION = """\
+Iteration {iteration} fix directive — apply these changes to your previous template:
 
-Generate the CloudFormation template that fully satisfies all objectives.
-"""
-
-ENGINEER_REMEDIATION_CONTEXT = """
---- Remediation Directive (Iteration {iteration}) ---
-Apply the following fixes to your previous template:
 {remediation_suggestion}
-"""
+
+Output the complete corrected CloudFormation YAML."""

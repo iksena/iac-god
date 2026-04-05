@@ -2,49 +2,51 @@
 from state import GraphState, Message, compact_message_history
 from config import DEFAULT_CONFIG, LLMProvider
 from prompts.engineer_prompt import (
-    ENGINEER_SYSTEM, ENGINEER_USER,
-    ENGINEER_REMEDIATION_CONTEXT,
+    ENGINEER_SYSTEM, ENGINEER_USER_INITIAL,
+    ENGINEER_USER_REMEDIATION,
 )
 from tracking.recorder import ResearchRecorder
 
 
 def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
-    """CGO Stage 2: Code Generation with conversation history."""
     iteration = state["current_iteration"]
     print(f"\n[Engineer] Generating CFN template (iteration {iteration})...")
 
     client, model = _build_client()
 
-    remediation_context = ""
-    if state["remediation_history"]:
+    system = ENGINEER_SYSTEM.format(
+        objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"]))
+    )
+
+    is_remediation = bool(state["remediation_history"])
+
+    if not is_remediation:
+        # Iteration 1: simple generation request — no history yet
+        user_content = ENGINEER_USER_INITIAL
+    else:
+        # Iteration 2+: only carry NEW information — the latest fix directive
+        # The previous template is already in engineer_history[-1] assistant turn
+        # The suggestion text is already in engineer_history[-2] user turn (via prior remediation context)
         latest = state["remediation_history"][-1]
-        remediation_context = ENGINEER_REMEDIATION_CONTEXT.format(
+        user_content = ENGINEER_USER_REMEDIATION.format(
             iteration=latest["iteration"],
             remediation_suggestion=latest["suggestion"],
         )
 
-    objectives_text = "\n".join(
-        f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"])
-    )
-    user_content = ENGINEER_USER.format(
-        objectives=objectives_text,
-        remediation_context=remediation_context,
-    )
     user_msg: Message = {"role": "user", "content": user_content}
 
-    # Full history (prior turns) + current user turn
-    messages = compact_message_history(list(state["engineer_history"])) + [user_msg]
+    # Full accumulated history + new user turn (no duplication — history carries prior turns)
+    messages = compact_message_history(state["engineer_history"]) + [user_msg]
 
-    content, usage = _call_llm_with_history(client, model, ENGINEER_SYSTEM, messages)
+    content, usage = _call_llm_with_history(client, model, system, messages)
     template = _strip_yaml_fences(content)
-
     assistant_msg: Message = {"role": "assistant", "content": content}
 
     llm_record = recorder.record_llm_call(
         state=state,
         agent="engineer",
         model=model,
-        prompt=f"SYSTEM:\n{ENGINEER_SYSTEM}\n\nUSER:\n{user_content}",
+        prompt=f"SYSTEM:\n{system}\n\nUSER:\n{user_content}",
         response=content,
         token_usage=usage,
     )

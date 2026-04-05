@@ -97,43 +97,39 @@ def _build_validation_errors_text(state: GraphState) -> str:
     return "\n\n".join(error_blocks)
 
 def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
-    """Analyzes validation errors and produces fix suggestions with conversation history."""
     iteration = state["current_iteration"]
     print(f"\n[Remediator] Analyzing errors (iteration {iteration})...")
 
-    validation_errors_text = _build_validation_errors_text(state)
-    prior_count = len(state["remediation_history"])
-    history_note = (
-        f"You have already made {prior_count} prior suggestion(s), visible in this conversation. "
-        "Do not repeat a suggestion that has already been tried."
-    ) if prior_count > 0 else "No prior remediations."
-
-    objectives_text = "\n".join(
-        f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"])
+    # Objectives injected ONCE into system prompt
+    system = REMEDIATOR_SYSTEM.format(
+        objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"]))
     )
+
+    # Only NEW information goes in user turn:
+    # - current template (not in remediator's own history — cross-agent boundary)
+    # - current validation errors (brand new this iteration)
+    # - policy context (brand new this iteration)
+    validation_errors_text = _build_validation_errors_text(state)
     policy_source_context = _build_policy_source_context(state["validation_results"])
 
     user_content = REMEDIATOR_USER.format(
-        objectives=objectives_text,
         iteration=iteration,
         template=state["cloudformation_template"],
         validation_errors=validation_errors_text,
         policy_source_context=policy_source_context,
-        remediation_history=history_note,
     )
     user_msg: Message = {"role": "user", "content": user_content}
 
-    # Full history + current user turn
-    messages = compact_message_history(list(state["remediator_history"])) + [user_msg]
+    # Full accumulated history + new user turn
+    messages = compact_message_history(state["remediator_history"]) + [user_msg]
 
     client, model = _build_client()
-    content, usage = _call_llm_with_history(client, model, REMEDIATOR_SYSTEM, messages)
-
+    content, usage = _call_llm_with_history(client, model, system, messages)
     assistant_msg: Message = {"role": "assistant", "content": content}
 
     llm_record = recorder.record_llm_call(
         state=state, agent="remediator", model=model,
-        prompt=f"SYSTEM:\n{REMEDIATOR_SYSTEM}\n\nUSER:\n{user_content}",
+        prompt=f"SYSTEM:\n{system}\n\nUSER:\n{user_content}",
         response=content, token_usage=usage,
     )
 
