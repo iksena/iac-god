@@ -19,13 +19,8 @@ ENGINEER_USER = """## Grounded Objectives
 Generate the CloudFormation template that fully satisfies all objectives.
 """
 
-ENGINEER_REMEDIATION_CONTEXT = """## Previous Template (Iteration {iteration})
-```yaml
-{previous_template}
-```
-
-## Remediation Suggestion
+ENGINEER_REMEDIATION_CONTEXT = """
+--- Remediation Directive (Iteration {iteration}) ---
+Apply the following fixes to your previous template:
 {remediation_suggestion}
-
-Apply the remediation suggestion to fix all identified issues.
 """

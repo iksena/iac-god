@@ -1,11 +1,10 @@
 # agents/remediator.py
 from datetime import datetime, timezone
 import json
-from state import GraphState, RemediationHistory
-from config import DEFAULT_CONFIG, LLMProvider
+from state import GraphState, RemediationHistory, Message, compact_message_history
 from prompts.remediator_prompt import REMEDIATOR_SYSTEM, REMEDIATOR_USER
 from tracking.recorder import ResearchRecorder
-from agents.engineer import _build_client, _call_llm
+from agents.engineer import _build_client, _call_llm_with_history
 from tools.checkov_context import get_checkov_policy_context
 from tools.trivy_context import get_trivy_policy_context
 
@@ -98,50 +97,46 @@ def _build_validation_errors_text(state: GraphState) -> str:
     return "\n\n".join(error_blocks)
 
 def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
-    """
-    Analyzes validation errors against the Grounded Objectives Document
-    and produces remediation suggestions for the Engineer's next iteration.
-    """
+    """Analyzes validation errors and produces fix suggestions with conversation history."""
     iteration = state["current_iteration"]
-    print(f"\n[Remediator] Analyzing errors and generating fix suggestions (iteration {iteration})...")
+    print(f"\n[Remediator] Analyzing errors (iteration {iteration})...")
 
-    # Format all validation errors for the prompt (static + deployability)
     validation_errors_text = _build_validation_errors_text(state)
-
-    # Format remediation history
-    history_text = "No previous remediations." if not state["remediation_history"] else \
-        "\n".join(
-            # f"Iteration {h['iteration']}: {h['suggestion'][:200]}..."
-            f"Iteration {h['iteration']}: {h['suggestion']}"
-            for h in state["remediation_history"]
-        )
+    prior_count = len(state["remediation_history"])
+    history_note = (
+        f"You have already made {prior_count} prior suggestion(s), visible in this conversation. "
+        "Do not repeat a suggestion that has already been tried."
+    ) if prior_count > 0 else "No prior remediations."
 
     objectives_text = "\n".join(
         f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"])
     )
     policy_source_context = _build_policy_source_context(state["validation_results"])
-    prompt = REMEDIATOR_USER.format(
+
+    user_content = REMEDIATOR_USER.format(
         objectives=objectives_text,
         iteration=iteration,
         template=state["cloudformation_template"],
         validation_errors=validation_errors_text,
         policy_source_context=policy_source_context,
-        remediation_history=history_text,
+        remediation_history=history_note,
     )
+    user_msg: Message = {"role": "user", "content": user_content}
+
+    # Full history + current user turn
+    messages = compact_message_history(list(state["remediator_history"])) + [user_msg]
 
     client, model = _build_client()
-    content, usage = _call_llm(client, model, REMEDIATOR_SYSTEM, prompt)
+    content, usage = _call_llm_with_history(client, model, REMEDIATOR_SYSTEM, messages)
+
+    assistant_msg: Message = {"role": "assistant", "content": content}
 
     llm_record = recorder.record_llm_call(
-        state=state,
-        agent="remediator",
-        model=model,
-        prompt=f"SYSTEM:\n{REMEDIATOR_SYSTEM}\n\nUSER:\n{prompt}",
-        response=content,
-        token_usage=usage,
+        state=state, agent="remediator", model=model,
+        prompt=f"SYSTEM:\n{REMEDIATOR_SYSTEM}\n\nUSER:\n{user_content}",
+        response=content, token_usage=usage,
     )
 
-    # Append to remediation history (immutable log)
     new_history_entry: RemediationHistory = {
         "iteration": iteration,
         "errors": state["validation_results"],
@@ -153,6 +148,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     return {
         **state,
         "remediation_history": state["remediation_history"] + [new_history_entry],
-        "current_iteration": iteration + 1,   # Increment iteration counter
+        "current_iteration": iteration + 1,
         "llm_call_log": state["llm_call_log"] + [llm_record],
+        "remediator_history": [user_msg, assistant_msg],
     }

@@ -1,6 +1,5 @@
 # tracking/recorder.py
 import json
-import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from state import LLMCallRecord, GraphState
@@ -49,6 +48,9 @@ class ResearchRecorder:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         snapshot_path.write_text(json.dumps(snapshot, indent=2))
+        self._write_agent_history("planner", state["planner_history"])
+        self._write_agent_history("engineer", state["engineer_history"])
+        self._write_agent_history("remediator", state["remediator_history"])
 
     def save_final_report(self, state: GraphState):
         """Save complete research report at end of run."""
@@ -69,3 +71,36 @@ class ResearchRecorder:
             json.dumps(report, indent=2)
         )
         print(f"\n[Recorder] Run complete. Report saved to: {self.output_dir}/final_report.json")
+
+    def _write_agent_history(self, agent: str, history: list[dict]) -> None:
+        history_path = self.output_dir / f"{agent}_history.txt"
+        history_path.write_text(
+            self._format_history(agent, history),
+            encoding="utf-8",
+        )
+
+    def _format_history(self, agent: str, history: list[dict]) -> str:
+        lines: list[str] = [
+            f"Agent: {agent}",
+            f"Run ID: {self.run_id}",
+            f"Updated: {datetime.now(timezone.utc).isoformat()}",
+            "",
+        ]
+
+        if not history:
+            lines.append("No conversation history recorded yet.")
+            return "\n".join(lines) + "\n"
+
+        turn = 1
+        for index in range(0, len(history), 2):
+            user_msg = history[index]
+            assistant_msg = history[index + 1] if index + 1 < len(history) else None
+
+            lines.append(f"Turn {turn}")
+            lines.append(f"[user]\n{user_msg['content']}")
+            if assistant_msg is not None:
+                lines.append(f"[assistant]\n{assistant_msg['content']}")
+            lines.append("")
+            turn += 1
+
+        return "\n".join(lines).rstrip() + "\n"

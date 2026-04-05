@@ -1,5 +1,5 @@
 # agents/engineer.py
-from state import GraphState
+from state import GraphState, Message, compact_message_history
 from config import DEFAULT_CONFIG, LLMProvider
 from prompts.engineer_prompt import (
     ENGINEER_SYSTEM, ENGINEER_USER,
@@ -7,44 +7,44 @@ from prompts.engineer_prompt import (
 )
 from tracking.recorder import ResearchRecorder
 
+
 def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
-    """
-    CGO Stage 2: Code Generation.
-    Generates CloudFormation template grounded in objectives (+ remediation if iterating).
-    """
+    """CGO Stage 2: Code Generation with conversation history."""
     iteration = state["current_iteration"]
     print(f"\n[Engineer] Generating CFN template (iteration {iteration})...")
 
     client, model = _build_client()
 
-    # Build remediation context if this is a re-generation
     remediation_context = ""
     if state["remediation_history"]:
         latest = state["remediation_history"][-1]
         remediation_context = ENGINEER_REMEDIATION_CONTEXT.format(
             iteration=latest["iteration"],
-            previous_template=state["cloudformation_template"],
             remediation_suggestion=latest["suggestion"],
         )
 
     objectives_text = "\n".join(
         f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"])
     )
-    prompt = ENGINEER_USER.format(
+    user_content = ENGINEER_USER.format(
         objectives=objectives_text,
         remediation_context=remediation_context,
     )
+    user_msg: Message = {"role": "user", "content": user_content}
 
-    content, usage = _call_llm(client, model, ENGINEER_SYSTEM, prompt)
+    # Full history (prior turns) + current user turn
+    messages = compact_message_history(list(state["engineer_history"])) + [user_msg]
 
-    # Strip markdown fences if model added them
+    content, usage = _call_llm_with_history(client, model, ENGINEER_SYSTEM, messages)
     template = _strip_yaml_fences(content)
+
+    assistant_msg: Message = {"role": "assistant", "content": content}
 
     llm_record = recorder.record_llm_call(
         state=state,
         agent="engineer",
         model=model,
-        prompt=f"SYSTEM:\n{ENGINEER_SYSTEM}\n\nUSER:\n{prompt}",
+        prompt=f"SYSTEM:\n{ENGINEER_SYSTEM}\n\nUSER:\n{user_content}",
         response=content,
         token_usage=usage,
     )
@@ -54,7 +54,9 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         **state,
         "cloudformation_template": template,
         "llm_call_log": state["llm_call_log"] + [llm_record],
+        "engineer_history": [user_msg, assistant_msg],
     }
+
 
 def _strip_yaml_fences(text: str) -> str:
     lines = text.strip().split("\n")
@@ -63,6 +65,7 @@ def _strip_yaml_fences(text: str) -> str:
     if lines and lines[-1].startswith("```"):
         lines = lines[:-1]
     return "\n".join(lines)
+
 
 def _build_client():
     if DEFAULT_CONFIG.provider == LLMProvider.OPENROUTER:
@@ -77,14 +80,13 @@ def _build_client():
             api_key=DEFAULT_CONFIG.anthropic_api_key
         ), DEFAULT_CONFIG.model
 
-def _call_llm(client, model, system, prompt):
+
+def _call_llm_with_history(client, model, system, messages):
+    """Call LLM with full message history (multi-turn)."""
     if DEFAULT_CONFIG.provider == LLMProvider.OPENROUTER:
         r = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
+            messages=[{"role": "system", "content": system}] + messages,
             temperature=DEFAULT_CONFIG.temperature,
             max_tokens=DEFAULT_CONFIG.max_tokens,
         )
@@ -96,7 +98,7 @@ def _call_llm(client, model, system, prompt):
         import anthropic as ant
         r = client.messages.create(
             model=model, system=system,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             temperature=DEFAULT_CONFIG.temperature,
             max_tokens=DEFAULT_CONFIG.max_tokens,
         )

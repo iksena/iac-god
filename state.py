@@ -33,6 +33,21 @@ class LLMCallRecord(TypedDict):
     timestamp: str
     token_usage: Optional[dict]
 
+class Message(TypedDict):
+    role: str       # "system" | "user" | "assistant"
+    content: str
+
+
+def compact_message_history(history: list[Message]) -> list[Message]:
+    compacted: list[Message] = []
+
+    for message in history:
+        if compacted and compacted[-1] == message:
+            continue
+        compacted.append(message)
+
+    return compacted
+
 class GraphState(TypedDict):
     # --- Core inputs ---
     user_request: str
@@ -55,6 +70,13 @@ class GraphState(TypedDict):
     
     # --- Research tracking (all LLM conversations) ---
     llm_call_log: Annotated[list[LLMCallRecord], operator.add]
+
+    # --- Per-agent conversation histories (NEW) ---
+    # Each agent returns only the new [user_msg, assistant_msg] pair.
+    # operator.add means LangGraph concatenates the returned pair onto the accumulated history.
+    planner_history:    Annotated[list[Message], operator.add]
+    engineer_history:   Annotated[list[Message], operator.add]
+    remediator_history: Annotated[list[Message], operator.add]
     
     # --- Final output ---
     final_template: Optional[str]

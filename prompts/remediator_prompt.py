@@ -16,6 +16,7 @@ Structure your response as:
 ## Fix Objectives
 1. <objective written as a concrete engineering action>
 2. <objective written as a concrete engineering action>
+...
 
 ## Priority
 HIGH | MEDIUM | LOW — based on security impact and blast radius
@@ -35,7 +36,7 @@ REMEDIATOR_USER = """## Grounded Objectives
 ## Relevant Policy Source Context (Checkov/Trivy)
 {policy_source_context}
 
-## Remediation History (previous iterations)
+## Remediation History
 {remediation_history}
 
 Provide fix objectives that resolve all current validation errors.

@@ -1,5 +1,5 @@
 # agents/planner.py
-from state import GraphState
+from state import GraphState, Message, compact_message_history
 from config import DEFAULT_CONFIG, LLMProvider
 from prompts.planner_prompt import PLANNER_SYSTEM, PLANNER_USER
 from tracking.recorder import ResearchRecorder
@@ -15,23 +15,23 @@ def build_llm_client(config=DEFAULT_CONFIG):
         import anthropic
         return anthropic.Anthropic(api_key=config.anthropic_api_key), config.model
 
+
 def planner_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
-    """
-    CGO Stage 1: Objective Generation.
-    Generates grounded functional objectives from the user request.
-    """
-    print(f"\n[Planner] Generating objectives for iteration {state['current_iteration']}...")
+    """CGO Stage 1: Objective Generation with conversation history."""
+    iteration = state["current_iteration"]
+    print(f"\n[Planner] Generating objectives (iteration {iteration})...")
 
     client, model = build_llm_client()
-    prompt = PLANNER_USER.format(user_request=state["user_request"])
+    user_msg: Message = {"role": "user", "content": PLANNER_USER.format(
+        user_request=state["user_request"]
+    )}
+
+    messages = compact_message_history(list(state["planner_history"])) + [user_msg]
 
     if DEFAULT_CONFIG.provider == LLMProvider.OPENROUTER:
         response = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": PLANNER_SYSTEM},
-                {"role": "user", "content": prompt},
-            ],
+            messages=[{"role": "system", "content": PLANNER_SYSTEM}] + messages,
             temperature=DEFAULT_CONFIG.temperature,
             max_tokens=DEFAULT_CONFIG.max_tokens,
         )
@@ -45,7 +45,7 @@ def planner_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         response = client.messages.create(
             model=model,
             system=PLANNER_SYSTEM,
-            messages=[{"role": "user", "content": prompt}],
+            messages=messages,
             temperature=DEFAULT_CONFIG.temperature,
             max_tokens=DEFAULT_CONFIG.max_tokens,
         )
@@ -55,19 +55,19 @@ def planner_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
             "output_tokens": response.usage.output_tokens,
         }
 
-    # Parse objectives from numbered list
+    assistant_msg: Message = {"role": "assistant", "content": content}
+
     objectives = [
         line.strip().lstrip("0123456789. ").strip()
         for line in content.strip().split("\n")
         if line.strip() and line[0].isdigit()
     ]
 
-    # Record LLM call for research tracking
     llm_record = recorder.record_llm_call(
         state=state,
         agent="planner",
         model=model,
-        prompt=f"SYSTEM:\n{PLANNER_SYSTEM}\n\nUSER:\n{prompt}",
+        prompt=f"SYSTEM:\n{PLANNER_SYSTEM}\n\nUSER:\n{user_msg['content']}",
         response=content,
         token_usage=usage,
     )
@@ -77,4 +77,5 @@ def planner_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         **state,
         "objectives": objectives,
         "llm_call_log": state["llm_call_log"] + [llm_record],
+        "planner_history": [user_msg, assistant_msg],
     }
