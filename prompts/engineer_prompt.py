@@ -22,4 +22,4 @@ Iteration {iteration} fix directive — apply these changes to your previous tem
 
 {remediation_suggestion}
 
-Output the complete corrected CloudFormation YAML."""
+These objectives can override previous objectives. Output the complete corrected CloudFormation YAML."""

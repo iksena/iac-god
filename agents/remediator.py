@@ -7,7 +7,7 @@ from tracking.recorder import ResearchRecorder
 from agents.engineer import _build_client, _call_llm_with_history
 from tools.checkov_context import get_checkov_policy_context
 from tools.trivy_context import get_trivy_policy_context
-from tools.cfn_graph_context import get_cfn_graph_context_for_state  # ← NEW
+from tools.cfn_graph_context_rag import get_cfn_graph_context_for_state
 
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:

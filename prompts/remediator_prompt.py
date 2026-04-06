@@ -5,7 +5,7 @@ that the Engineer can apply in the next iteration.
 ## Original User Request
 {user_request}
 
-## Grounded Objectives (fixed for this run)
+## Grounded Objectives
 {objectives}
 
 Strict output rules:
@@ -41,5 +41,6 @@ REMEDIATOR_USER = """\
 {cfn_graph_context}
 
 Provide fix objectives that resolve all current validation errors.
+These objectives can be new or can override previous objectives.
 Do not repeat fix objectives already provided in prior turns.
 """
