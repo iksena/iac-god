@@ -91,23 +91,49 @@ def _build_validation_errors_text(state: GraphState) -> str:
 
     deploy_result = state.get("deploy_validation_result")
     if deploy_result and not deploy_result["passed"] and deploy_result["target"] != "skipped":
-        deploy_errors: list[str] = []
+        target = deploy_result["target"].upper()
+        lines: list[str] = []
 
-        if deploy_result.get("error_message"):
-            deploy_errors.append(str(deploy_result["error_message"]))
+        # ── Failed resources (most informative — list first) ──────────────
+        failed = deploy_result.get("failed_resources", [])
+        if failed:
+            lines.append("**Failed resources:**")
+            for fr in failed:
+                # Support both old {"resource","reason"} and new {"logical_name","status_reason"}
+                name   = fr.get("logical_name") or fr.get("resource") or "unknown"
+                reason = fr.get("status_reason") or fr.get("reason") or "no reason provided"
+                lines.append(f"  - `{name}`: {reason}")
+        else:
+            # No structured failed_resources — show the top-level error message
+            if deploy_result.get("error_message"):
+                lines.append(f"**Error:** {deploy_result['error_message']}")
 
-        for failed in deploy_result.get("failed_resources", []):
-            resource = str(failed.get("resource") or "unknown")
-            reason = str(failed.get("reason") or "no reason provided")
-            deploy_errors.append(f"{resource}: {reason}")
+        # ── Completed resources (context for what worked) ─────────────────
+        completed = deploy_result.get("completed_resources", [])
+        if completed:
+            lines.append(f"**Resources that completed successfully:** {', '.join(f'`{r}`' for r in completed)}")
 
-        if not deploy_errors:
-            deploy_errors.append("Deployment failed with no structured error details.")
+        # ── Deployment event log (filtered to actionable lines) ───────────
+        deploy_logs = deploy_result.get("deployment_logs", [])
+        actionable_log_lines = [
+            line for line in deploy_logs
+            if any(kw in str(line) for kw in ("FAILED", "ERROR", "timed out", "does not exist", "InvalidAMI", "parameter"))
+        ]
+        if actionable_log_lines:
+            lines.append("**Deployment event log (errors only):**")
+            for log_line in actionable_log_lines:
+                lines.append(f"  - {log_line}")
+        elif not failed and deploy_logs:
+            # Fallback: show last 5 log lines when nothing more specific available
+            lines.append("**Last deployment events:**")
+            for log_line in deploy_logs[-5:]:
+                lines.append(f"  - {log_line}")
 
-        deduped_deploy_errors = _dedupe_preserve_order(deploy_errors)
-        errors_text = "\n".join(f"  - {error}" for error in deduped_deploy_errors)
+        if not lines:
+            lines.append("Deployment failed with no structured error details.")
+
         error_blocks.append(
-            f"### DEPLOYABILITY Errors ({deploy_result['target'].upper()})\n{errors_text}"
+            f"### DEPLOYABILITY Errors ({target})\n" + "\n".join(lines)
         )
 
     if not error_blocks:
@@ -130,6 +156,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     cfn_graph_context  = get_cfn_graph_context_for_state(
         validation_results=state.get("validation_results"),
         deploy_validation_result=state.get("deploy_validation_result"),
+        template_yaml=state["cloudformation_template"],
     )
     print(f"[Remediator] CFN graph context: {len(cfn_graph_context)} chars")
 

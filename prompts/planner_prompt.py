@@ -51,7 +51,7 @@ We need a CloudFormation template that creates a VPC, Security Group, S3 Bucket,
 7. Enable Point-in-Time Recovery and server-side encryption on the DynamoDB Table for data durability and security.
 8. Add metadata to suppress cfn_nag and checkov warnings where intentional deviations from default rules exist.
 9. Use CloudFormation intrinsic functions (!Sub, !Ref) for dynamic naming and resource references throughout the template.
-10. Include a proper AWSTemplateFormatVersion, Description, and inline comments to ensure the template follows CloudFormation best practices.
+10. Include a proper AWSTemplateFormatVersion and Description to ensure the template follows CloudFormation best practices.
 </objectives>
 </example>
 
@@ -91,7 +91,6 @@ The instances should automatically mount the EFS file system to /home during boo
 27. Create a PermittedThroughputAlarm CloudWatch alarm using metric math expressions to alert when throughput utilization exceeds 80% for 6 out of 10 datapoints.
 28. Define Outputs to expose the EC2 instance IDs for both instances with descriptions referencing Session Manager connectivity.
 29. Use CloudFormation intrinsic functions (!Ref, !Sub, !GetAtt, !FindInMap, !Select, !GetAZs) throughout for dynamic resource references and cross-region compatibility.
-30. Add descriptive comments and section headers to organize the template into logical groupings: VPC, EFS, EC2, and Monitoring.
 </objectives>
 </example>
 """

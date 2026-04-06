@@ -1,4 +1,5 @@
 # main.py
+from datetime import datetime
 import uuid
 import argparse
 from graph import build_graph
@@ -29,7 +30,8 @@ def run_pipeline(
         localstack_endpoint=localstack_endpoint or DEFAULT_DEPLOY_CONFIG.localstack_endpoint,
     )
 
-    run_id = str(uuid.uuid4())[:8]
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_id = ts + "_" + str(uuid.uuid4())[:8]
     recorder = ResearchRecorder(run_id=run_id)
     graph = build_graph(recorder, deploy_config=deploy_config)
 

@@ -144,7 +144,7 @@ def validate_deployment(
                 passed=False,
                 stack_id=None,
                 completed_resources=[],
-                failed_resources=[{"resource": "template", "reason": param_error}],
+                failed_resources=[{"logical_name": "template", "status_reason": param_error}],
                 error_message=param_error,
                 duration_seconds=round(time.time() - start_time, 2),
                 deployment_logs=deploy_logs,
@@ -162,10 +162,7 @@ def validate_deployment(
                 stack_id=None,
                 completed_resources=[],
                 failed_resources=[
-                    {
-                        "resource": "parameters",
-                        "reason": f"{name} must have a value",
-                    }
+                    {"logical_name": name, "status_reason": "Required parameter has no Default value"}
                     for name in required_params
                 ],
                 error_message=message,
@@ -204,7 +201,7 @@ def validate_deployment(
                 print(f"  [Deploy] {rid}: {status} — {reason}")
                 deploy_logs.append(f"{rid}: {status} - {reason}")
                 if status == "CREATE_FAILED":
-                    failed_resources.append({"resource": rid, "reason": reason})
+                    failed_resources.append({"logical_name": rid, "status_reason": reason})
                 elif status == "CREATE_COMPLETE":
                     completed_resources.append(rid)
 
@@ -230,14 +227,36 @@ def validate_deployment(
                     deployment_logs=deploy_logs,
                 )
 
+            # In the terminal status block — replace the current early return:
+
             elif stack_status in ("CREATE_FAILED", "ROLLBACK_COMPLETE", "ROLLBACK_FAILED", "DELETE_COMPLETE"):
+                time.sleep(1)
+                try:
+                    drain_events = cfn_client.describe_stack_events(StackName=stack_id)["StackEvents"]
+                    for event in sorted(drain_events, key=lambda x: x["Timestamp"]):
+                        if event["EventId"] in seen_events:
+                            continue
+                        seen_events.add(event["EventId"])
+                        rid    = event["LogicalResourceId"]
+                        status = event["ResourceStatus"]
+                        reason = event.get("ResourceStatusReason", "N/A")
+                        print(f"  [Deploy] {rid}: {status} — {reason}")
+                        deploy_logs.append(f"{rid}: {status} - {reason}")
+                        if status == "CREATE_FAILED":
+                            failed_resources.append({"logical_name": rid, "status_reason": reason})
+                        elif status == "CREATE_COMPLETE":
+                            completed_resources.append(rid)
+                except Exception:
+                    pass
+                # ────────────────────────────────────────────────────────────────
+
                 error_msg = (
                     failed_resources[0]["reason"] if failed_resources
                     else f"Stack entered terminal status: {stack_status}"
                 )
                 print(f"[Deploy] ❌ Deployment failed: {error_msg}")
                 _wait_for_stack_deletion(cfn_client, stack_id, stack_name,
-                                         deploy_config.stack_deletion_timeout)
+                                        deploy_config.stack_deletion_timeout)
                 return DeployValidationResult(
                     target=target_name,
                     passed=False,
@@ -272,7 +291,7 @@ def validate_deployment(
             passed=False,
             stack_id=None,
             completed_resources=[],
-            failed_resources=[{"resource": "stack", "reason": str(e)}],
+            failed_resources=[{"logical_name": "stack", "reason": str(e)}],
             error_message=str(e),
             duration_seconds=round(time.time() - start_time, 2),
             deployment_logs=deploy_logs,
@@ -284,7 +303,7 @@ def validate_deployment(
             passed=False,
             stack_id=None,
             completed_resources=[],
-            failed_resources=[{"resource": "stack", "reason": str(e)}],
+            failed_resources=[{"logical_name": "stack", "reason": str(e)}],
             error_message=f"Unexpected error: {str(e)}",
             duration_seconds=round(time.time() - start_time, 2),
             deployment_logs=deploy_logs,
