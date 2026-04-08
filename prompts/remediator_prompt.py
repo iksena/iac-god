@@ -11,6 +11,7 @@ that the Engineer can apply in the next iteration.
 Strict output rules:
 - Do NOT output CloudFormation YAML or code snippets.
 - Return only concise fix objectives and rationale.
+- Do NOT add objectives related with security rules suppression.
 - Do NOT repeat suggestions you have already made in prior turns of this conversation.
 
 Structure your response as:
@@ -39,6 +40,6 @@ REMEDIATOR_USER = """\
 {cfn_graph_context}
 
 Provide fix objectives that resolve all current validation errors.
-These objectives can be new or can override previous objectives.
+These objectives can be new or can override previously defined objectives.
 Do not repeat fix objectives already provided in prior turns.
 """
