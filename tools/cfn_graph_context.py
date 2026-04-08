@@ -1,11 +1,14 @@
 # tools/cfn_graph_context.py
 """
-GraphRAG context tool: given cfn-lint or deploy validation errors, extract
-the AWS resource types and properties that are failing, look them up in the
-pre-built cfn_graph.pkl, and return structured schema context for injection
-into the remediator prompt.
+GraphRAG context tool — graph-only (no BM25/FAISS) fallback path.
 
-Only resources mentioned in errors are included — no template-wide scanning.
+Given pre-extracted error query strings (produced by remediator._extract_error_queries),
+looks up AWS resource types and properties directly in cfn_graph.pkl and returns
+structured schema context for injection into the remediator prompt.
+
+Used when the RAG index is not available. When the RAG index IS available,
+cfn_graph_context_rag.get_cfn_schema_context() supersedes this.
+
 Mirrors the interface of checkov_context.py / trivy_context.py.
 """
 from __future__ import annotations
@@ -20,21 +23,22 @@ import networkx as nx
 
 _GRAPH_PATH = Path(__file__).resolve().parents[1] / "data" / "cfn_graph.pkl"
 
-# "AWS::Service::Resource/PropertyName" — cfn-lint property path format
-_CFN_LINT_PROP_RE = re.compile(
+# Matches any AWS::Service::Resource token (also catches inner types in
+# SSM parameter strings like AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>)
+_AWS_TYPE_RE = re.compile(r"AWS::[A-Za-z0-9]+::[A-Za-z0-9]+")
+
+# Matches "AWS::X::Y/PropName" — cfn-lint property path format
+_CFN_PROP_PATH_RE = re.compile(
     r"(AWS::[A-Za-z0-9]+::[A-Za-z0-9]+)/([A-Za-z0-9]+)"
 )
-# Bare "AWS::Service::Resource" — fallback for both cfn-lint and deploy errors
-_RESOURCE_TYPE_RE = re.compile(r"AWS::[A-Za-z0-9]+::[A-Za-z0-9]+")
 
 
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 # Graph loader
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
 
 @lru_cache(maxsize=1)
 def _load_graph() -> nx.DiGraph | None:
-    """Load cfn_graph.pkl once and cache it for the process lifetime."""
     if not _GRAPH_PATH.exists():
         return None
     with _GRAPH_PATH.open("rb") as fh:
@@ -42,102 +46,88 @@ def _load_graph() -> nx.DiGraph | None:
     return obj[0] if isinstance(obj, tuple) else obj
 
 
-# ---------------------------------------------------------------------------
-# Extraction helpers
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Property-name reverse index
+# Maps lowercase property name → parent resource types that own it.
+# Fixes errors like E3021 where only property names appear (VpcId,
+# SecurityGroupEgress) with no AWS:: type token in the error string.
+# ─────────────────────────────────────────────────────────────────────────────
 
-def _extract_cfnlint_resource_info(
-    validation_results: list[dict],
-) -> tuple[list[str], dict[str, list[str]]]:
-    """
-    Parse cfn-lint validation results.
-
-    Returns:
-        resource_types:  ordered deduplicated list of AWS::X::Y strings
-        property_hints:  {resource_type: [prop_name, ...]} from error paths
-    """
-    resource_types: list[str] = []
-    property_hints: dict[str, list[str]] = {}
-    seen_types: set[str] = set()
-
-    for result in validation_results:
-        if result.get("stage") != "cfn-lint":
+@lru_cache(maxsize=1)
+def _build_prop_index(G: nx.DiGraph) -> dict[str, list[str]]:
+    index: dict[str, list[str]] = {}
+    for node_id, data in G.nodes(data=True):
+        if data.get("ntype") != "Property":
             continue
-
-        for error in result.get("errors", []):
-            error_str = str(error)
-
-            # First: typed property paths "AWS::X::Y/PropName" (most specific)
-            for rtype, prop in _CFN_LINT_PROP_RE.findall(error_str):
-                if rtype not in seen_types:
-                    seen_types.add(rtype)
-                    resource_types.append(rtype)
-                hints = property_hints.setdefault(rtype, [])
-                if prop not in hints:
-                    hints.append(prop)
-
-            # Second: bare resource type mentions not caught above
-            for rtype in _RESOURCE_TYPE_RE.findall(error_str):
-                if rtype not in seen_types:
-                    seen_types.add(rtype)
-                    resource_types.append(rtype)
-
-    return resource_types, property_hints
+        name = (data.get("name") or "").lower()
+        if not name:
+            continue
+        for parent, _ in G.in_edges(node_id):
+            pdata = G.nodes[parent]
+            if pdata.get("ntype") in ("Resource", None) and parent.startswith("AWS::"):
+                index.setdefault(name, []).append(parent)
+    return index
 
 
-def _extract_deploy_resource_info(
-    deploy_validation_result: dict | None,
+# ─────────────────────────────────────────────────────────────────────────────
+# Extraction — operates on pre-cleaned query strings from the remediator
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _extract_resource_info(
+    queries: list[str],
+    G: nx.DiGraph,
 ) -> tuple[list[str], dict[str, list[str]]]:
     """
-    Parse the deploy validation result for resource type mentions in
-    error_message and failed_resources entries.
+    From a list of pre-extracted error query strings, identify:
+      - resource_types: ordered deduplicated AWS::X::Y strings
+      - property_hints: {resource_type: [prop_name, ...]} surfaced first in render
 
-    Returns the same shape as _extract_cfnlint_resource_info so callers
-    can merge them uniformly.
+    Three lookup paths (in order of specificity):
+      1. Explicit "AWS::X::Y/PropName" paths in the query string
+      2. Bare "AWS::X::Y" token matches
+      3. Property-name reverse index (handles E3021-style errors where only
+         property names like "VpcId" or "SecurityGroupEgress" appear)
     """
     resource_types: list[str] = []
     property_hints: dict[str, list[str]] = {}
     seen_types: set[str] = set()
+    prop_index = _build_prop_index(G)
 
-    if not deploy_validation_result:
-        return resource_types, property_hints
-    if deploy_validation_result.get("passed"):
-        return resource_types, property_hints
-    if deploy_validation_result.get("target") == "skipped":
-        return resource_types, property_hints
+    def _add_type(rtype: str) -> None:
+        if rtype not in seen_types:
+            seen_types.add(rtype)
+            resource_types.append(rtype)
 
-    # Collect all free-form error strings from the deploy result
-    error_strings: list[str] = []
-    if deploy_validation_result.get("error_message"):
-        error_strings.append(str(deploy_validation_result["error_message"]))
-    for failed in deploy_validation_result.get("failed_resources", []):
-        for val in failed.values():
-            if val:
-                error_strings.append(str(val))
-    for log_line in deploy_validation_result.get("deployment_logs", []):
-        error_strings.append(str(log_line))
+    def _add_hint(rtype: str, prop: str) -> None:
+        hints = property_hints.setdefault(rtype, [])
+        if prop not in hints:
+            hints.append(prop)
 
-    for error_str in error_strings:
-        # Deploy errors rarely carry "AWS::X::Y/PropName" paths, but handle it
-        for rtype, prop in _CFN_LINT_PROP_RE.findall(error_str):
-            if rtype not in seen_types:
-                seen_types.add(rtype)
-                resource_types.append(rtype)
-            hints = property_hints.setdefault(rtype, [])
-            if prop not in hints:
-                hints.append(prop)
+    for query in queries:
+        # Path 1: explicit property paths "AWS::X::Y/PropName"
+        for rtype, prop in _CFN_PROP_PATH_RE.findall(query):
+            _add_type(rtype)
+            _add_hint(rtype, prop)
 
-        for rtype in _RESOURCE_TYPE_RE.findall(error_str):
-            if rtype not in seen_types:
-                seen_types.add(rtype)
-                resource_types.append(rtype)
+        # Path 2: bare AWS::X::Y tokens (also catches inner types in SSM strings)
+        for rtype in _AWS_TYPE_RE.findall(query):
+            _add_type(rtype)
+
+        # Path 3: property-name reverse lookup
+        # Tokenise on whitespace + strip punctuation — catches "VpcId",
+        # "'SecurityGroupEgress'", "[KeyName]" etc.
+        for token in query.split():
+            token_clean = token.strip("'\"[]().,:")
+            for rtype in prop_index.get(token_clean.lower(), []):
+                _add_type(rtype)
+                _add_hint(rtype, token_clean)
 
     return resource_types, property_hints
 
 
-# ---------------------------------------------------------------------------
-# Context builder
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Renderer
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _build_resource_block(
     G: nx.DiGraph,
@@ -147,28 +137,22 @@ def _build_resource_block(
     max_optional: int = 12,
     max_nested: int = 8,
 ) -> str:
-    """
-    Build a Markdown schema block for a single resource type.
-    Pinned props (from error paths) are surfaced first with full detail.
-    """
     props: list[dict] = []
     ptypes: list[dict] = []
 
     for _, neighbour in G.out_edges(rtype):
         nd = G.nodes[neighbour]
-        ntype = nd.get("ntype", "")
-        if ntype == "Property":
+        if nd.get("ntype") == "Property":
             props.append(nd)
-        elif ntype == "PropertyType":
+        elif nd.get("ntype") == "PropertyType":
             ptypes.append(nd)
 
-    required = [p for p in props if p.get("required")]
-    optional = [p for p in props if not p.get("required")]
+    required  = [p for p in props if p.get("required")]
+    optional  = [p for p in props if not p.get("required")]
     pinned_set = set(pinned_props)
 
     lines: list[str] = [f"### {rtype}"]
 
-    # ── Pinned: properties explicitly named in errors ──────────────────────
     if pinned_props:
         lines.append("**Properties flagged in errors:**")
         for name in pinned_props:
@@ -177,135 +161,108 @@ def _build_resource_block(
                 prim = match.get("primitive_type") or match.get("type") or "Any"
                 req  = "**required**" if match.get("required") else "optional"
                 upd  = match.get("update_type", "")
-                upd_note = f" — UpdateType: {upd}" if upd else ""
-                lines.append(f"  - `{name}` ({prim}, {req}{upd_note})")
-            else:
                 lines.append(
-                    f"  - `{name}` *(not found in spec — invalid property name)*"
+                    f"  - `{name}` ({prim}, {req}"
+                    + (f" — UpdateType: {upd}" if upd else "") + ")"
                 )
+            else:
+                lines.append(f"  - `{name}` *(invalid property name)*")
 
-    # ── Required properties not already pinned ────────────────────────────
-    req_remainder = [p for p in required if p.get("name") not in pinned_set]
-    if req_remainder:
-        req_parts = [
-            f"`{p.get('name','?')}` "
-            f"({p.get('primitive_type') or p.get('type') or 'Any'}, **required**)"
-            for p in req_remainder
+    req_rest = [p for p in required if p.get("name") not in pinned_set]
+    if req_rest:
+        parts = [
+            f"`{p.get('name','?')}` ({p.get('primitive_type') or p.get('type') or 'Any'}, **required**)"
+            for p in req_rest
         ]
-        lines.append("**Other required properties:** " + ", ".join(req_parts))
+        lines.append("**Other required properties:** " + ", ".join(parts))
     elif not pinned_props:
         lines.append("**Required properties:** *(none)*")
 
-    # ── Optional sample (excluding pinned) ────────────────────────────────
-    opt_remainder = [p for p in optional if p.get("name") not in pinned_set]
-    if opt_remainder:
+    opt_rest = [p for p in optional if p.get("name") not in pinned_set]
+    if opt_rest:
         lines.append(f"**Optional properties (first {max_optional}):**")
-        for p in opt_remainder[:max_optional]:
+        for p in opt_rest[:max_optional]:
             name = p.get("name", "?")
             prim = p.get("primitive_type") or p.get("type") or "Any"
             upd  = p.get("update_type", "")
-            upd_note = f" — UpdateType: {upd}" if upd else ""
-            lines.append(f"  - `{name}` ({prim}{upd_note})")
-        remainder = len(opt_remainder) - max_optional
-        if remainder > 0:
-            lines.append(f"  - … and {remainder} more optional properties")
+            lines.append(
+                f"  - `{name}` ({prim}" + (f" — UpdateType: {upd}" if upd else "") + ")"
+            )
+        if len(opt_rest) > max_optional:
+            lines.append(f"  - … and {len(opt_rest) - max_optional} more")
 
-    # ── Nested PropertyTypes ───────────────────────────────────────────────
     if ptypes:
-        nested = [
-            nd.get("name", "?").rsplit(".", 1)[-1]
-            for nd in ptypes[:max_nested]
-        ]
-        lines.append(
-            "**Nested property types:** " + ", ".join(f"`{n}`" for n in nested)
-        )
+        nested = [nd.get("name", "?").rsplit(".", 1)[-1] for nd in ptypes[:max_nested]]
+        lines.append("**Nested types:** " + ", ".join(f"`{n}`" for n in nested))
 
     return "\n".join(lines)
 
 
-# ---------------------------------------------------------------------------
-# Public interface — used directly by remediator agent
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────────────────────────────────────
+# Public interface
+# ─────────────────────────────────────────────────────────────────────────────
 
-def get_cfn_graph_context_for_state(
-    validation_results: list[dict],
-    deploy_validation_result: dict | None = None,
+def get_cfn_graph_context(
+    queries: list[str],
 ) -> str:
     """
-    Build schema context from cfn-lint errors and/or deploy validation errors
-    only. No template-wide scanning — only broken resources get context.
+    Build schema context from pre-extracted error query strings.
 
     Args:
-        validation_results:       state["validation_results"]
-        deploy_validation_result: state["deploy_validation_result"]
+        queries: Human-readable error strings produced by
+                 remediator._extract_error_queries(state). No parsing of
+                 validation_results or deploy logs is done here.
 
-    Returns a Markdown string ready for injection into the remediator prompt,
-    or a short fallback message if nothing is actionable.
+    Returns a Markdown string ready for injection into the remediator prompt.
     """
     G = _load_graph()
     if G is None:
         return "CFN schema graph not available (data/cfn_graph.pkl missing)."
 
-    # --- Extract from cfn-lint errors ---
-    cfnlint_types, cfnlint_hints = _extract_cfnlint_resource_info(
-        validation_results
-    )
+    if not queries:
+        return "No error queries provided."
 
-    # --- Extract from deploy errors ---
-    deploy_types, deploy_hints = _extract_deploy_resource_info(
-        deploy_validation_result
-    )
+    resource_types, property_hints = _extract_resource_info(queries, G)
 
-    # --- Merge: cfn-lint first, then deploy-only types ---
-    all_types = list(dict.fromkeys(cfnlint_types + deploy_types))
+    # Filter: only valid AWS::X::Y types that are Resource nodes (or unknown)
+    # Drops ghost PropertyType nodes and malformed corpus entries
+    valid_types = [
+        rtype for rtype in resource_types
+        if rtype.startswith("AWS::")
+        and G.nodes.get(rtype, {}).get("ntype") in ("Resource", None, "")
+    ]
 
-    if not all_types:
-        return "No AWS resource types identified in cfn-lint or deploy errors."
+    if not valid_types:
+        return (
+            "No AWS resource types identified in errors.\n"
+            "(Errors may reference only property names, SSM parameter types, "
+            "or non-resource constructs.)"
+        )
 
-    # Merge property hints from both sources
-    merged_hints: dict[str, list[str]] = {}
-    for rtype in all_types:
-        hints: list[str] = []
-        for h in cfnlint_hints.get(rtype, []) + deploy_hints.get(rtype, []):
-            if h not in hints:
-                hints.append(h)
-        if hints:
-            merged_hints[rtype] = hints
-
-    # --- Build per-resource blocks ---
     blocks: list[str] = []
-    for rtype in all_types:
+    for rtype in valid_types:
         if rtype not in G:
-            # Still worth noting — type might be entirely invalid
+            # Type mentioned in error but not in spec — still worth flagging
             blocks.append(
                 f"### {rtype}\n"
-                f"*(not found in CFN spec — resource type may be invalid or unsupported)*"
+                f"*(not in CFN spec — may be invalid, region-specific, or "
+                f"an SSM parameter type rather than a deployable resource)*"
             )
             continue
         block = _build_resource_block(
-            G, rtype, pinned_props=merged_hints.get(rtype, [])
+            G, rtype, pinned_props=property_hints.get(rtype, [])
         )
-        blocks.append(block)
+        if block:
+            blocks.append(block)
 
-    # --- Label which source each block came from ---
-    cfnlint_set = set(cfnlint_types)
-    deploy_set  = set(deploy_types)
-
-    labeled_blocks: list[str] = []
-    for rtype, block in zip(all_types, blocks):
-        sources: list[str] = []
-        if rtype in cfnlint_set:
-            sources.append("cfn-lint")
-        if rtype in deploy_set:
-            sources.append("deploy")
-        label = f"*Source: {', '.join(sources)}*" if sources else ""
-        labeled_blocks.append(f"{block}\n{label}" if label else block)
+    if not blocks:
+        return "No renderable schema context found."
 
     header = textwrap.dedent("""\
         Schema context from AWS CloudFormation Resource Specification v243.
         Only resources referenced in current errors are shown.
-        Properties marked *(not found in spec)* are invalid and must be
-        removed or replaced with the correct property name.
+        Properties marked *(invalid property name)* must be removed or
+        replaced with the correct name from the spec below.
 
     """)
-    return header + "\n\n".join(labeled_blocks)
+    return header + "\n\n".join(blocks)

@@ -1,19 +1,8 @@
 """
-GraphRAG context tool — RAG-only multi-route retrieval (no regex).
+GraphRAG context tool — retrieves CFN schema context via BM25 + FAISS + template lookup.
 
-Retrieval architecture:
-  Route A — Template lookup: parse CloudFormation YAML → resolve logical
-             resource names from failed_resources/deploy logs to AWS::X::Y
-             types. Zero ambiguity, zero false positives.
-  Route B — Sparse lexical (BM25): scores error text against corpus docs.
-             Handles cfn-lint rule descriptions, AWS API error codes,
-             property names mentioned in prose.
-  Route C — Dense semantic (FAISS): cosine-KNN over sentence embeddings.
-             Handles paraphrased errors, novel phrasings, deploy messages
-             that share no tokens with spec text.
-
-Results merged via Reciprocal Rank Fusion (RRF). Rendered into Markdown
-schema blocks for injection into the remediator prompt.
+Public interface:
+    get_cfn_schema_context(queries, template_yaml, top_k) -> str
 
 Offline prerequisite (run once via scripts/build_cfn_rag_index.py):
     data/cfn_rag_corpus.jsonl   — one doc per property/resource node
@@ -39,40 +28,32 @@ except ImportError:
     _YAML_OK = False
 
 try:
-    import faiss  # type: ignore
+    import faiss
     _FAISS_OK = True
 except ImportError:
     _FAISS_OK = False
 
 try:
-    from rank_bm25 import BM25Okapi  # type: ignore  # noqa: F401
+    from rank_bm25 import BM25Okapi  # noqa: F401
     _BM25_OK = True
 except ImportError:
     _BM25_OK = False
 
 try:
-    from sentence_transformers import SentenceTransformer  # type: ignore
+    from sentence_transformers import SentenceTransformer
     _ST_OK = True
 except ImportError:
     _ST_OK = False
 
-# ── Paths ────────────────────────────────────────────────────────────────────
 _DATA        = Path(__file__).resolve().parents[1] / "data"
 _GRAPH_PATH  = _DATA / "cfn_graph.pkl"
 _CORPUS_PATH = _DATA / "cfn_rag_corpus.jsonl"
 _FAISS_PATH  = _DATA / "cfn_rag_faiss.index"
 _BM25_PATH   = _DATA / "cfn_rag_bm25.pkl"
 
-_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-
-# RRF constant (standard from literature)
-_RRF_K = 60
-
-# Minimum fused RRF score to include a result when template lookup found nothing
-_MIN_RRF_SCORE = 0.03
-
-# Stages that carry no resource schema information — skip entirely
-_SYNTACTIC_STAGES = {"yaml", "json", "comments"}
+_EMBED_MODEL    = "sentence-transformers/all-MiniLM-L6-v2"
+_RRF_K          = 60
+_MIN_RRF_SCORE  = 0.01
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -80,51 +61,19 @@ _SYNTACTIC_STAGES = {"yaml", "json", "comments"}
 # ─────────────────────────────────────────────────────────────────────────────
 
 class CorpusDoc(NamedTuple):
-    doc_id: str        # "AWS::S3::Bucket" or "AWS::S3::Bucket/BucketEncryption"
+    doc_id: str
     resource_type: str
-    property_name: str  # "" for resource-level docs
+    property_name: str
     text: str
 
 
 class RetrievedNode(NamedTuple):
     resource_type: str
-    property_name: str
     rrf_score: float
     sources: frozenset[str]
-    pinned: bool   # True = came from template lookup (highest confidence)
+    pinned: bool        # True = came from template lookup
+    pinned_props: list[str]
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Pure-string utility helpers (no regex)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _extract_bracketed_names(text: str) -> list[str]:
-    """
-    Extract comma-separated names from the first '[...]' in text.
-    Used to parse cfn-lint E3004 circular dependency lists and
-    deploy ValidationError parameter lists.
-    e.g. "Parameters: [KeyName, SubnetId] must have values"
-         "Circular dependency with [S3Bucket]"
-    """
-    start = text.find("[")
-    end   = text.find("]", start)
-    if start == -1 or end == -1:
-        return []
-    return [n.strip() for n in text[start + 1:end].split(",") if n.strip()]
-
-
-def _extract_quoted_names(text: str) -> list[str]:
-    """
-    Extract single-quoted tokens from cfn-lint error messages.
-    cfn-lint always wraps property names, values, and rule targets
-    in single quotes: "'AccessControl' is a legacy property"
-    Returns every odd-indexed token from split("'") that is non-trivial.
-    """
-    parts = text.split("'")
-    return [
-        parts[i].strip()
-        for i in range(1, len(parts), 2)
-        if len(parts[i].strip()) >= 2
-    ]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Lazy loaders
@@ -143,12 +92,8 @@ def _load_graph() -> nx.DiGraph | None:
 def _load_corpus() -> list[CorpusDoc]:
     if not _CORPUS_PATH.exists():
         return []
-    docs = []
     with _CORPUS_PATH.open() as fh:
-        for line in fh:
-            d = json.loads(line)
-            docs.append(CorpusDoc(**d))
-    return docs
+        return [CorpusDoc(**json.loads(line)) for line in fh]
 
 
 @lru_cache(maxsize=1)
@@ -156,8 +101,7 @@ def _load_faiss():
     if not _FAISS_OK or not _FAISS_PATH.exists():
         return None, []
     index = faiss.read_index(str(_FAISS_PATH))
-    corpus = _load_corpus()
-    return index, [d.doc_id for d in corpus]
+    return index, [d.doc_id for d in _load_corpus()]
 
 
 @lru_cache(maxsize=1)
@@ -171,42 +115,16 @@ def _load_bm25():
 
 @lru_cache(maxsize=1)
 def _load_embedder():
-    if not _ST_OK:
-        return None
-    return SentenceTransformer(_EMBED_MODEL)
-
-@lru_cache(maxsize=1)
-def _build_prop_to_resource_index(G: nx.DiGraph) -> dict[str, set[str]]:
-    """
-    Reverse index: lowercase property name → set of resource types that own it.
-    Built once from graph edges. Used by Route A to resolve cfn-lint errors
-    that name a property ('AccessControl') but not its resource type.
-
-    e.g. {"accesscontrol": {"AWS::S3::Bucket"}, "imageid": {"AWS::EC2::Instance"}}
-    """
-    index: dict[str, set[str]] = {}
-    for node_id, data in G.nodes(data=True):
-        if data.get("ntype") != "Property":
-            continue
-        prop_name = data.get("name", "")
-        if not prop_name:
-            continue
-        for parent, _ in G.in_edges(node_id):
-            parent_data = G.nodes[parent]
-            if parent_data.get("ntype") in ("Resource", None):
-                index.setdefault(prop_name.lower(), set()).add(parent)
-    return index
+    return SentenceTransformer(_EMBED_MODEL) if _ST_OK else None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Route A — Template lookup (replaces regex)
+# Template lookup — the one structural operation that cannot be replaced by RAG
+# Maps logical resource names (only knowable at runtime) to AWS::X::Y types
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_template_resource_map(template_yaml: str | None) -> dict[str, str]:
-    """
-    Parse CloudFormation YAML and return {LogicalName: "AWS::X::Y"}.
-    Returns empty dict on any failure — callers degrade gracefully.
-    """
+    """Returns {LogicalName: "AWS::X::Y"} from CloudFormation YAML."""
     if not template_yaml or not _YAML_OK:
         return {}
     try:
@@ -221,176 +139,33 @@ def _parse_template_resource_map(template_yaml: str | None) -> dict[str, str]:
     except Exception:
         return {}
 
-def _template_lookup_retrieve(
-    validation_results: list[dict],
-    deploy_validation_result: dict | None,
+
+def _template_retrieve(
+    queries: list[str],
     logical_to_type: dict[str, str],
-) -> tuple[dict[str, int], set[str]]:
+) -> dict[str, int]:
+    """
+    Scan query strings for logical resource names that appear in the template map.
+    Token-based: split each query on whitespace and punctuation, check each token.
+    Returns {AWS::X::Y: rank}.
+    """
     ranked: dict[str, int] = {}
-    failed_types: set[str] = set()
     position = 1
 
-    def _add_type(rtype: str, failed: bool = False) -> None:
-        nonlocal position
-        if rtype not in ranked:
-            ranked[rtype] = position
-            position += 1
-        if failed:
-            failed_types.add(rtype)
+    for query in queries:
+        # Tokenise on any non-alphanumeric boundary — covers "S3Bucket:", "[EC2Instance]"
+        tokens = [t.strip("[]().,:'\"") for t in query.split()]
+        for token in tokens:
+            rtype = logical_to_type.get(token)
+            if rtype and rtype not in ranked:
+                ranked[rtype] = position
+                position += 1
 
-    if not deploy_validation_result or deploy_validation_result.get("passed"):
-        return ranked, failed_types
-    if deploy_validation_result.get("target") == "skipped":
-        return ranked, failed_types
-
-    # ── Primary: failed_resources (structured, post-Fix 1) ───────────────────
-    for fr in deploy_validation_result.get("failed_resources", []):
-        logical = fr.get("logical_name") or fr.get("resource") or ""
-        if logical and logical in logical_to_type:
-            _add_type(logical_to_type[logical], failed=True)
-
-    # ── Fallback: deployment_logs parsed by string split, no regex ───────────
-    # Log entries are formatted as "LogicalName: STATUS - reason"
-    # Split on ": " to get the logical name prefix — zero regex involved.
-    for line in deploy_validation_result.get("deployment_logs", []):
-        line_str = str(line)
-        if ": " not in line_str:
-            continue
-        # Take only the part before the first colon-space
-        candidate = line_str.split(": ", 1)[0].strip()
-        if candidate in logical_to_type:
-            is_failed = "FAILED" in line_str
-            _add_type(logical_to_type[candidate], failed=is_failed)
-
-    # ── cfn-lint structured errors ────────────────────────────────────────────
-    for result in validation_results:
-        if result.get("stage") in _SYNTACTIC_STAGES:
-            continue
-        for error in result.get("errors", []):
-            if isinstance(error, dict):
-                logical = error.get("resource") or error.get("logical_id") or ""
-                if logical and logical in logical_to_type:
-                    _add_type(logical_to_type[logical])
-    
-    # ── Pass 3: cfn-lint string errors — logical name from "for resource X" ──
-    # Handles E3004 circular dependency: "for resource S3Bucket"
-    # and "Circular dependency with [S3Bucket]" bracket list.
-    _LOGICAL_MARKERS = ("for resource ", "with resource ", "resource ID ")
-    for result in validation_results:
-        if result.get("stage") in _SYNTACTIC_STAGES:
-            continue
-        for error in result.get("errors", []):
-            if isinstance(error, dict):
-                continue  # already handled in Pass 2 above
-            error_str = str(error)
-
-            # Marker-based: "for resource S3Bucket"
-            for marker in _LOGICAL_MARKERS:
-                if marker in error_str:
-                    tail = error_str.split(marker, 1)[1]
-                    logical = tail.split()[0].rstrip(".,]")
-                    rtype = logical_to_type.get(logical, "")
-                    if rtype:
-                        _add_type(rtype)
-
-            # Bracket list: "[S3Bucket, OtherBucket]"
-            for name in _extract_bracketed_names(error_str):
-                rtype = logical_to_type.get(name, "")
-                if rtype:
-                    _add_type(rtype)
-
-    # ── Pass 4: property-name extraction via single-quote tokens ─────────────
-    # Handles E3045/W3045: "'AccessControl' is a legacy property"
-    # Resolves property name → resource type via reverse graph index.
-    G = _load_graph()
-    if G is not None:
-        prop_index = _build_prop_to_resource_index(G)
-        for result in validation_results:
-            if result.get("stage") in _SYNTACTIC_STAGES:
-                continue
-            for error in result.get("errors", []):
-                for candidate in _extract_quoted_names(str(error)):
-                    for rtype in prop_index.get(candidate.lower(), set()):
-                        _add_type(rtype)
-
-    # ── Pass 5: stack-level deploy error → all template resource types ────────
-    # Handles "Parameters: [KeyName] must have values" (CreateStack rejected
-    # before any resource runs — no logical name available).
-    _STACK_LEVEL_SIGNALS = (
-        "must have values",
-        "does not exist in the template",
-        "Unresolved resource dependencies",
-        "No export named",
-    )
-    if deploy_validation_result and not deploy_validation_result.get("passed"):
-        msg = deploy_validation_result.get("error_message", "") or ""
-        is_stack_level = any(sig in msg for sig in _STACK_LEVEL_SIGNALS)
-
-        # Also stack-level if only "stack" appears in failed_resources
-        failed = deploy_validation_result.get("failed_resources", [])
-        has_only_stack = bool(failed) and all(
-            (fr.get("logical_name") or fr.get("resource", "")) in ("stack", "")
-            for fr in failed
-        )
-
-        if is_stack_level or has_only_stack:
-            for rtype in logical_to_type.values():
-                _add_type(rtype)
-
-    return ranked, failed_types
+    return ranked
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Query construction
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _build_queries(
-    validation_results: list[dict],
-    deploy_validation_result: dict | None,
-) -> list[str]:
-    queries: list[str] = []
-    seen: set[str] = set()
-
-    def _add(s: str) -> None:
-        s = s.strip()
-        if s and s not in seen:
-            seen.add(s)
-            queries.append(s)
-
-    for result in validation_results:
-        stage = result.get("stage", "")
-        if stage in _SYNTACTIC_STAGES:
-            continue
-        for error in result.get("errors", []):
-            if isinstance(error, dict):
-                msg  = error.get("message") or error.get("rule", "")
-                rule = error.get("rule", "")
-                _add(f"[{stage}] {rule} {msg}".strip())
-            else:
-                error_str = str(error)
-                # Strip cfn-lint location dict: everything before last "}: "
-                # "[E3045] {'ColumnNumber': 5, 'LineNumber': 258}: <human message>"
-                # Split on "}: " and keep only the trailing human message.
-                if "}: " in error_str:
-                    human = error_str.split("}: ")[-1].strip()
-                else:
-                    human = error_str
-                _add(f"[{stage}] {human}")
-
-    if deploy_validation_result and not deploy_validation_result.get("passed"):
-        if deploy_validation_result.get("target") != "skipped":
-            if deploy_validation_result.get("error_message"):
-                _add(f"[deploy] {deploy_validation_result['error_message']}")
-            for fr in deploy_validation_result.get("failed_resources", []):
-                reason = fr.get("status_reason") or fr.get("reason") or ""
-                if reason:
-                    _add(f"[deploy] {reason}")
-
-    return queries
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Route B — BM25 (sparse lexical)
+# BM25 retrieval
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _bm25_retrieve(queries: list[str], top_k: int = 10) -> dict[str, int]:
@@ -398,21 +173,20 @@ def _bm25_retrieve(queries: list[str], top_k: int = 10) -> dict[str, int]:
     if bm25 is None or not id_list:
         return {}
 
-    best_scores: dict[str, float] = {}
+    best: dict[str, float] = {}
     for q in queries:
-        tokens = q.lower().split()
-        scores = bm25.get_scores(tokens)
+        scores = bm25.get_scores(q.lower().split())
         for idx, score in enumerate(scores):
             doc_id = id_list[idx]
-            if score > best_scores.get(doc_id, 0.0):
-                best_scores[doc_id] = score
+            if score > best.get(doc_id, 0.0):
+                best[doc_id] = score
 
-    sorted_docs = sorted(best_scores, key=lambda d: best_scores[d], reverse=True)
+    sorted_docs = sorted(best, key=lambda d: best[d], reverse=True)
     return {doc_id: rank + 1 for rank, doc_id in enumerate(sorted_docs[:top_k])}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Route C — FAISS dense semantic
+# FAISS retrieval
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _faiss_retrieve(queries: list[str], top_k: int = 10) -> dict[str, int]:
@@ -422,18 +196,16 @@ def _faiss_retrieve(queries: list[str], top_k: int = 10) -> dict[str, int]:
         return {}
 
     q_vecs = embedder.encode(queries, normalize_embeddings=True).astype("float32")
-
-    best_scores: dict[str, float] = {}
+    best: dict[str, float] = {}
     for q_vec in q_vecs:
         distances, indices = index.search(q_vec[None, :], top_k * 2)
         for dist, idx in zip(distances[0], indices[0]):
-            if idx < 0:
-                continue
-            doc_id = id_list[idx]
-            if float(dist) > best_scores.get(doc_id, -1.0):
-                best_scores[doc_id] = float(dist)
+            if idx >= 0:
+                doc_id = id_list[idx]
+                if float(dist) > best.get(doc_id, -1.0):
+                    best[doc_id] = float(dist)
 
-    sorted_docs = sorted(best_scores, key=lambda d: best_scores[d], reverse=True)
+    sorted_docs = sorted(best, key=lambda d: best[d], reverse=True)
     return {doc_id: rank + 1 for rank, doc_id in enumerate(sorted_docs[:top_k])}
 
 
@@ -450,7 +222,7 @@ def _rrf_merge(*ranked_lists: dict[str, int], k: int = _RRF_K) -> list[tuple[str
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Context renderer
+# Renderer
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _props_for_resource(G: nx.DiGraph, rtype: str) -> tuple[list[dict], list[dict]]:
@@ -466,39 +238,41 @@ def _props_for_resource(G: nx.DiGraph, rtype: str) -> tuple[list[dict], list[dic
 
 def _render_block(
     G: nx.DiGraph,
-    rtype: str,
-    sources: frozenset[str],
-    rrf_score: float,
-    pinned_prop_names: list[str],
+    node: RetrievedNode,
     *,
     max_optional: int = 12,
     max_nested: int = 8,
 ) -> str:
+    rtype = node.resource_type
+
+    if not rtype.startswith("AWS::"):
+        return ""
+    
+    sources_str = ", ".join(sorted(node.sources))
+
     if rtype not in G:
         return (
             f"### {rtype}\n"
-            f"*(not found in CFN spec — resource type may be invalid)*\n"
-            f"*Retrieved via: {', '.join(sorted(sources))} | RRF: {rrf_score:.4f}*"
+            f"*(not in CFN spec)*\n"
+            f"*via: {sources_str} | RRF: {node.rrf_score:.4f}*"
         )
 
-    node_data = G.nodes[rtype]
-    if node_data.get("ntype") not in ("Resource", None):
-        return ""  # filter PropertyType ghost nodes
+    if G.nodes[rtype].get("ntype") not in ("Resource", None):
+        return ""
 
     props, ptypes = _props_for_resource(G, rtype)
     required = [p for p in props if p.get("required")]
     optional = [p for p in props if not p.get("required")]
-    pinned_set = set(pinned_prop_names)
+    pinned_set = set(node.pinned_props)
 
     lines = [
         f"### {rtype}",
-        f"*Retrieved via: {', '.join(sorted(sources))} | RRF: {rrf_score:.4f}*",
+        f"*via: {sources_str} | RRF: {node.rrf_score:.4f}*",
     ]
 
-    # Pinned properties — BM25/FAISS returned a property-level doc for this resource
-    if pinned_prop_names:
-        lines.append("**Properties relevant to errors:**")
-        for name in pinned_prop_names:
+    if node.pinned_props:
+        lines.append("**Properties flagged in errors:**")
+        for name in node.pinned_props:
             match = next((p for p in props if p.get("name") == name), None)
             if match:
                 prim = match.get("primitive_type") or match.get("type") or "Any"
@@ -509,9 +283,8 @@ def _render_block(
                     + (f" — UpdateType: {upd}" if upd else "") + ")"
                 )
             else:
-                lines.append(f"  - `{name}` *(not in spec — invalid property name)*")
+                lines.append(f"  - `{name}` *(invalid property)*")
 
-    # Required remainder
     req_rest = [p for p in required if p.get("name") not in pinned_set]
     if req_rest:
         parts = [
@@ -519,10 +292,7 @@ def _render_block(
             for p in req_rest
         ]
         lines.append("**Required properties:** " + ", ".join(parts))
-    elif not pinned_prop_names:
-        lines.append("**Required properties:** *(none)*")
 
-    # Optional sample
     opt_rest = [p for p in optional if p.get("name") not in pinned_set]
     if opt_rest:
         lines.append(f"**Optional properties (first {max_optional}):**")
@@ -533,9 +303,8 @@ def _render_block(
             lines.append(
                 f"  - `{name}` ({prim}" + (f" — UpdateType: {upd}" if upd else "") + ")"
             )
-        leftover = len(opt_rest) - max_optional
-        if leftover > 0:
-            lines.append(f"  - … and {leftover} more")
+        if len(opt_rest) > max_optional:
+            lines.append(f"  - … and {len(opt_rest) - max_optional} more")
 
     if ptypes:
         nested = [nd.get("name", "?").rsplit(".", 1)[-1] for nd in ptypes[:max_nested]]
@@ -545,98 +314,89 @@ def _render_block(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Public interface
+# Public interface — accepts pre-extracted query strings from the caller
 # ─────────────────────────────────────────────────────────────────────────────
+def _build_prop_index(G: nx.DiGraph) -> dict[str, list[str]]:
+    """Map lowercase property name → [AWS::X::Y, ...] that own it."""
+    index: dict[str, list[str]] = {}
+    for node_id, data in G.nodes(data=True):
+        if data.get("ntype") == "Property":
+            name = (data.get("name") or "").lower()
+            # Walk in-edges to find parent resource
+            for parent, _ in G.in_edges(node_id):
+                if G.nodes[parent].get("ntype") in ("Resource", None):
+                    index.setdefault(name, []).append(parent)
+    return index
 
-def get_cfn_graph_context_for_state(
-    validation_results: list[dict],
-    deploy_validation_result: dict | None = None,
+def get_cfn_schema_context(
+    queries: list[str],
     template_yaml: str | None = None,
     *,
-    top_k_bm25: int = 8,
-    top_k_faiss: int = 8,
+    top_k: int = 8,
 ) -> str:
     """
-    RAG-only GraphRAG context — no regex on error strings.
-
-    Route A: template YAML parse → logical name → resource type (exact)
-    Route B: BM25 lexical match on error text vs corpus
-    Route C: FAISS dense semantic match on error text vs corpus
-
-    Merged via RRF. Template-matched resources are always included;
-    BM25/FAISS results require a minimum RRF score when Route A is empty.
+    Given a list of human-readable error/query strings, retrieve relevant
+    CFN schema context via template lookup + BM25 + FAISS, merged with RRF.
 
     Args:
-        validation_results:       state["validation_results"]
-        deploy_validation_result: state.get("deploy_validation_result")
-        template_yaml:            state.get("cloudformation_template")
+        queries:       Pre-extracted error strings from the caller.
+                       These are the actual error messages — no parsing done here.
+        template_yaml: Raw CloudFormation YAML, used only to resolve logical
+                       resource names (e.g. "S3Bucket") to AWS::X::Y types.
+        top_k:         Candidates per BM25/FAISS route.
     """
     G = _load_graph()
     if G is None:
         return "CFN schema graph not available (data/cfn_graph.pkl missing)."
 
-    # Route A — template lookup (no regex, no ambiguity)
+    if not queries:
+        return "No error queries provided."
+
     logical_to_type = _parse_template_resource_map(template_yaml)
-    template_ranked, failed_types = _template_lookup_retrieve(
-        validation_results, deploy_validation_result, logical_to_type
-    )
 
-    if G is not None:
-        prop_index = _build_prop_to_resource_index(G)
-        _early_pinned: dict[str, list[str]] = {}
-        for result in validation_results:
-            if result.get("stage") in _SYNTACTIC_STAGES:
-                continue
-            for error in result.get("errors", []):
-                for candidate in _extract_quoted_names(str(error)):
-                    for rtype in prop_index.get(candidate.lower(), set()):
-                        _early_pinned.setdefault(rtype, [])
-                        if candidate not in _early_pinned[rtype]:
-                            _early_pinned[rtype].append(candidate)
+    template_ranked = _template_retrieve(queries, logical_to_type)
+    bm25_ranked     = _bm25_retrieve(queries, top_k=top_k)
+    faiss_ranked    = _faiss_retrieve(queries, top_k=top_k)
 
-    # Build error queries for BM25/FAISS
-    queries = _build_queries(validation_results, deploy_validation_result)
+    prop_index = _build_prop_index(G)
+    prop_ranked: dict[str, int] = {}
+    position = 1
+    for query in queries:
+        # Check each whitespace token — "VpcId", "SecurityGroupEgress" will match
+        for token in query.split():
+            token_clean = token.strip("'\"[]().,:")
+            for rtype in prop_index.get(token_clean.lower(), []):
+                if rtype not in prop_ranked:
+                    prop_ranked[rtype] = position
+                    position += 1
 
-    if not queries and not template_ranked:
-        return (
-            "No CFN resource schema context applicable to current errors.\n"
-            "(Errors appear to be syntactic — YAML formatting, indentation, etc.)"
-        )
+    fused = _rrf_merge(template_ranked, prop_ranked, bm25_ranked, faiss_ranked)
 
-    # Routes B and C
-    bm25_ranked  = _bm25_retrieve(queries, top_k=top_k_bm25)  if queries else {}
-    faiss_ranked = _faiss_retrieve(queries, top_k=top_k_faiss) if queries else {}
-
-    # RRF merge across all three routes
-    fused = _rrf_merge(template_ranked, bm25_ranked, faiss_ranked)
-
-    # Gate: template hits always pass; soft routes need minimum score
-    filtered_fused = [
+    # Template hits always pass; soft routes need minimum RRF score
+    filtered = [
         (doc_id, score) for doc_id, score in fused
-        if doc_id in template_ranked
-        or (score >= _MIN_RRF_SCORE)
+        if doc_id in template_ranked or score >= _MIN_RRF_SCORE
     ]
 
-    if not filtered_fused:
+    if not filtered:
         return (
             "No CFN resource schema context applicable to current errors.\n"
-            "(No resource types identified, errors may be syntactic or value-only.)"
+            "(No resource types identified — errors may be syntactic or value-only.)"
         )
 
-    # Resolve to resource-level, collect property-level hits as pinned props
-    seen_resources: dict[str, RetrievedNode] = {}
-    pinned_props_map: dict[str, list[str]] = dict(_early_pinned)
+    # Resolve to resource-level; collect property-level hits as pinned props
+    seen: dict[str, RetrievedNode] = {}
+    pinned_props: dict[str, list[str]] = {}
 
-    for doc_id, rrf_score in filtered_fused:
+    for doc_id, rrf_score in filtered:
         if "/" in doc_id:
             rtype, prop = doc_id.split("/", 1)
-            # Property-level doc hit → promote as pinned prop for this resource
             if prop:
-                pinned_props_map.setdefault(rtype, [])
-                if prop not in pinned_props_map[rtype]:
-                    pinned_props_map[rtype].append(prop)
+                pinned_props.setdefault(rtype, [])
+                if prop not in pinned_props[rtype]:
+                    pinned_props[rtype].append(prop)
         else:
-            rtype, prop = doc_id, ""
+            rtype = doc_id
 
         sources: set[str] = set()
         if doc_id in template_ranked or rtype in template_ranked:
@@ -648,61 +408,46 @@ def get_cfn_graph_context_for_state(
 
         pinned = rtype in template_ranked
 
-        if rtype not in seen_resources:
-            seen_resources[rtype] = RetrievedNode(
+        if rtype not in seen:
+            seen[rtype] = RetrievedNode(
                 resource_type=rtype,
-                property_name=prop,
                 rrf_score=rrf_score,
                 sources=frozenset(sources),
                 pinned=pinned,
+                pinned_props=[],
             )
         else:
-            existing = seen_resources[rtype]
-            seen_resources[rtype] = existing._replace(
+            existing = seen[rtype]
+            seen[rtype] = existing._replace(
                 sources=existing.sources | frozenset(sources),
                 rrf_score=max(existing.rrf_score, rrf_score),
                 pinned=existing.pinned or pinned,
             )
 
-    if not seen_resources:
-        return "No AWS resource types identified in errors."
+    # Attach pinned props after all merging
+    final_nodes = [
+        node._replace(pinned_props=pinned_props.get(node.resource_type, []))
+        for node in seen.values()
+    ]
 
-    # Render — failed resources first, then template-matched, then soft-route by RRF
     ordered = sorted(
-        seen_resources.values(),
-        key=lambda n: (
-            n.resource_type not in failed_types,  # failed first
-            not n.pinned,                          # template-matched second
-            -n.rrf_score,                          # highest RRF last tiebreak
-        ),
+        final_nodes,
+        key=lambda n: (not n.pinned, -n.rrf_score),
     )
 
-    blocks: list[str] = []
-    for node in ordered:
-        block = _render_block(
-            G,
-            node.resource_type,
-            sources=node.sources,
-            rrf_score=node.rrf_score,
-            pinned_prop_names=pinned_props_map.get(node.resource_type, []),
-        )
-        if block:
-            blocks.append(block)
-
+    blocks = [b for n in ordered if (b := _render_block(G, n))]
     if not blocks:
         return "No renderable schema context found."
 
-    routes_active = ["Route A: template lookup"]
+    routes = ["template lookup"]
     if bm25_ranked:
-        routes_active.append("Route B: BM25 lexical")
+        routes.append("BM25")
     if faiss_ranked:
-        routes_active.append("Route C: FAISS dense semantic")
+        routes.append("FAISS")
 
     header = textwrap.dedent(f"""\
-        Schema context from AWS CloudFormation Resource Specification v243.
-        Multi-route retrieval: {' | '.join(routes_active)}.
-        Rankings merged via Reciprocal Rank Fusion (k={_RRF_K}).
-        Only resources from current errors are included.
+        CFN Resource Specification v243 schema context for current errors.
+        Retrieved via: {', '.join(routes)} and merged with RRF (k={_RRF_K}).
 
     """)
     return header + "\n\n".join(blocks)

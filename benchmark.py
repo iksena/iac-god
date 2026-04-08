@@ -3,7 +3,7 @@ import csv
 import json
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -207,7 +207,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         all_rows = list(reader)
 
     selected_rows = _row_slice(all_rows, config.start_row, config.max_rows)
-    started_at = datetime.now(timezone.utc).isoformat()
+    started_at = datetime.now().isoformat()
     started_ts = time.time()
 
     rows_out: list[dict[str, Any]] = []
@@ -285,7 +285,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 total_llm_calls=total_llm_calls,
                 aggregate_tokens=aggregate_tokens,
                 started_at=started_at,
-                completed_at=datetime.now(timezone.utc).isoformat(),
+                completed_at=datetime.now().isoformat(),
                 elapsed=round(time.time() - started_ts, 3),
             )
             summary_path.write_text(json.dumps(interim_summary, indent=2), encoding="utf-8")
@@ -370,12 +370,12 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
             total_llm_calls=total_llm_calls,
             aggregate_tokens=aggregate_tokens,
             started_at=started_at,
-            completed_at=datetime.now(timezone.utc).isoformat(),
+            completed_at=datetime.now().isoformat(),
             elapsed=round(time.time() - started_ts, 3),
         )
         summary_path.write_text(json.dumps(interim_summary, indent=2), encoding="utf-8")
 
-    completed_at = datetime.now(timezone.utc).isoformat()
+    completed_at = datetime.now().isoformat()
     elapsed = round(time.time() - started_ts, 3)
     attempted = len(rows_out)
 
@@ -409,7 +409,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
 
 
 def _default_output_dir() -> Path:
-    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     return Path("benchmark_runs") / ts
 
 

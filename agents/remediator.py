@@ -7,7 +7,8 @@ from tracking.recorder import ResearchRecorder
 from agents.engineer import _build_client, _call_llm_with_history
 from tools.checkov_context import get_checkov_policy_context
 from tools.trivy_context import get_trivy_policy_context
-from tools.cfn_graph_context_rag import get_cfn_graph_context_for_state
+from tools.cfn_graph_context_rag import get_cfn_schema_context
+# from tools.cfn_graph_context import get_cfn_graph_context
 
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
@@ -141,6 +142,56 @@ def _build_validation_errors_text(state: GraphState) -> str:
     return "\n\n".join(error_blocks)
 
 
+def _extract_error_queries(state: GraphState) -> list[str]:
+    """
+    Extract human-readable error strings from all validation results
+    and deploy logs for use as RAG queries. This is the single place
+    where error format knowledge lives.
+    """
+    queries: list[str] = []
+    seen: set[str] = set()
+
+    def _add(s: str) -> None:
+        s = s.strip()
+        if s and s not in seen:
+            seen.add(s)
+            queries.append(s)
+
+    # cfn-lint, checkov, trivy — use the human message, skip location noise
+    _SKIP_STAGES = {"yaml", "json", "comments"}
+    for result in state.get("validation_results", []):
+        if result.get("stage") in _SKIP_STAGES:
+            continue
+        for error in result.get("errors", []):
+            if isinstance(error, dict):
+                # Structured cfn-lint error: use message field
+                _add(error.get("message") or str(error))
+            else:
+                error_str = str(error)
+                # Strip cfn-lint location dict prefix: "[E3045] {location}: <message>"
+                # Split on "}: " — the location dict always ends with "}"
+                if "}: " in error_str:
+                    _add(error_str.split("}: ", 1)[-1])
+                else:
+                    _add(error_str)
+
+    # Deploy errors — failed resources + actionable log lines
+    deploy = state.get("deploy_validation_result")
+    if deploy and not deploy.get("passed") and deploy.get("target") != "skipped":
+        for fr in deploy.get("failed_resources", []):
+            reason = fr.get("status_reason") or fr.get("reason") or ""
+            name   = fr.get("logical_name") or fr.get("resource") or ""
+            if reason and reason not in ("N/A", "no reason provided"):
+                _add(f"{name}: {reason}" if name else reason)
+        if deploy.get("error_message"):
+            _add(deploy["error_message"])
+        for line in deploy.get("deployment_logs", []):
+            line_str = str(line)
+            if any(kw in line_str for kw in ("FAILED", "ERROR", "does not exist", "Invalid")):
+                _add(line_str)
+
+    return queries
+
 def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     iteration = state["current_iteration"]
     print(f"\n[Remediator] Analyzing errors (iteration {iteration})...")
@@ -150,20 +201,20 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"]))
     )
 
-    validation_errors_text = _build_validation_errors_text(state)
-    policy_source_context  = _build_policy_source_context(state["validation_results"])
-
-    cfn_graph_context  = get_cfn_graph_context_for_state(
-        validation_results=state.get("validation_results"),
-        deploy_validation_result=state.get("deploy_validation_result"),
+    error_queries = _extract_error_queries(state)
+    cfn_graph_context  = get_cfn_schema_context(
+        queries=error_queries,
         template_yaml=state["cloudformation_template"],
     )
-    print(f"[Remediator] CFN graph context: {len(cfn_graph_context)} chars")
+    # cfn_graph_context  = get_cfn_graph_context(queries=error_queries)
+    print(f"[Remediator] {len(error_queries)} error queries → {len(cfn_graph_context)} chars schema context")
+
+    policy_source_context  = _build_policy_source_context(state["validation_results"])
 
     user_content = REMEDIATOR_USER.format(
         iteration=iteration,
         template=state["cloudformation_template"],
-        validation_errors=validation_errors_text,
+        validation_errors=_build_validation_errors_text(state),
         policy_source_context=policy_source_context,
         cfn_graph_context=cfn_graph_context,
     )
