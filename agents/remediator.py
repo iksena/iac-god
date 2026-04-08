@@ -1,14 +1,57 @@
-# agents/remediator.py
 from datetime import datetime, timezone
 import json
+import os
 from state import GraphState, RemediationHistory, Message, compact_message_history, append_and_cap
 from prompts.remediator_prompt import REMEDIATOR_SYSTEM, REMEDIATOR_USER
 from tracking.recorder import ResearchRecorder
 from agents.engineer import _build_client, _call_llm_with_history
 from tools.checkov_context import get_checkov_policy_context
 from tools.trivy_context import get_trivy_policy_context
-from tools.cfn_graph_context_rag import get_cfn_schema_context
-# from tools.cfn_graph_context import get_cfn_graph_context
+from tools.cfn_graph_context_rag import get_cfn_graph_context_for_state
+from tools.cfn_aws_doc_context import get_cfn_aws_doc_context_for_state
+
+# ---------------------------------------------------------------------------
+# CFN context strategy selector
+#
+# Set env var  CFN_CONTEXT_STRATEGY=aws_doc_mcp  to use the live AWS
+# Documentation MCP Server instead of the offline GraphRAG index.
+#
+# Default ("rag") uses the locally-built FAISS/BM25/graph index.
+# "aws_doc_mcp" fetches live CloudFormation documentation per resource type
+# via the awslabs.aws-documentation-mcp-server HTTP endpoint.
+#
+# The two strategies expose the same signature so swapping is zero-cost:
+#   get_cfn_schema_context(validation_results, deploy_validation_result, template_yaml)
+# ---------------------------------------------------------------------------
+
+_CFN_STRATEGY = os.environ.get("CFN_CONTEXT_STRATEGY", "rag").lower()
+
+
+def _get_cfn_schema_context(
+    validation_results: list[dict],
+    deploy_validation_result: dict | None,
+    template_yaml: str | None,
+) -> tuple[str, str]:
+    """
+    Return (context_text, strategy_label) using the configured strategy.
+
+    strategy_label is logged so it is always clear which backend was used.
+    """
+    if _CFN_STRATEGY == "aws_doc_mcp":
+        ctx = get_cfn_aws_doc_context_for_state(
+            validation_results=validation_results,
+            deploy_validation_result=deploy_validation_result,
+            template_yaml=template_yaml,
+        )
+        return ctx, "aws_doc_mcp"
+
+    # Default: offline GraphRAG (FAISS + BM25 + graph)
+    ctx = get_cfn_graph_context_for_state(
+        validation_results=validation_results,
+        deploy_validation_result=deploy_validation_result,
+        template_yaml=template_yaml,
+    )
+    return ctx, "rag"
 
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
@@ -95,26 +138,21 @@ def _build_validation_errors_text(state: GraphState) -> str:
         target = deploy_result["target"].upper()
         lines: list[str] = []
 
-        # ── Failed resources (most informative — list first) ──────────────
         failed = deploy_result.get("failed_resources", [])
         if failed:
             lines.append("**Failed resources:**")
             for fr in failed:
-                # Support both old {"resource","reason"} and new {"logical_name","status_reason"}
                 name   = fr.get("logical_name") or fr.get("resource") or "unknown"
                 reason = fr.get("status_reason") or fr.get("reason") or "no reason provided"
                 lines.append(f"  - `{name}`: {reason}")
         else:
-            # No structured failed_resources — show the top-level error message
             if deploy_result.get("error_message"):
                 lines.append(f"**Error:** {deploy_result['error_message']}")
 
-        # ── Completed resources (context for what worked) ─────────────────
         completed = deploy_result.get("completed_resources", [])
         if completed:
             lines.append(f"**Resources that completed successfully:** {', '.join(f'`{r}`' for r in completed)}")
 
-        # ── Deployment event log (filtered to actionable lines) ───────────
         deploy_logs = deploy_result.get("deployment_logs", [])
         actionable_log_lines = [
             line for line in deploy_logs
@@ -125,7 +163,6 @@ def _build_validation_errors_text(state: GraphState) -> str:
             for log_line in actionable_log_lines:
                 lines.append(f"  - {log_line}")
         elif not failed and deploy_logs:
-            # Fallback: show last 5 log lines when nothing more specific available
             lines.append("**Last deployment events:**")
             for log_line in deploy_logs[-5:]:
                 lines.append(f"  - {log_line}")
@@ -141,57 +178,6 @@ def _build_validation_errors_text(state: GraphState) -> str:
         return "No validation errors reported."
     return "\n\n".join(error_blocks)
 
-
-def _extract_error_queries(state: GraphState) -> list[str]:
-    """
-    Extract human-readable error strings from all validation results
-    and deploy logs for use as RAG queries. This is the single place
-    where error format knowledge lives.
-    """
-    queries: list[str] = []
-    seen: set[str] = set()
-
-    def _add(s: str) -> None:
-        s = s.strip()
-        if s and s not in seen:
-            seen.add(s)
-            queries.append(s)
-
-    # cfn-lint, checkov, trivy — use the human message, skip location noise
-    _SKIP_STAGES = {"yaml", "json", "comments"}
-    for result in state.get("validation_results", []):
-        if result.get("stage") in _SKIP_STAGES:
-            continue
-        for error in result.get("errors", []):
-            if isinstance(error, dict):
-                # Structured cfn-lint error: use message field
-                _add(error.get("message") or str(error))
-            else:
-                error_str = str(error)
-                # Strip cfn-lint location dict prefix: "[E3045] {location}: <message>"
-                # Split on "}: " — the location dict always ends with "}"
-                if "}: " in error_str:
-                    _add(error_str.split("}: ", 1)[-1])
-                else:
-                    _add(error_str)
-
-    # Deploy errors — failed resources + actionable log lines
-    deploy = state.get("deploy_validation_result")
-    if deploy and not deploy.get("passed") and deploy.get("target") != "skipped":
-        for fr in deploy.get("failed_resources", []):
-            reason = fr.get("status_reason") or fr.get("reason") or ""
-            name   = fr.get("logical_name") or fr.get("resource") or ""
-            if reason and reason not in ("N/A", "no reason provided"):
-                _add(f"{name}: {reason}" if name else reason)
-        if deploy.get("error_message"):
-            _add(deploy["error_message"])
-        for line in deploy.get("deployment_logs", []):
-            line_str = str(line)
-            if any(kw in line_str for kw in ("FAILED", "ERROR", "does not exist", "Invalid")):
-                _add(line_str)
-
-    return queries
-
 def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     iteration = state["current_iteration"]
     print(f"\n[Remediator] Analyzing errors (iteration {iteration})...")
@@ -201,15 +187,14 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"]))
     )
 
-    error_queries = _extract_error_queries(state)
-    cfn_graph_context  = get_cfn_schema_context(
-        queries=error_queries,
+    policy_source_context  = _build_policy_source_context(state["validation_results"])
+
+    cfn_graph_context, strategy = _get_cfn_schema_context(
+        validation_results=state.get("validation_results"),
+        deploy_validation_result=state.get("deploy_validation_result"),
         template_yaml=state["cloudformation_template"],
     )
-    # cfn_graph_context  = get_cfn_graph_context(queries=error_queries)
-    print(f"[Remediator] {len(error_queries)} error queries → {len(cfn_graph_context)} chars schema context")
-
-    policy_source_context  = _build_policy_source_context(state["validation_results"])
+    print(f"[Remediator] CFN schema context ({strategy}): {len(cfn_graph_context)} chars")
 
     user_content = REMEDIATOR_USER.format(
         iteration=iteration,
