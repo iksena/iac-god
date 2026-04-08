@@ -14,3 +14,4 @@ numpy
 faiss-cpu>=1.12.0
 rank_bm25
 sentence_transformers
+httpx

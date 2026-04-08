@@ -4,6 +4,43 @@ from datetime import datetime, timezone
 from pathlib import Path
 from state import LLMCallRecord, GraphState
 
+
+def _safe_int(value: object) -> int:
+    try:
+        return int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0
+
+
+def _extract_policy_metrics(validation_results: list[dict]) -> dict:
+    total_policies = 0
+    passed_policies = 0
+    filtered_failed_policies = 0
+
+    for result in validation_results:
+        if result.get("stage") not in {"checkov", "trivy"}:
+            continue
+
+        stats = result.get("policy_stats") or {}
+        total_policies += _safe_int(stats.get("total_policies"))
+        passed_policies += _safe_int(stats.get("passed_policies"))
+        filtered_failed_policies += _safe_int(stats.get("filtered_failed_policies"))
+
+    if total_policies > 0:
+        scenario_ppr = passed_policies / total_policies
+        scenario_fcr = (total_policies - filtered_failed_policies) / total_policies
+    else:
+        scenario_ppr = 1.0
+        scenario_fcr = 1.0
+
+    return {
+        "total_policies": total_policies,
+        "passed_policies": passed_policies,
+        "filtered_failed_policies": filtered_failed_policies,
+        "scenario_policy_pass_rate": scenario_ppr,
+        "filtered_compliance_rate": scenario_fcr,
+    }
+
 class ResearchRecorder:
     def __init__(self, run_id: str, output_dir: str = "./runs"):
         self.run_id = run_id
@@ -37,12 +74,14 @@ class ResearchRecorder:
         """Save full state snapshot at each iteration boundary."""
         iteration = state["current_iteration"]
         snapshot_path = self.output_dir / f"iteration_{iteration:03d}.json"
+        policy_metrics = _extract_policy_metrics(state.get("validation_results", []))
         snapshot = {
             "iteration": iteration,
             "objectives": state["objectives"],
             "cloudformation_template": state["cloudformation_template"],
             "validation_results": state["validation_results"],
             "validation_passed": state["validation_passed"],
+            "policy_metrics": policy_metrics,
             "deploy_validation_result": state.get("deploy_validation_result"),
             "remediation_history": state["remediation_history"],
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -54,6 +93,7 @@ class ResearchRecorder:
 
     def save_final_report(self, state: GraphState):
         """Save complete research report at end of run."""
+        policy_metrics = _extract_policy_metrics(state.get("validation_results", []))
         report = {
             "run_id": self.run_id,
             "user_request": state["user_request"],
@@ -65,6 +105,7 @@ class ResearchRecorder:
             "llm_calls_total": len(state["llm_call_log"]),
             "llm_call_log": state["llm_call_log"],
             "validation_results": state["validation_results"],
+            "policy_metrics": policy_metrics,
             "deploy_validation_result": state.get("deploy_validation_result"),
         }
         (self.output_dir / "final_report.json").write_text(

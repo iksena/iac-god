@@ -34,6 +34,8 @@ CSV_RESULT_FIELDS = [
     "token_output_tokens",
     "token_prompt_tokens",
     "token_completion_tokens",
+    "scenario_policy_pass_rate",
+    "filtered_compliance_rate",
     "duration_seconds",
     "error_message",
 ]
@@ -95,9 +97,14 @@ def _extract_iteration_records(snapshots: list[dict[str, Any]]) -> list[dict[str
                     "passed": bool(result.get("passed")),
                     "error_count": len(errors),
                     "errors": errors,
+                    "policy_stats": result.get("policy_stats"),
+                    "scenario_policy_pass_rate": result.get("scenario_policy_pass_rate"),
+                    "filtered_compliance_rate": result.get("filtered_compliance_rate"),
                 }
             )
             total_errors += len(errors)
+
+        policy_metrics = _extract_policy_metrics(validation_results)
 
         records.append(
             {
@@ -105,6 +112,7 @@ def _extract_iteration_records(snapshots: list[dict[str, Any]]) -> list[dict[str
                 "validation_passed": bool(snap.get("validation_passed")),
                 "total_errors": total_errors,
                 "stages": stage_summary,
+                "policy_metrics": policy_metrics,
                 "timestamp": snap.get("timestamp"),
             }
         )
@@ -121,6 +129,35 @@ def _row_slice(rows: list[dict[str, str]], start_row: int, max_rows: int | None)
     return sliced
 
 
+def _extract_policy_metrics(validation_results: list[dict[str, Any]]) -> dict[str, Any]:
+    total_policies = 0
+    passed_policies = 0
+    filtered_failed_policies = 0
+
+    for result in validation_results:
+        if result.get("stage") not in {"checkov", "trivy"}:
+            continue
+        stats = result.get("policy_stats") or {}
+        total_policies += _safe_int(stats.get("total_policies"), 0)
+        passed_policies += _safe_int(stats.get("passed_policies"), 0)
+        filtered_failed_policies += _safe_int(stats.get("filtered_failed_policies"), 0)
+
+    if total_policies > 0:
+        scenario_ppr = passed_policies / total_policies
+        scenario_fcr = (total_policies - filtered_failed_policies) / total_policies
+    else:
+        scenario_ppr = 1.0
+        scenario_fcr = 1.0
+
+    return {
+        "total_policies": total_policies,
+        "passed_policies": passed_policies,
+        "filtered_failed_policies": filtered_failed_policies,
+        "scenario_policy_pass_rate": scenario_ppr,
+        "filtered_compliance_rate": scenario_fcr,
+    }
+
+
 def _build_summary(
     config: BenchmarkConfig,
     selected_row_count: int,
@@ -130,10 +167,22 @@ def _build_summary(
     total_iterations: int,
     total_llm_calls: int,
     aggregate_tokens: dict[str, int],
+    total_policy_count: int,
+    total_passed_policy_count: int,
+    total_filtered_failed_policy_count: int,
+    scenario_ppr_sum: float,
+    scenario_ppr_count: int,
     started_at: str,
     completed_at: str,
     elapsed: float,
 ) -> dict[str, Any]:
+    avg_ppr = (scenario_ppr_sum / scenario_ppr_count) if scenario_ppr_count else 0.0
+    total_fcr = (
+        (total_policy_count - total_filtered_failed_policy_count) / total_policy_count
+        if total_policy_count
+        else 0.0
+    )
+
     return {
         "dataset": str(config.dataset_path),
         "started_at": started_at,
@@ -151,6 +200,14 @@ def _build_summary(
         "avg_iterations": (total_iterations / attempted) if attempted else 0.0,
         "total_llm_calls": total_llm_calls,
         "avg_llm_calls": (total_llm_calls / attempted) if attempted else 0.0,
+        "avg_ppr": avg_ppr,
+        "total_fcr": total_fcr,
+        "policy_totals": {
+            "total_policies": total_policy_count,
+            "passed_policies": total_passed_policy_count,
+            "filtered_failed_policies": total_filtered_failed_policy_count,
+            "scenarios_with_policy_metrics": scenario_ppr_count,
+        },
         "token_usage_total": aggregate_tokens,
         "token_usage_avg": {
             key: (value / attempted if attempted else 0.0)
@@ -166,6 +223,7 @@ def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
 
 def _row_to_csv(payload: dict[str, Any]) -> dict[str, Any]:
     token_usage = payload.get("token_usage", {})
+    policy_metrics = payload.get("policy_metrics", {})
     return {
         "row_number": payload.get("row_number"),
         "ground_truth_path": payload.get("ground_truth_path"),
@@ -179,6 +237,8 @@ def _row_to_csv(payload: dict[str, Any]) -> dict[str, Any]:
         "token_output_tokens": token_usage.get("output_tokens"),
         "token_prompt_tokens": token_usage.get("prompt_tokens"),
         "token_completion_tokens": token_usage.get("completion_tokens"),
+        "scenario_policy_pass_rate": policy_metrics.get("scenario_policy_pass_rate"),
+        "filtered_compliance_rate": policy_metrics.get("filtered_compliance_rate"),
         "duration_seconds": payload.get("duration_seconds"),
         "error_message": payload.get("error_message"),
     }
@@ -215,6 +275,11 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
     pass_at_1_count = 0
     total_iterations = 0
     total_llm_calls = 0
+    total_policy_count = 0
+    total_passed_policy_count = 0
+    total_filtered_failed_policy_count = 0
+    scenario_ppr_sum = 0.0
+    scenario_ppr_count = 0
     aggregate_tokens = {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -237,6 +302,11 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         total_iterations=0,
         total_llm_calls=0,
         aggregate_tokens=aggregate_tokens,
+        total_policy_count=0,
+        total_passed_policy_count=0,
+        total_filtered_failed_policy_count=0,
+        scenario_ppr_sum=0.0,
+        scenario_ppr_count=0,
         started_at=started_at,
         completed_at=started_at,
         elapsed=0.0,
@@ -269,6 +339,13 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 "iteration_records": [],
                 "validation_results_final": [],
                 "remediation_history": [],
+                "policy_metrics": {
+                    "total_policies": 0,
+                    "passed_policies": 0,
+                    "filtered_failed_policies": 0,
+                    "scenario_policy_pass_rate": 0.0,
+                    "filtered_compliance_rate": 0.0,
+                },
                 "duration_seconds": 0.0,
             }
             rows_out.append(result_payload)
@@ -284,6 +361,11 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 total_iterations=total_iterations,
                 total_llm_calls=total_llm_calls,
                 aggregate_tokens=aggregate_tokens,
+                total_policy_count=total_policy_count,
+                total_passed_policy_count=total_passed_policy_count,
+                total_filtered_failed_policy_count=total_filtered_failed_policy_count,
+                scenario_ppr_sum=scenario_ppr_sum,
+                scenario_ppr_count=scenario_ppr_count,
                 started_at=started_at,
                 completed_at=datetime.now().isoformat(),
                 elapsed=round(time.time() - started_ts, 3),
@@ -315,6 +397,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
             tokens = _token_totals(llm_calls)
             total_runs_iterations = _safe_int(final_state.get("current_iteration"), 0)
             final_passed = bool(final_state.get("validation_passed"))
+            policy_metrics = _extract_policy_metrics(final_state.get("validation_results", []))
 
             if final_passed:
                 pass_count += 1
@@ -325,6 +408,16 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
             total_llm_calls += len(llm_calls)
             for key in aggregate_tokens:
                 aggregate_tokens[key] += tokens[key]
+
+            total_policy_count += _safe_int(policy_metrics.get("total_policies"), 0)
+            total_passed_policy_count += _safe_int(policy_metrics.get("passed_policies"), 0)
+            total_filtered_failed_policy_count += _safe_int(
+                policy_metrics.get("filtered_failed_policies"),
+                0,
+            )
+
+            scenario_ppr_sum += float(policy_metrics.get("scenario_policy_pass_rate", 0.0) or 0.0)
+            scenario_ppr_count += 1
 
             result_payload = {
                 "row_number": row_number,
@@ -340,6 +433,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 "iteration_records": iteration_records,
                 "validation_results_final": final_state.get("validation_results", []),
                 "remediation_history": final_state.get("remediation_history", []),
+                "policy_metrics": policy_metrics,
                 "duration_seconds": round(time.time() - row_started, 3),
             }
         except Exception as exc:  # Keep benchmark running even if one row fails.
@@ -369,6 +463,11 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
             total_iterations=total_iterations,
             total_llm_calls=total_llm_calls,
             aggregate_tokens=aggregate_tokens,
+            total_policy_count=total_policy_count,
+            total_passed_policy_count=total_passed_policy_count,
+            total_filtered_failed_policy_count=total_filtered_failed_policy_count,
+            scenario_ppr_sum=scenario_ppr_sum,
+            scenario_ppr_count=scenario_ppr_count,
             started_at=started_at,
             completed_at=datetime.now().isoformat(),
             elapsed=round(time.time() - started_ts, 3),
@@ -388,6 +487,11 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         total_iterations=total_iterations,
         total_llm_calls=total_llm_calls,
         aggregate_tokens=aggregate_tokens,
+        total_policy_count=total_policy_count,
+        total_passed_policy_count=total_passed_policy_count,
+        total_filtered_failed_policy_count=total_filtered_failed_policy_count,
+        scenario_ppr_sum=scenario_ppr_sum,
+        scenario_ppr_count=scenario_ppr_count,
         started_at=started_at,
         completed_at=completed_at,
         elapsed=elapsed,

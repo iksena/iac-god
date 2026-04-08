@@ -34,10 +34,8 @@ REMEDIATOR_USER = """\
 ## Current Validation Errors
 {validation_errors}
 
-## Relevant Policy Source Context (Checkov/Trivy)
 {policy_source_context}
 
-## CFN Schema Context
 {cfn_graph_context}
 
 Provide fix objectives that resolve all current validation errors.

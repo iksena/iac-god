@@ -10,6 +10,14 @@ from config import DeployConfig, DeployTarget, DEFAULT_DEPLOY_CONFIG
 from tools.deploy_validator import validate_deployment
 from state import ValidationResult, DeployValidationResult
 
+
+def _derive_policy_rates(total_policies: int, passed_policies: int, filtered_failed_policies: int) -> tuple[float, float]:
+    if total_policies <= 0:
+        return 1.0, 1.0
+    ppr = passed_policies / total_policies
+    fcr = (total_policies - filtered_failed_policies) / total_policies
+    return ppr, fcr
+
 _YAMLLINT_CONFIG = YamlLintConfig(
     """
 extends: default
@@ -96,9 +104,24 @@ def validate_checkov(template: str) -> ValidationResult:
         )
         raw = result.stdout or result.stderr
         errors = []
+        total_policies = 0
+        passed_policies = 0
+        failed_policies = 0
+        filtered_failed_policies = 0
         try:
             data = json.loads(raw)
             failed = data.get("results", {}).get("failed_checks", [])
+            passed = data.get("results", {}).get("passed_checks", [])
+            failed_policies = len(failed)
+            passed_policies = len(passed)
+            total_policies = failed_policies + passed_policies
+
+            # Filtered compliance includes only high/critical failures.
+            for check in failed:
+                severity = str(check.get("severity", "")).lower()
+                if severity in ("high", "critical"):
+                    filtered_failed_policies += 1
+
             errors = [
                 f"[{c['check_id']}] {c['check_result']['result']}: "
                 f"{c['resource']} — {c['check'].get('name','')}"
@@ -108,11 +131,21 @@ def validate_checkov(template: str) -> ValidationResult:
             if result.returncode not in (0, 1):
                 errors = [raw]
 
+        ppr, fcr = _derive_policy_rates(total_policies, passed_policies, filtered_failed_policies)
+
         return ValidationResult(
             stage="checkov",
             passed=len(errors) == 0,
             errors=errors,
             raw_output=raw,
+            policy_stats={
+                "total_policies": total_policies,
+                "passed_policies": passed_policies,
+                "failed_policies": failed_policies,
+                "filtered_failed_policies": filtered_failed_policies,
+            },
+            scenario_policy_pass_rate=ppr,
+            filtered_compliance_rate=fcr,
         )
     except FileNotFoundError:
         return ValidationResult(
@@ -140,23 +173,45 @@ def validate_trivy(template: str) -> ValidationResult:
             )
             raw = result.stdout or result.stderr
             errors = []
+            total_policies = 0
+            passed_policies = 0
+            failed_policies = 0
+            filtered_failed_policies = 0
             try:
                 data = json.loads(raw)
                 for r in data.get("Results", []):
+                    summary = r.get("MisconfSummary") or {}
+                    # Trivy reports the number of successful and failed checks.
+                    passed_policies += int(summary.get("Successes", 0) or 0)
+                    failed_policies += int(summary.get("Failures", 0) or 0)
+
                     for m in r.get("Misconfigurations", []):
                         if m.get("Severity", "").lower() in ("high", "critical"):
+                            filtered_failed_policies += 1
                             errors.append(
                                 f"[{m['ID']}] {m['Severity']}: {m['Title']} — {m['Message']}"
                             )
+
+                total_policies = passed_policies + failed_policies
             except (json.JSONDecodeError, KeyError):
                 if result.returncode not in (0, 1):
                     errors = [raw]
+
+            ppr, fcr = _derive_policy_rates(total_policies, passed_policies, filtered_failed_policies)
 
             return ValidationResult(
                 stage="trivy",
                 passed=len(errors) == 0,
                 errors=errors,
                 raw_output=raw,
+                policy_stats={
+                    "total_policies": total_policies,
+                    "passed_policies": passed_policies,
+                    "failed_policies": failed_policies,
+                    "filtered_failed_policies": filtered_failed_policies,
+                },
+                scenario_policy_pass_rate=ppr,
+                filtered_compliance_rate=fcr,
             )
         except FileNotFoundError:
             return ValidationResult(
@@ -177,8 +232,8 @@ def run_all_validators(
     results = [
         validate_yaml(template),
         validate_cfn_lint(template),
-        # validate_checkov(template),   # uncomment to re-enable
-        # validate_trivy(template),
+        # validate_checkov(template),
+        validate_trivy(template),
     ]
     static_passed = all(r["passed"] for r in results)
 

@@ -1,11 +1,21 @@
 # state.py
-from typing import TypedDict, Optional
+from typing import TypedDict, Optional, NotRequired
+
+
+class PolicyStats(TypedDict):
+    total_policies: int
+    passed_policies: int
+    failed_policies: int
+    filtered_failed_policies: int
 
 class ValidationResult(TypedDict):
     stage: str          # "yaml" | "cfn-lint" | "checkov" | "trivy"
     passed: bool
     errors: list[str]
     raw_output: str
+    policy_stats: NotRequired[PolicyStats]
+    scenario_policy_pass_rate: NotRequired[float]
+    filtered_compliance_rate: NotRequired[float]
 
 class DeployValidationResult(TypedDict):
     target: str                     # "localstack" | "aws" | "skipped"
