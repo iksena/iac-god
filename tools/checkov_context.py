@@ -74,8 +74,10 @@ def get_checkov_policy_context(findings: list[Any]) -> str:
             if row:
                 break
         if row:
+            description = str(row.get("description") or "").strip()
+            description_block = f"\nDescription: {description}" if description else ""
             blocks.append(
-                f"### [{row['check_id']}] {row['check_name']}\n"
+                f"### [{row['check_id']}] {row['check_name']}{description_block}\n"
                 f"```python\n{row['source_code']}\n```"
             )
 

@@ -24,20 +24,13 @@ def _id_candidates(check_id: str) -> list[str]:
         return []
 
     base = raw.upper()
-    candidates: list[str] = [base]
-
-    # CKV/CKV2 may appear with either hyphens or underscores.
-    if base.startswith("CKV"):
-        candidates.append(base.replace("-", "_"))
-        candidates.append(base.replace("_", "-"))
-
-    # Trivy IDs are usually AVD-AWS-####, but findings may include AWS-####.
+    # Trivy IDs are supported only in AWS-#### or AVD-AWS-#### forms.
     if re.fullmatch(r"AWS-\d{4}", base):
-        candidates.append(f"AVD-{base}")
+        return [base, f"AVD-{base}"]
     if re.fullmatch(r"AVD-AWS-\d{4}", base):
-        candidates.append(base.removeprefix("AVD-"))
+        return [base, base.removeprefix("AVD-")]
 
-    return list(dict.fromkeys(candidates))
+    return []
 
 
 @lru_cache(maxsize=1)
@@ -75,8 +68,10 @@ def get_trivy_policy_context(findings: list[Any]) -> str:
             if row:
                 break
         if row:
+            description = str(row.get("description") or "").strip()
+            description_block = f"\nDescription: {description}" if description else ""
             blocks.append(
-                f"### [{row.get('check_id', check_id)}] {row.get('check_name', '')}\n"
+                f"### [{row.get('check_id', check_id)}] {row.get('check_name', '')}{description_block}\n"
                 f"```rego\n{row.get('source_code', '')}\n```"
             )
 

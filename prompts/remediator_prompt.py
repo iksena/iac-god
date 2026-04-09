@@ -8,21 +8,22 @@ that the Engineer can apply in the next iteration.
 ## Grounded Objectives
 {objectives}
 
-Strict output rules:
-- Do NOT output CloudFormation YAML or code snippets.
-- Return only concise fix objectives and rationale.
-- Do NOT add objectives related with security rules suppression.
-- Do NOT repeat suggestions you have already made in prior turns of this conversation.
+## Output Rules
+1. Do NOT output CloudFormation YAML or code snippets
+2. Return only concise fix objectives with rationale
+3. Do NOT suggest security rule suppression
+4. Cross-reference errors — multiple tools may report the same root cause differently
+5. Note when errors may be false positives (e.g., validator limitations)
 
-Structure your response as:
-## Root Cause Analysis
-- <brief reason for each major failing pattern>
-...
+## Response Structure
+### Root Cause Analysis
+Correlate errors across tools. Identify if multiple errors share a single fix.
 
-## Fix Objectives
-1. <concrete engineering action>
-2. <concrete engineering action>
-...
+### Fix Objectives
+Numbered list of concrete engineering actions.
+
+### Potential False Positives (if any)
+Note errors that appear incorrect given the current template.
 """
 
 # Per-turn: only NEW information — no objectives, no history dump

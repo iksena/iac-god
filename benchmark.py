@@ -2,6 +2,7 @@ import argparse
 import csv
 import json
 import time
+import traceback
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,9 @@ class BenchmarkConfig:
     max_iterations: int
     provider: str
     model: str | None
+    deploy_target: str
+    openrouter_provider_only: str | None
+    openrouter_min_quantization: str | None
 
 
 CSV_RESULT_FIELDS = [
@@ -36,8 +40,10 @@ CSV_RESULT_FIELDS = [
     "token_completion_tokens",
     "scenario_policy_pass_rate",
     "filtered_compliance_rate",
+    "unfiltered_compliance_rate",
     "duration_seconds",
     "error_message",
+    "error_traceback",
 ]
 
 
@@ -132,6 +138,7 @@ def _row_slice(rows: list[dict[str, str]], start_row: int, max_rows: int | None)
 def _extract_policy_metrics(validation_results: list[dict[str, Any]]) -> dict[str, Any]:
     total_policies = 0
     passed_policies = 0
+    failed_policies_all_severity = 0
     filtered_failed_policies = 0
 
     for result in validation_results:
@@ -140,21 +147,35 @@ def _extract_policy_metrics(validation_results: list[dict[str, Any]]) -> dict[st
         stats = result.get("policy_stats") or {}
         total_policies += _safe_int(stats.get("total_policies"), 0)
         passed_policies += _safe_int(stats.get("passed_policies"), 0)
+        failed_policies_all_severity += _safe_int(
+            stats.get("failed_policies"),
+            0,
+        )
         filtered_failed_policies += _safe_int(stats.get("filtered_failed_policies"), 0)
+
+    if total_policies > 0 and failed_policies_all_severity == 0 and passed_policies > 0:
+        # Backward-compatible fallback for older records that may not include failed_policies.
+        failed_policies_all_severity = max(total_policies - passed_policies, 0)
 
     if total_policies > 0:
         scenario_ppr = passed_policies / total_policies
         scenario_fcr = (total_policies - filtered_failed_policies) / total_policies
+        scenario_unfiltered_compliance = (
+            total_policies - failed_policies_all_severity
+        ) / total_policies
     else:
         scenario_ppr = 1.0
         scenario_fcr = 1.0
+        scenario_unfiltered_compliance = 1.0
 
     return {
         "total_policies": total_policies,
         "passed_policies": passed_policies,
+        "failed_policies_all_severity": failed_policies_all_severity,
         "filtered_failed_policies": filtered_failed_policies,
         "scenario_policy_pass_rate": scenario_ppr,
         "filtered_compliance_rate": scenario_fcr,
+        "unfiltered_compliance_rate": scenario_unfiltered_compliance,
     }
 
 
@@ -169,17 +190,31 @@ def _build_summary(
     aggregate_tokens: dict[str, int],
     total_policy_count: int,
     total_passed_policy_count: int,
+    total_failed_policy_count: int,
     total_filtered_failed_policy_count: int,
     scenario_ppr_sum: float,
+    scenario_unfiltered_compliance_sum: float,
     scenario_ppr_count: int,
+    runtime_error_runs: int,
     started_at: str,
     completed_at: str,
     elapsed: float,
 ) -> dict[str, Any]:
+    evaluated_runs = max(attempted - runtime_error_runs, 0)
     avg_ppr = (scenario_ppr_sum / scenario_ppr_count) if scenario_ppr_count else 0.0
     total_fcr = (
         (total_policy_count - total_filtered_failed_policy_count) / total_policy_count
         if total_policy_count
+        else 0.0
+    )
+    total_unfiltered_compliance_rate = (
+        (total_policy_count - total_failed_policy_count) / total_policy_count
+        if total_policy_count
+        else 0.0
+    )
+    avg_unfiltered_compliance_rate = (
+        scenario_unfiltered_compliance_sum / scenario_ppr_count
+        if scenario_ppr_count
         else 0.0
     )
 
@@ -190,21 +225,29 @@ def _build_summary(
         "duration_seconds": elapsed,
         "provider": config.provider,
         "model": config.model,
+        "deploy_target": config.deploy_target,
+        "openrouter_provider_only": config.openrouter_provider_only,
+        "openrouter_min_quantization": config.openrouter_min_quantization,
         "max_iterations": config.max_iterations,
         "rows_requested": selected_row_count,
         "rows_attempted": attempted,
+        "rows_evaluated": evaluated_runs,
+        "runtime_error_runs": runtime_error_runs,
         "rows_passed": pass_count,
-        "pass_rate": (pass_count / attempted) if attempted else 0.0,
-        "pass_at_1": (pass_at_1_count / attempted) if attempted else 0.0,
+        "pass_rate": (pass_count / evaluated_runs) if evaluated_runs else 0.0,
+        "pass_at_1": (pass_at_1_count / evaluated_runs) if evaluated_runs else 0.0,
         "total_iterations": total_iterations,
         "avg_iterations": (total_iterations / attempted) if attempted else 0.0,
         "total_llm_calls": total_llm_calls,
         "avg_llm_calls": (total_llm_calls / attempted) if attempted else 0.0,
         "avg_ppr": avg_ppr,
         "total_fcr": total_fcr,
+        "avg_unfiltered_compliance_rate": avg_unfiltered_compliance_rate,
+        "total_unfiltered_compliance_rate": total_unfiltered_compliance_rate,
         "policy_totals": {
             "total_policies": total_policy_count,
             "passed_policies": total_passed_policy_count,
+            "failed_policies_all_severity": total_failed_policy_count,
             "filtered_failed_policies": total_filtered_failed_policy_count,
             "scenarios_with_policy_metrics": scenario_ppr_count,
         },
@@ -239,8 +282,10 @@ def _row_to_csv(payload: dict[str, Any]) -> dict[str, Any]:
         "token_completion_tokens": token_usage.get("completion_tokens"),
         "scenario_policy_pass_rate": policy_metrics.get("scenario_policy_pass_rate"),
         "filtered_compliance_rate": policy_metrics.get("filtered_compliance_rate"),
+        "unfiltered_compliance_rate": policy_metrics.get("unfiltered_compliance_rate"),
         "duration_seconds": payload.get("duration_seconds"),
         "error_message": payload.get("error_message"),
+        "error_traceback": payload.get("error_traceback"),
     }
 
 
@@ -277,9 +322,12 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
     total_llm_calls = 0
     total_policy_count = 0
     total_passed_policy_count = 0
+    total_failed_policy_count = 0
     total_filtered_failed_policy_count = 0
     scenario_ppr_sum = 0.0
+    scenario_unfiltered_compliance_sum = 0.0
     scenario_ppr_count = 0
+    runtime_error_runs = 0
     aggregate_tokens = {
         "input_tokens": 0,
         "output_tokens": 0,
@@ -304,9 +352,12 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         aggregate_tokens=aggregate_tokens,
         total_policy_count=0,
         total_passed_policy_count=0,
+        total_failed_policy_count=0,
         total_filtered_failed_policy_count=0,
         scenario_ppr_sum=0.0,
+        scenario_unfiltered_compliance_sum=0.0,
         scenario_ppr_count=0,
+        runtime_error_runs=0,
         started_at=started_at,
         completed_at=started_at,
         elapsed=0.0,
@@ -342,11 +393,14 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 "policy_metrics": {
                     "total_policies": 0,
                     "passed_policies": 0,
+                    "failed_policies_all_severity": 0,
                     "filtered_failed_policies": 0,
                     "scenario_policy_pass_rate": 0.0,
                     "filtered_compliance_rate": 0.0,
+                    "unfiltered_compliance_rate": 0.0,
                 },
                 "duration_seconds": 0.0,
+                "error_traceback": None,
             }
             rows_out.append(result_payload)
             _append_jsonl(jsonl_path, result_payload)
@@ -363,9 +417,12 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 aggregate_tokens=aggregate_tokens,
                 total_policy_count=total_policy_count,
                 total_passed_policy_count=total_passed_policy_count,
+                total_failed_policy_count=total_failed_policy_count,
                 total_filtered_failed_policy_count=total_filtered_failed_policy_count,
                 scenario_ppr_sum=scenario_ppr_sum,
+                scenario_unfiltered_compliance_sum=scenario_unfiltered_compliance_sum,
                 scenario_ppr_count=scenario_ppr_count,
+                runtime_error_runs=runtime_error_runs,
                 started_at=started_at,
                 completed_at=datetime.now().isoformat(),
                 elapsed=round(time.time() - started_ts, 3),
@@ -386,6 +443,9 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 max_iterations=config.max_iterations,
                 provider=config.provider,
                 model=config.model,
+                deploy_target=config.deploy_target,
+                openrouter_provider_only=config.openrouter_provider_only,
+                openrouter_min_quantization=config.openrouter_min_quantization,
             )
 
             run_id = final_state["run_id"]
@@ -411,12 +471,19 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
 
             total_policy_count += _safe_int(policy_metrics.get("total_policies"), 0)
             total_passed_policy_count += _safe_int(policy_metrics.get("passed_policies"), 0)
+            total_failed_policy_count += _safe_int(
+                policy_metrics.get("failed_policies_all_severity"),
+                0,
+            )
             total_filtered_failed_policy_count += _safe_int(
                 policy_metrics.get("filtered_failed_policies"),
                 0,
             )
 
             scenario_ppr_sum += float(policy_metrics.get("scenario_policy_pass_rate", 0.0) or 0.0)
+            scenario_unfiltered_compliance_sum += float(
+                policy_metrics.get("unfiltered_compliance_rate", 0.0) or 0.0
+            )
             scenario_ppr_count += 1
 
             result_payload = {
@@ -439,15 +506,20 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         except Exception as exc:  # Keep benchmark running even if one row fails.
             status = "runtime_error"
             error_message = str(exc)
+            error_traceback = traceback.format_exc()
+            runtime_error_runs += 1
             result_payload = {
                 "row_number": row_number,
                 "ground_truth_path": row.get("ground_truth_path"),
                 "prompt": prompt,
                 "status": status,
                 "error_message": error_message,
+                "error_traceback": error_traceback,
                 "duration_seconds": round(time.time() - row_started, 3),
             }
             print(f"[Benchmark] Row {row_number} failed: {error_message}")
+            print("[Benchmark] Traceback:")
+            print(error_traceback)
 
         rows_out.append(result_payload)
 
@@ -465,9 +537,12 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
             aggregate_tokens=aggregate_tokens,
             total_policy_count=total_policy_count,
             total_passed_policy_count=total_passed_policy_count,
+            total_failed_policy_count=total_failed_policy_count,
             total_filtered_failed_policy_count=total_filtered_failed_policy_count,
             scenario_ppr_sum=scenario_ppr_sum,
+            scenario_unfiltered_compliance_sum=scenario_unfiltered_compliance_sum,
             scenario_ppr_count=scenario_ppr_count,
+            runtime_error_runs=runtime_error_runs,
             started_at=started_at,
             completed_at=datetime.now().isoformat(),
             elapsed=round(time.time() - started_ts, 3),
@@ -489,9 +564,12 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         aggregate_tokens=aggregate_tokens,
         total_policy_count=total_policy_count,
         total_passed_policy_count=total_passed_policy_count,
+        total_failed_policy_count=total_failed_policy_count,
         total_filtered_failed_policy_count=total_filtered_failed_policy_count,
         scenario_ppr_sum=scenario_ppr_sum,
+        scenario_unfiltered_compliance_sum=scenario_unfiltered_compliance_sum,
         scenario_ppr_count=scenario_ppr_count,
+        runtime_error_runs=runtime_error_runs,
         started_at=started_at,
         completed_at=completed_at,
         elapsed=elapsed,
@@ -538,6 +616,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-iterations", type=int, default=30)
     parser.add_argument("--provider", choices=["openrouter", "claude"], default="openrouter")
     parser.add_argument("--model", type=str, default=None)
+    parser.add_argument(
+        "--openrouter-provider-only",
+        type=str,
+        default=None,
+        help="Comma-separated OpenRouter provider slugs to allow (maps to provider.only)",
+    )
+    parser.add_argument(
+        "--openrouter-min-quantization",
+        type=str,
+        choices=["int4", "int8", "fp4", "fp6", "fp8", "fp16", "bf16", "fp32", "unknown"],
+        default=None,
+        help="Minimum quantization level for OpenRouter provider filtering",
+    )
+    parser.add_argument(
+        "--deploy-target",
+        choices=["none", "localstack", "aws"],
+        default="localstack",
+        help="Deploy target passed through to main.run_pipeline",
+    )
     return parser.parse_args()
 
 
@@ -552,5 +649,8 @@ if __name__ == "__main__":
         max_iterations=args.max_iterations,
         provider=args.provider,
         model=args.model,
+        deploy_target=args.deploy_target,
+        openrouter_provider_only=args.openrouter_provider_only,
+        openrouter_min_quantization=args.openrouter_min_quantization,
     )
     run_benchmark(cfg)

@@ -1,8 +1,33 @@
 # agents/planner.py
+import json
+
 from state import GraphState, Message, compact_message_history, append_and_cap
-from config import DEFAULT_CONFIG, LLMProvider
+from config import DEFAULT_CONFIG, LLMProvider, build_openrouter_provider_preferences
 from prompts.planner_prompt import PLANNER_SYSTEM, PLANNER_USER
 from tracking.recorder import ResearchRecorder
+
+
+def _to_int(value: object) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _response_debug_blob(response: object) -> str:
+    if response is None:
+        return "response=None"
+
+    try:
+        if hasattr(response, "model_dump_json"):
+            return response.model_dump_json(indent=2)
+    except Exception:
+        pass
+
+    try:
+        return json.dumps(response, default=str, indent=2)
+    except Exception:
+        return repr(response)
 
 def build_llm_client(config=DEFAULT_CONFIG):
     if config.provider == LLMProvider.OPENROUTER:
@@ -29,16 +54,45 @@ def planner_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     messages = compact_message_history(list(state["planner_history"])) + [user_msg]
 
     if DEFAULT_CONFIG.provider == LLMProvider.OPENROUTER:
+        request_kwargs = {
+            "model": model,
+            "messages": [{"role": "system", "content": PLANNER_SYSTEM}] + messages,
+            "temperature": DEFAULT_CONFIG.temperature,
+            "max_tokens": DEFAULT_CONFIG.max_tokens,
+        }
+        provider_preferences = build_openrouter_provider_preferences(DEFAULT_CONFIG)
+        if provider_preferences:
+            request_kwargs["provider"] = provider_preferences
+
         response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": PLANNER_SYSTEM}] + messages,
-            temperature=DEFAULT_CONFIG.temperature,
-            max_tokens=DEFAULT_CONFIG.max_tokens,
+            **request_kwargs,
         )
-        content = response.choices[0].message.content
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            raise RuntimeError(
+                "OpenRouter returned no choices in planner call. "
+                f"model={model} response={_response_debug_blob(response)}"
+            )
+
+        message = getattr(choices[0], "message", None)
+        content = getattr(message, "content", None) if message is not None else None
+
+        if isinstance(content, list):
+            text_parts = [
+                part.get("text", "") if isinstance(part, dict) else ""
+                for part in content
+            ]
+            content = "".join(text_parts).strip()
+
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError(
+                "OpenRouter returned empty/non-text content in planner call. "
+                f"model={model} response={_response_debug_blob(response)}"
+            )
+
         usage = {
-            "prompt_tokens": response.usage.prompt_tokens,
-            "completion_tokens": response.usage.completion_tokens,
+            "prompt_tokens": _to_int(getattr(response.usage, "prompt_tokens", 0)),
+            "completion_tokens": _to_int(getattr(response.usage, "completion_tokens", 0)),
         }
     else:
         import anthropic

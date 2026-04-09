@@ -1,6 +1,8 @@
 # agents/engineer.py
+import json
+
 from state import GraphState, Message, compact_message_history, append_and_cap
-from config import DEFAULT_CONFIG, LLMProvider
+from config import DEFAULT_CONFIG, LLMProvider, build_openrouter_provider_preferences
 from prompts.engineer_prompt import (
     ENGINEER_SYSTEM, ENGINEER_USER_INITIAL,
     ENGINEER_USER_REMEDIATION,
@@ -83,19 +85,72 @@ def _build_client():
         ), DEFAULT_CONFIG.model
 
 
+def _to_int(value: object) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _response_debug_blob(response: object) -> str:
+    if response is None:
+        return "response=None"
+
+    try:
+        if hasattr(response, "model_dump_json"):
+            return response.model_dump_json(indent=2)
+    except Exception:
+        pass
+
+    try:
+        return json.dumps(response, default=str, indent=2)
+    except Exception:
+        return repr(response)
+
+
 def _call_llm_with_history(client, model, system, messages):
     """Call LLM with full message history (multi-turn)."""
     if DEFAULT_CONFIG.provider == LLMProvider.OPENROUTER:
-        r = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": system}] + messages,
-            temperature=DEFAULT_CONFIG.temperature,
-            max_tokens=DEFAULT_CONFIG.max_tokens,
-        )
-        return r.choices[0].message.content, {
-            "prompt_tokens": r.usage.prompt_tokens,
-            "completion_tokens": r.usage.completion_tokens,
+        request_kwargs = {
+            "model": model,
+            "messages": [{"role": "system", "content": system}] + messages,
+            "temperature": DEFAULT_CONFIG.temperature,
+            "max_tokens": DEFAULT_CONFIG.max_tokens,
         }
+        provider_preferences = build_openrouter_provider_preferences(DEFAULT_CONFIG)
+        if provider_preferences:
+            request_kwargs["provider"] = provider_preferences
+
+        r = client.chat.completions.create(**request_kwargs)
+        choices = getattr(r, "choices", None) or []
+        if not choices:
+            raise RuntimeError(
+                "OpenRouter returned no choices in engineer call. "
+                f"model={model} response={_response_debug_blob(r)}"
+            )
+
+        message = getattr(choices[0], "message", None)
+        content = getattr(message, "content", None) if message is not None else None
+
+        if isinstance(content, list):
+            text_parts = [
+                part.get("text", "") if isinstance(part, dict) else ""
+                for part in content
+            ]
+            content = "".join(text_parts).strip()
+
+        if not isinstance(content, str) or not content.strip():
+            raise RuntimeError(
+                "OpenRouter returned empty/non-text content in engineer call. "
+                f"model={model} response={_response_debug_blob(r)}"
+            )
+
+        usage_obj = getattr(r, "usage", None)
+        usage = {
+            "prompt_tokens": _to_int(getattr(usage_obj, "prompt_tokens", 0)),
+            "completion_tokens": _to_int(getattr(usage_obj, "completion_tokens", 0)),
+        }
+        return content, usage
     else:
         import anthropic as ant
         r = client.messages.create(

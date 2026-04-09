@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 import json
 import os
+import re
 from state import GraphState, RemediationHistory, Message, compact_message_history, append_and_cap
 from prompts.remediator_prompt import REMEDIATOR_SYSTEM, REMEDIATOR_USER
 from tracking.recorder import ResearchRecorder
@@ -64,48 +65,113 @@ def _dedupe_preserve_order(items: list[str]) -> list[str]:
     return deduped
 
 
+def _extract_check_ids_from_errors(errors: list[object]) -> set[str]:
+    check_ids: set[str] = set()
+    for error in errors:
+        text = str(error or "")
+        for match in re.findall(r"\[([A-Z0-9_-]+)\]", text):
+            check_ids.add(match.strip().upper())
+        for match in re.findall(r"\b(?:AVD-)?AWS-\d{4}\b", text, flags=re.IGNORECASE):
+            check_ids.add(match.strip().upper())
+        for match in re.findall(r"\bCKV2?_[A-Z0-9_]+\b", text, flags=re.IGNORECASE):
+            check_ids.add(match.strip().upper())
+    return check_ids
+
+
+def _get_latest_stage_result(validation_results: list[dict], stage: str) -> dict | None:
+    for result in reversed(validation_results):
+        if result.get("stage") == stage:
+            return result
+    return None
+
+
 def _extract_checkov_findings(validation_results: list[dict]) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
-    for result in validation_results:
-        if result.get("stage") != "checkov":
-            continue
-        raw = result.get("raw_output", "")
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        failed = data.get("results", {}).get("failed_checks", [])
-        for item in failed:
-            check_id = str(item.get("check_id") or "").strip()
-            if check_id:
-                findings.append({"check_id": check_id})
+    result = _get_latest_stage_result(validation_results, "checkov")
+    if not result:
+        return findings
+
+    raw = result.get("raw_output", "")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return findings
+
+    failed = data.get("results", {}).get("failed_checks", [])
+    for item in failed:
+        check_id = str(item.get("check_id") or "").strip()
+        if check_id:
+            findings.append({"check_id": check_id})
     return findings
 
 
 def _extract_trivy_findings(validation_results: list[dict]) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
-    for result in validation_results:
-        if result.get("stage") != "trivy":
-            continue
-        raw = result.get("raw_output", "")
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        for r in data.get("Results", []):
-            for misconfig in r.get("Misconfigurations", []):
-                check_id = str(misconfig.get("ID") or "").strip()
-                if check_id:
-                    findings.append({"check_id": check_id})
+    result = _get_latest_stage_result(validation_results, "trivy")
+    if not result:
+        return findings
+
+    raw = result.get("raw_output", "")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return findings
+
+    for r in data.get("Results", []):
+        for misconfig in r.get("Misconfigurations", []):
+            check_id = str(misconfig.get("ID") or "").strip()
+            if check_id:
+                findings.append({"check_id": check_id})
     return findings
 
 
+def _filter_findings_by_check_ids(
+    findings: list[dict[str, str]],
+    allowed_check_ids: set[str],
+) -> list[dict[str, str]]:
+    if not allowed_check_ids:
+        return findings
+
+    allowed = {check_id.strip().upper() for check_id in allowed_check_ids if check_id}
+    filtered: list[dict[str, str]] = []
+    seen: set[str] = set()
+
+    for finding in findings:
+        check_id = str(finding.get("check_id") or finding.get("rule_id") or "").strip()
+        if not check_id:
+            continue
+        normalized = check_id.upper()
+        if normalized not in allowed or normalized in seen:
+            continue
+        seen.add(normalized)
+        filtered.append({"check_id": check_id})
+
+    return filtered
+
+
 def _build_policy_source_context(validation_results: list[dict]) -> str:
+    latest_by_stage: dict[str, dict] = {}
+    for result in validation_results:
+        stage = str(result.get("stage") or "").strip()
+        if not stage:
+            continue
+        latest_by_stage[stage] = result
+
+    allowed_check_ids: set[str] = set()
+    for result in latest_by_stage.values():
+        allowed_check_ids.update(_extract_check_ids_from_errors(result.get("errors", [])))
+
     checkov_context = get_checkov_policy_context(
-        _extract_checkov_findings(validation_results)
+        _filter_findings_by_check_ids(
+            _extract_checkov_findings(validation_results),
+            allowed_check_ids,
+        )
     )
     trivy_context = get_trivy_policy_context(
-        _extract_trivy_findings(validation_results)
+        _filter_findings_by_check_ids(
+            _extract_trivy_findings(validation_results),
+            allowed_check_ids,
+        )
     )
 
     sections: list[str] = []
@@ -124,7 +190,15 @@ def _build_policy_source_context(validation_results: list[dict]) -> str:
 def _build_validation_errors_text(state: GraphState) -> str:
     error_blocks: list[str] = []
 
-    for result in state["validation_results"]:
+    validation_results = state.get("validation_results", [])
+    latest_by_stage: dict[str, dict] = {}
+    for result in validation_results:
+        stage = str(result.get("stage") or "").strip()
+        if not stage:
+            continue
+        latest_by_stage[stage] = result
+
+    for result in latest_by_stage.values():
         if result["passed"]:
             continue
         deduped_errors = _dedupe_preserve_order(

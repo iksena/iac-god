@@ -2,10 +2,18 @@
 from datetime import datetime
 import uuid
 import argparse
+import traceback
 from graph import build_graph
 from state import GraphState
 from tracking.recorder import ResearchRecorder
 from config import DEFAULT_CONFIG, DEFAULT_DEPLOY_CONFIG, LLMProvider, DeployTarget, DeployConfig
+
+
+def _parse_csv_arg(value: str | None) -> tuple[str, ...]:
+    if not value:
+        return ()
+    parts = [part.strip() for part in value.split(",")]
+    return tuple(part for part in parts if part)
 
 def run_pipeline(
     user_request: str,
@@ -14,6 +22,8 @@ def run_pipeline(
     model: str | None = None,
     deploy_target: str = "localstack",
     localstack_endpoint: str | None = None,
+    openrouter_provider_only: str | None = None,
+    openrouter_min_quantization: str | None = None,
 ) -> GraphState:
 
     # Configure provider
@@ -23,6 +33,11 @@ def run_pipeline(
     else:
         DEFAULT_CONFIG.provider = LLMProvider.OPENROUTER
         DEFAULT_CONFIG.model = model or "arcee-ai/trinity-large-preview:free"
+
+        if openrouter_provider_only is not None:
+            DEFAULT_CONFIG.openrouter_provider_only = _parse_csv_arg(openrouter_provider_only)
+        if openrouter_min_quantization is not None:
+            DEFAULT_CONFIG.openrouter_min_quantization = openrouter_min_quantization.strip().lower()
     
     # Configure deploy target
     deploy_config = DeployConfig(
@@ -62,10 +77,17 @@ def run_pipeline(
     print(f"{'='*60}")
 
     # Execute the graph
-    final_state = graph.invoke(
-        initial_state,
-        config={"configurable": {"thread_id": run_id}},
-    )
+    try:
+        final_state = graph.invoke(
+            initial_state,
+            config={"configurable": {"thread_id": run_id}},
+        )
+        if final_state is None:
+            raise RuntimeError("Pipeline graph returned None final_state")
+    except Exception:
+        print("\n[Pipeline] Unhandled exception while running graph:")
+        print(traceback.format_exc())
+        raise
 
     # Persist final template
     final_state["final_template"] = final_state["cloudformation_template"]
@@ -89,6 +111,19 @@ if __name__ == "__main__":
                         default="openrouter")
     parser.add_argument("--model", type=str, default=None)
     parser.add_argument(
+        "--openrouter-provider-only",
+        type=str,
+        default=None,
+        help="Comma-separated OpenRouter provider slugs to allow (maps to provider.only)",
+    )
+    parser.add_argument(
+        "--openrouter-min-quantization",
+        type=str,
+        choices=["int4", "int8", "fp4", "fp6", "fp8", "fp16", "bf16", "fp32", "unknown"],
+        default=None,
+        help="Minimum quantization level for OpenRouter provider filtering",
+    )
+    parser.add_argument(
         "--deploy-target",
         choices=["none", "localstack", "aws"],
         default="localstack",
@@ -102,11 +137,18 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    result = run_pipeline(
-        user_request=args.request,
-        max_iterations=args.max_iterations,
-        provider=args.provider,
-        model=args.model,
-        deploy_target=args.deploy_target,
-        localstack_endpoint=args.localstack_endpoint,
-    )
+    try:
+        result = run_pipeline(
+            user_request=args.request,
+            max_iterations=args.max_iterations,
+            provider=args.provider,
+            model=args.model,
+            deploy_target=args.deploy_target,
+            localstack_endpoint=args.localstack_endpoint,
+            openrouter_provider_only=args.openrouter_provider_only,
+            openrouter_min_quantization=args.openrouter_min_quantization,
+        )
+    except Exception:
+        print("\n[Main] Pipeline execution failed:")
+        print(traceback.format_exc())
+        raise SystemExit(1)
