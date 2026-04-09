@@ -119,7 +119,7 @@ def _call_llm_with_history(client, model, system, messages):
         }
         provider_preferences = build_openrouter_provider_preferences(DEFAULT_CONFIG)
         if provider_preferences:
-            request_kwargs["provider"] = provider_preferences
+            request_kwargs["extra_body"] = {"provider": provider_preferences}
 
         r = client.chat.completions.create(**request_kwargs)
         choices = getattr(r, "choices", None) or []

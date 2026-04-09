@@ -62,7 +62,7 @@ def planner_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         }
         provider_preferences = build_openrouter_provider_preferences(DEFAULT_CONFIG)
         if provider_preferences:
-            request_kwargs["provider"] = provider_preferences
+            request_kwargs["extra_body"] = {"provider": provider_preferences}
 
         response = client.chat.completions.create(
             **request_kwargs,
