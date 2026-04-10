@@ -57,7 +57,7 @@ class DeployTarget(Enum):
 class LLMConfig:
     provider: LLMProvider = LLMProvider.OPENROUTER
     model: str = "arcee-ai/trinity-large-preview:free"   # or "claude-3-5-sonnet-20241022"
-    temperature: float = 0.1
+    temperature: float = 0.0
     max_tokens: int = 8192
 
     # OpenRouter
