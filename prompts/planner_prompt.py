@@ -49,9 +49,8 @@ We need a CloudFormation template that creates a VPC, Security Group, S3 Bucket,
 5. Create an S3 Bucket Policy that denies all requests not using HTTPS by checking the aws:SecureTransport condition.
 6. Create a DynamoDB Table with a unique name, define a partition key (String) and sort key (Number), use PAY_PER_REQUEST billing mode, and enable deletion protection.
 7. Enable Point-in-Time Recovery and server-side encryption on the DynamoDB Table for data durability and security.
-8. Add metadata to suppress cfn_nag and checkov warnings where intentional deviations from default rules exist.
-9. Use CloudFormation intrinsic functions (!Sub, !Ref) for dynamic naming and resource references throughout the template.
-10. Include a proper AWSTemplateFormatVersion and Description to ensure the template follows CloudFormation best practices.
+8. Use CloudFormation intrinsic functions (!Sub, !Ref) for dynamic naming and resource references throughout the template.
+9. Include a proper AWSTemplateFormatVersion and Description to ensure the template follows CloudFormation best practices.
 </objectives>
 </example>
 

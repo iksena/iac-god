@@ -161,6 +161,11 @@ def _build_policy_source_context(validation_results: list[dict]) -> str:
     for result in latest_by_stage.values():
         allowed_check_ids.update(_extract_check_ids_from_errors(result.get("errors", [])))
 
+    # Only include policy source context when current validation errors
+    # explicitly reference security check IDs.
+    if not allowed_check_ids:
+        return ""
+
     checkov_context = get_checkov_policy_context(
         _filter_findings_by_check_ids(
             _extract_checkov_findings(validation_results),
