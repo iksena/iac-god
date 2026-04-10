@@ -58,7 +58,8 @@ class LLMConfig:
     provider: LLMProvider = LLMProvider.OPENROUTER
     model: str = "arcee-ai/trinity-large-preview:free"   # or "claude-3-5-sonnet-20241022"
     temperature: float = 0.0
-    max_tokens: int = 8192
+    max_tokens: int = 8192 * 2
+    reasoning_enabled: bool = True
 
     # OpenRouter
     openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY", "")
@@ -76,13 +77,13 @@ class DeployConfig:
     target: DeployTarget = DeployTarget.NONE
     # LocalStack settings
     localstack_endpoint: str = os.getenv("LOCALSTACK_ENDPOINT", "http://localhost:4566")
-    localstack_reset_wait: float = 1.5      # Seconds to wait after state reset
+    localstack_reset_wait: float = 5      # Seconds to wait after state reset
     # AWS settings (only used when target=AWS)
     aws_region: str = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
     aws_profile: str = os.getenv("AWS_PROFILE", "default")
     # Shared
-    stack_creation_timeout: int = 300       # Seconds before giving up on stack creation
-    stack_deletion_timeout: int = 120       # Seconds to wait for cleanup after each iteration
+    stack_creation_timeout: int = 15*60       # Seconds before giving up on stack creation
+    stack_deletion_timeout: int = 5*60       # Seconds to wait for cleanup after each iteration
 
 
 def build_openrouter_provider_preferences(config: LLMConfig) -> dict:

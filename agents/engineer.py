@@ -120,6 +120,9 @@ def _call_llm_with_history(client, model, system, messages):
         provider_preferences = build_openrouter_provider_preferences(DEFAULT_CONFIG)
         if provider_preferences:
             request_kwargs["extra_body"] = {"provider": provider_preferences}
+        if DEFAULT_CONFIG.reasoning_enabled:
+            request_kwargs["extra_body"] = request_kwargs.get("extra_body", {})
+            request_kwargs["extra_body"]["reasoning"] = { "enabled": True }
 
         r = client.chat.completions.create(**request_kwargs)
         choices = getattr(r, "choices", None) or []
