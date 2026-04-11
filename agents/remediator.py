@@ -10,6 +10,7 @@ from tools.checkov_context import get_checkov_policy_context
 from tools.trivy_context import get_trivy_policy_context
 from tools.cfn_graph_context_rag import get_cfn_schema_context
 from tools.cfn_aws_doc_context import get_cfn_aws_doc_context_for_state
+from tools.cfn_graph_context import get_cfn_graph_context
 
 # ---------------------------------------------------------------------------
 # CFN context strategy selector
@@ -46,12 +47,20 @@ def _get_cfn_schema_context(
         )
         return ctx, "aws_doc_mcp"
 
-    # Default: offline GraphRAG (FAISS + BM25 + graph)
-    ctx = get_cfn_schema_context(
-        queries="none",
+    elif _CFN_STRATEGY == "rag":
+        ctx = get_cfn_schema_context(
+            queries="none",
+            template_yaml=template_yaml,
+        )
+        return ctx, "rag"
+    
+    print(f"[Remediator] Using strategy '{_CFN_STRATEGY}'.")
+    ctx = get_cfn_graph_context(
+        validation_results=validation_results,
+        deploy_validation_result=deploy_validation_result,
         template_yaml=template_yaml,
     )
-    return ctx, "rag"
+    return ctx, "exact_graph"
 
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
@@ -270,19 +279,19 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
 
     policy_source_context  = _build_policy_source_context(state["validation_results"])
 
-    # cfn_graph_context, strategy = _get_cfn_schema_context(
-    #     validation_results=state.get("validation_results"),
-    #     deploy_validation_result=state.get("deploy_validation_result"),
-    #     template_yaml=state["cloudformation_template"],
-    # )
-    # print(f"[Remediator] CFN schema context ({strategy}): {len(cfn_graph_context)} chars")
+    cfn_graph_context, strategy = _get_cfn_schema_context(
+        validation_results=state.get("validation_results"),
+        deploy_validation_result=state.get("deploy_validation_result"),
+        template_yaml=state["cloudformation_template"],
+    )
+    print(f"[Remediator] CFN schema context ({strategy}): {len(cfn_graph_context)} chars")
 
     user_content = REMEDIATOR_USER.format(
         iteration=iteration,
         template=state["cloudformation_template"],
         validation_errors=_build_validation_errors_text(state),
         policy_source_context=policy_source_context,
-        cfn_graph_context="",
+        cfn_graph_context=cfn_graph_context,
     )
     user_msg: Message = {"role": "user", "content": user_content}
 
