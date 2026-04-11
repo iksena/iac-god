@@ -92,7 +92,7 @@ def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_
 if __name__ == "__main__":
     # You can change input_csv, base_dir, and output_csv as needed
     merge_results_with_reports(
-        input_csv="benchmark_runs/Grok 4.1 Fast 89-153/results.csv", 
-        base_dir="runs/Grok 4.1 Fast 89-153/", 
-        output_csv="benchmark_runs/Grok 4.1 Fast 89-153/results_merged.csv"
+        input_csv="benchmark_runs/CFN Schema Context Deterministic 2/results.csv", 
+        base_dir="runs/archive/", 
+        output_csv="benchmark_runs/CFN Schema Context Deterministic 2/results_merged.csv"
     )
