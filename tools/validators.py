@@ -229,12 +229,26 @@ def run_all_validators(
     Run all validation stages. Returns (static_results, all_passed, deploy_result).
     Deploy stage only runs if all static validators pass.
     """
+    yaml_result = validate_yaml(template)
+    cfn_lint_result = validate_cfn_lint(template)
+
     results = [
-        validate_yaml(template),
-        validate_cfn_lint(template),
-        # validate_checkov(template),
-        validate_trivy(template),
+        yaml_result,
+        cfn_lint_result,
     ]
+
+    # Trivy runs only after YAML and cfn-lint succeed.
+    if yaml_result["passed"] and cfn_lint_result["passed"]:
+        trivy_result = validate_trivy(template)
+    else:
+        trivy_result = ValidationResult(
+            stage="trivy",
+            passed=False,
+            errors=[],
+            raw_output="Skipped: yaml/cfn-lint prerequisite validation failed",
+        )
+
+    results.append(trivy_result)
     static_passed = all(r["passed"] for r in results)
 
     # Stage 5: Deployability check (only if static stages pass)
