@@ -35,6 +35,7 @@ def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_
                 "run_id": report.get("run_id", run_id),
                 "policy_total_policies": report.get("policy_metrics", {}).get("total_policies", 0),
                 "policy_passed_policies": report.get("policy_metrics", {}).get("passed_policies", 0),
+                "final_template": report.get("final_template", "None"),
             }
 
             # Extract full deploy_validation_result details
@@ -43,6 +44,7 @@ def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_
             row_extra["deploy_passed"] = deploy_res.get("passed", False)
             row_extra["deploy_stack_id"] = deploy_res.get("stack_id", "None")
             row_extra["deploy_error_message"] = deploy_res.get("error_message") or "None"
+            row_extra["deploy_logs"] = deploy_res.get("deployment_logs") or "None"
             row_extra["deploy_duration_seconds"] = deploy_res.get("duration_seconds", 0.0)
             
             failed_res = deploy_res.get("failed_resources", [])
@@ -89,10 +91,52 @@ def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_
     df_merged.to_csv(output_csv, index=False)
     print(f"Successfully created merged results at '{output_csv}'")
 
+def merge_results(csv_paths, merged_csv_path, jsonl_paths=None, merged_jsonl_path=None):
+    """
+    Merges multiple CSV and JSONL files from the same model into single files.
+    """
+    # Merge CSVs
+    if csv_paths:
+        dfs = [pd.read_csv(f) for f in csv_paths if os.path.exists(f)]
+        if dfs:
+            merged_df = pd.concat(dfs, ignore_index=True)
+            merged_df.to_csv(merged_csv_path, index=False)
+            print(f"Merged {len(dfs)} CSVs into {merged_csv_path}")
+        else:
+            print("No valid CSV files found to merge.")
+    
+    # Merge JSONLs
+    if jsonl_paths and merged_jsonl_path:
+        valid_jsonls = [f for f in jsonl_paths if os.path.exists(f)]
+        if valid_jsonls:
+            with open(merged_jsonl_path, 'w', encoding='utf-8') as outfile:
+                for fname in valid_jsonls:
+                    with open(fname, 'r', encoding='utf-8') as infile:
+                        for line in infile:
+                            outfile.write(line)
+            print(f"Merged {len(valid_jsonls)} JSONLs into {merged_jsonl_path}")
+
 if __name__ == "__main__":
     # You can change input_csv, base_dir, and output_csv as needed
     merge_results_with_reports(
-        input_csv="benchmark_runs/CFN Schema Context Deterministic 2/results.csv", 
-        base_dir="runs/archive/", 
-        output_csv="benchmark_runs/CFN Schema Context Deterministic 2/results_merged.csv"
+        input_csv="./benchmark_runs/Deployable Grok4.1Fast 0-143/results_merged.csv", 
+        base_dir="runs/Deployable Grok4.1Fast/", 
+        output_csv="./benchmark_runs/Deployable Grok4.1Fast 0-143/results_agg.csv"
     )
+    # Example usage (Uncomment to use):
+    # merge_results(
+    #     csv_paths=[
+    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 0-153/results.csv', 
+    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 106/results.csv',
+    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 140/results.csv',
+    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 147/results.csv'
+    #     ], 
+    #     merged_csv_path='./benchmark_runs/Secure + DetContext Grok4.1Fast 0-153/results_merged.csv',
+    #     jsonl_paths=[
+    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 0-153/results.jsonl', 
+    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 106/results.jsonl',
+    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 140/results.jsonl',
+    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 147/results.jsonl'
+    #     ],
+    #     merged_jsonl_path='./benchmark_runs/Secure + DetContext Grok4.1Fast 0-153/results_merged.jsonl'
+    # )

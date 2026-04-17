@@ -1,10 +1,11 @@
 # tools/cfn_graph_context.py
 """
-Deterministic Graph Context Tool (No RAG/FAISS).
+Deterministic Graph Context Tool (Optimized for LLM Context Windows).
 
 Parses the current YAML template to find actual AWS resource types, then 
 cross-references the validation/deploy errors to highlight problematic properties.
 Pulls exact schemas from the pre-built NetworkX cfn_graph.pkl.
+ONLY outputs schemas for resources directly implicated by the errors.
 """
 from __future__ import annotations
 
@@ -69,7 +70,6 @@ def _build_prop_index(G: nx.DiGraph) -> dict[str, list[str]]:
             name = (data.get("name") or "").lower()
             if not name: continue
             for parent, _ in G.in_edges(node_id):
-                # Using ("ResourceType", "Resource", None) to handle graph metadata variations
                 if G.nodes[parent].get("ntype") in ("ResourceType", "Resource", None) and parent.startswith("AWS::"):
                     index.setdefault(name, []).append(parent)
     return index
@@ -94,18 +94,15 @@ def _build_resource_block(
     G: nx.DiGraph,
     rtype: str,
     pinned_props: set[str],
-    *,
-    max_optional: int = 12,
-    max_nested: int = 8,
 ) -> str:
-    props, ptypes = [], []
+    """Builds a highly strict, pruned markdown block for a resource."""
+    props = []
     for _, neighbour in G.out_edges(rtype):
         nd = G.nodes[neighbour]
-        if nd.get("ntype") == "Property": props.append(nd)
-        elif nd.get("ntype") == "PropertyType": ptypes.append(nd)
+        if nd.get("ntype") == "Property": 
+            props.append(nd)
 
     required = [p for p in props if p.get("required")]
-    optional = [p for p in props if not p.get("required")]
 
     lines = [f"### {rtype}"]
 
@@ -120,22 +117,11 @@ def _build_resource_block(
             else:
                 lines.append(f"  - `{name}` *(invalid property name for this resource)*")
 
+    # Always show required properties so the LLM doesn't hallucinate/forget them
     req_rest = [p for p in required if p.get("name") not in pinned_props]
     if req_rest:
         parts = [f"`{p.get('name','?')}` ({p.get('primitive_type') or p.get('type') or 'Any'}, **required**)" for p in req_rest]
         lines.append("**Required properties:** " + ", ".join(parts))
-
-    opt_rest = [p for p in optional if p.get("name") not in pinned_props]
-    if opt_rest:
-        lines.append(f"**Optional properties (first {max_optional}):**")
-        for p in opt_rest[:max_optional]:
-            lines.append(f"  - `{p.get('name', '?')}` ({p.get('primitive_type') or p.get('type') or 'Any'})")
-        if len(opt_rest) > max_optional:
-            lines.append(f"  - … and {len(opt_rest) - max_optional} more")
-
-    if ptypes:
-        nested = [nd.get("name", "?").rsplit(".", 1)[-1] for nd in ptypes[:max_nested]]
-        lines.append("**Nested types:** " + ", ".join(f"`{n}`" for n in nested))
 
     return "\n".join(lines)
 
@@ -153,36 +139,43 @@ def get_cfn_graph_context(
     if not errors:
         return "No errors provided."
 
-    # 1. Identify types in the current template + explicit AWS::X::Y mentions in errors
+    # 1. Identify types in the current template
     logical_to_type = _parse_template_resource_map(template_yaml)
-    active_types = set(logical_to_type.values())
+    template_types = set(logical_to_type.values())
     
+    # 2. Identify explicit AWS::X::Y mentions in errors
+    error_mentioned_types = set()
     for error in errors:
         for match in _AWS_TYPE_RE.findall(error):
-            active_types.add(match)
+            error_mentioned_types.add(match)
 
+    active_types = template_types | error_mentioned_types
     if not active_types:
         return "No AWS resource types identified in the template or errors."
 
-    # 2. Map properties mentioned in errors strictly to active resource types
+    # 3. Map properties mentioned in errors strictly to active resource types
     prop_index = _build_prop_index(G)
     property_hints: dict[str, set[str]] = {rtype: set() for rtype in active_types}
     
     for error in errors:
-        # Tokenize on punctuation/whitespace
         for token in error.split():
             token_clean = token.strip("'\"[]().,:")
             if not token_clean: continue
             
-            # If the token is a known property name
             for rtype in prop_index.get(token_clean.lower(), []):
-                # ONLY attach it if the resource type is actually in the user's template
                 if rtype in active_types:
                     property_hints[rtype].add(token_clean)
 
-    # 3. Render blocks only for active types
+    # 4. PRUNING: Only render blocks for implicated resources
     blocks = []
     for rtype in active_types:
+        has_flagged_props = len(property_hints[rtype]) > 0
+        is_explicitly_errored = rtype in error_mentioned_types
+        
+        # SKIP: If the resource wasn't directly implicated by the errors, don't waste tokens
+        if not has_flagged_props and not is_explicitly_errored:
+            continue
+            
         if rtype not in G:
             blocks.append(f"### {rtype}\n*(Not found in local CloudFormation specification)*")
             continue
@@ -192,11 +185,11 @@ def get_cfn_graph_context(
             blocks.append(block)
 
     if not blocks:
-        return "No renderable schema context found."
+        return "No schema context required (errors do not implicate specific resource properties)."
 
     header = textwrap.dedent("""\
         ## Relevant AWS CloudFormation Resource Schemas
-        The following schemas are for resources currently detected in your template.
+        The following schemas are for resources directly implicated by the current errors.
         Properties marked *(invalid property name for this resource)* are causing validation failures and must be corrected.
 
     """)
