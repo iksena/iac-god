@@ -12,6 +12,7 @@ from tools.cfn_graph_context_rag import get_cfn_schema_context
 from tools.cfn_aws_doc_context import get_cfn_aws_doc_context_for_state
 from tools.cfn_graph_context import get_cfn_graph_context
 from tools.cfn_graph_neo4j_rag import get_cfn_graph_context_for_state
+from agents.engineer import _format_remediation_history_block
 
 # ---------------------------------------------------------------------------
 # CFN context strategy selector
@@ -333,20 +334,22 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     else:
         print("[Remediator] Context injection skipped for non-YAML/cfn-lint/deploy failures.")
 
+    remediation_history_block = _format_remediation_history_block(state["remediation_history"])
+
     user_content = REMEDIATOR_USER.format(
         iteration=iteration,
         template=state["cloudformation_template"],
         validation_errors=_build_validation_errors_text(state),
         policy_source_context=policy_source_context,
         cfn_graph_context=cfn_graph_context,
+        remediation_history_block=remediation_history_block,
     )
     user_msg: Message = {"role": "user", "content": user_content}
 
-    messages = compact_message_history(state["remediator_history"]) + [user_msg]
+    messages = [user_msg]
 
     client, model = _build_client()
     content, usage = _call_llm_with_history(client, model, system, messages)
-    assistant_msg: Message = {"role": "assistant", "content": content}
 
     llm_record = recorder.record_llm_call(
         state=state, agent="remediator", model=model,
@@ -368,5 +371,5 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         "remediation_history": state["remediation_history"] + [new_history_entry],
         "current_iteration": iteration + 1,
         "llm_call_log": state["llm_call_log"] + [llm_record],
-        "remediator_history": append_and_cap(state["remediator_history"], user_msg, assistant_msg),
+        "remediator_history": state["remediator_history"],
     }

@@ -20,6 +20,17 @@ ENGINEER_USER_INITIAL = "Generate the CloudFormation template that fully satisfi
 ENGINEER_USER_REMEDIATION = """\
 Iteration {iteration} — Apply these fixes based on validation errors and remediation suggestions from the Remediator agent:
 
+## Current Template
+```yaml
+{current_template}
+```
+
+## Remediation History
+The following is a structured record of every prior validation failure and its root cause analysis.
+Use this to avoid repeating previously attempted fixes and to understand the cumulative error context.
+
+{remediation_history_block}
+
 ## Validation Errors
 {error_context}
 
@@ -27,6 +38,6 @@ Iteration {iteration} — Apply these fixes based on validation errors and remed
 {remediation_suggestion}
 
 The final template must also satisfy Original User Request and Grounded Objectives.
-These fix objectives can override or extend previous fix objectives and Grounded Objectives.
+Fix objectives from the Remediator can override or extend Grounded Objectives.
 Output the complete corrected CloudFormation YAML.
 """

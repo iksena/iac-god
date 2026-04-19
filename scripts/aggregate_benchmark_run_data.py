@@ -119,9 +119,9 @@ def merge_results(csv_paths, merged_csv_path, jsonl_paths=None, merged_jsonl_pat
 if __name__ == "__main__":
     # You can change input_csv, base_dir, and output_csv as needed
     merge_results_with_reports(
-        input_csv="./benchmark_runs/Deployable Grok4.1Fast 0-143/results_merged.csv", 
-        base_dir="runs/Deployable Grok4.1Fast/", 
-        output_csv="./benchmark_runs/Deployable Grok4.1Fast 0-143/results_agg.csv"
+        input_csv="./benchmark_runs/20260418_113501 Secure Neo4J Elepant Alpha/results.csv", 
+        base_dir="runs/", 
+        output_csv="./benchmark_runs/20260418_113501 Secure Neo4J Elepant Alpha/results_agg.csv"
     )
     # Example usage (Uncomment to use):
     # merge_results(

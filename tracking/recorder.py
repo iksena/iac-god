@@ -68,6 +68,10 @@ class ResearchRecorder:
         # Append to JSONL file for streaming access
         with open(self.output_dir / "llm_calls.jsonl", "a") as f:
             f.write(json.dumps(record) + "\n")
+
+        # Append a readable per-agent transcript from the actual prompt/response
+        # payload we send to and receive from the model.
+        self._append_agent_history_entry(record)
         return record
 
     def save_iteration_snapshot(self, state: GraphState):
@@ -87,9 +91,6 @@ class ResearchRecorder:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         snapshot_path.write_text(json.dumps(snapshot, indent=2))
-        self._write_agent_history("planner", state["planner_history"])
-        self._write_agent_history("engineer", state["engineer_history"])
-        self._write_agent_history("remediator", state["remediator_history"])
 
     def save_final_report(self, state: GraphState):
         """Save complete research report at end of run."""
@@ -119,6 +120,40 @@ class ResearchRecorder:
             self._format_history(agent, history),
             encoding="utf-8",
         )
+
+    def _append_agent_history_entry(self, record: LLMCallRecord) -> None:
+        agent = str(record.get("agent") or "unknown")
+        history_path = self.output_dir / f"{agent}_history.txt"
+
+        if not history_path.exists():
+            header_lines = [
+                f"Agent: {agent}",
+                f"Run ID: {self.run_id}",
+                "",
+            ]
+            history_path.write_text("\n".join(header_lines), encoding="utf-8")
+
+        timestamp = str(record.get("timestamp") or datetime.now(timezone.utc).isoformat())
+        iteration = record.get("iteration", "?")
+        model = str(record.get("model") or "")
+        prompt = str(record.get("prompt") or "")
+        response = str(record.get("response") or "")
+
+        entry_lines = [
+            f"Turn {iteration} | {timestamp}",
+            f"Model: {model}",
+            "[prompt]",
+            prompt,
+            "",
+            "[response]",
+            response,
+            "",
+            "---",
+            "",
+        ]
+
+        with open(history_path, "a", encoding="utf-8") as f:
+            f.write("\n".join(entry_lines))
 
     def _format_history(self, agent: str, history: list[dict]) -> str:
         lines: list[str] = [

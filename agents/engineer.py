@@ -9,6 +9,34 @@ from prompts.engineer_prompt import (
 )
 from tracking.recorder import ResearchRecorder
 
+def _format_remediation_history_block(remediation_history: list) -> str:
+    """
+    Render remediation_history entries as a structured document for prompt injection.
+    Each entry captures: iteration, the errors that occurred, and the remediator's RCA/suggestion.
+    """
+    if not remediation_history:
+        return "No prior remediation attempts."
+
+    blocks = []
+    for entry in remediation_history:
+        iteration = entry.get("iteration", "?")
+        formatted_errors = entry.get("formatted_errors", "No error details recorded.")
+        suggestion = entry.get("suggestion", "No suggestion recorded.")
+        timestamp = entry.get("timestamp", "")
+
+        block = f"""\
+### Iteration {iteration}
+
+**Errors that triggered this remediation:**
+{formatted_errors}
+
+**Root Cause Analysis and Fix Objectives applied:**
+{suggestion}
+        """
+        blocks.append(block)
+
+    return "\n---\n".join(blocks)
+
 
 def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     iteration = state["current_iteration"]
@@ -30,20 +58,21 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         # Iteration 2+: only carry NEW information — the latest fix directive + error context
         # The previous template is already in engineer_history[-1] assistant turn
         latest = state["remediation_history"][-1]
+        remediation_history_block = _format_remediation_history_block(state["remediation_history"])
         user_content = ENGINEER_USER_REMEDIATION.format(
             iteration=latest["iteration"],
+            current_template=state["cloudformation_template"],
             error_context=latest["formatted_errors"],
             remediation_suggestion=latest["suggestion"],
+            remediation_history_block=remediation_history_block,
         )
 
     user_msg: Message = {"role": "user", "content": user_content}
 
-    # Full accumulated history + new user turn (no duplication — history carries prior turns)
-    messages = compact_message_history(state["engineer_history"]) + [user_msg]
+    messages = [user_msg]
 
     content, usage = _call_llm_with_history(client, model, system, messages)
     template = _strip_yaml_fences(content)
-    assistant_msg: Message = {"role": "assistant", "content": content}
 
     llm_record = recorder.record_llm_call(
         state=state,
@@ -58,7 +87,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     return {
         "cloudformation_template": template,
         "llm_call_log": state["llm_call_log"] + [llm_record],
-        "engineer_history": append_and_cap(state["engineer_history"], user_msg, assistant_msg),
+        "engineer_history": state["engineer_history"],
     }
 
 
