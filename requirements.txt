@@ -16,3 +16,4 @@ rank_bm25
 sentence_transformers
 httpx
 pandas
+neo4j

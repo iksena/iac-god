@@ -27,12 +27,12 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         # Iteration 1: simple generation request — no history yet
         user_content = ENGINEER_USER_INITIAL
     else:
-        # Iteration 2+: only carry NEW information — the latest fix directive
+        # Iteration 2+: only carry NEW information — the latest fix directive + error context
         # The previous template is already in engineer_history[-1] assistant turn
-        # The suggestion text is already in engineer_history[-2] user turn (via prior remediation context)
         latest = state["remediation_history"][-1]
         user_content = ENGINEER_USER_REMEDIATION.format(
             iteration=latest["iteration"],
+            error_context=latest["formatted_errors"],
             remediation_suggestion=latest["suggestion"],
         )
 

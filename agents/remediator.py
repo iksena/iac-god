@@ -11,6 +11,7 @@ from tools.trivy_context import get_trivy_policy_context
 from tools.cfn_graph_context_rag import get_cfn_schema_context
 from tools.cfn_aws_doc_context import get_cfn_aws_doc_context_for_state
 from tools.cfn_graph_context import get_cfn_graph_context
+from tools.cfn_graph_neo4j_rag import get_cfn_graph_context_for_state
 
 # ---------------------------------------------------------------------------
 # CFN context strategy selector
@@ -53,6 +54,14 @@ def _get_cfn_schema_context(
             template_yaml=template_yaml,
         )
         return ctx, "rag"
+    
+    elif _CFN_STRATEGY == "neo4j":
+         ctx = get_cfn_graph_context_for_state(
+            validation_results=validation_results,
+            deploy_validation_result=deploy_validation_result,
+            template_yaml=template_yaml,
+        )
+         return ctx, "neo4j"
     
     print(f"[Remediator] Using strategy '{_CFN_STRATEGY}'.")
     ctx = get_cfn_graph_context(
@@ -268,6 +277,37 @@ def _build_validation_errors_text(state: GraphState) -> str:
         return "No validation errors reported."
     return "\n\n".join(error_blocks)
 
+
+def _should_include_remediation_context(state: GraphState) -> bool:
+    """Include heavy context only for YAML, cfn-lint, or deploy failures."""
+    validation_results = state.get("validation_results", [])
+    yaml_result = _get_latest_stage_result(validation_results, "yaml")
+    cfn_lint_result = _get_latest_stage_result(validation_results, "cfn-lint")
+
+    if yaml_result and not yaml_result.get("passed", True):
+        return True
+    if cfn_lint_result and not cfn_lint_result.get("passed", True):
+        return True
+
+    deploy_result = state.get("deploy_validation_result")
+    if deploy_result and not deploy_result.get("passed", True) and deploy_result.get("target") != "skipped":
+        return True
+
+    return False
+
+
+def _should_include_policy_source_context(state: GraphState) -> bool:
+    """Include security policy context for Trivy/Checkov failures."""
+    validation_results = state.get("validation_results", [])
+    trivy_result = _get_latest_stage_result(validation_results, "trivy")
+    checkov_result = _get_latest_stage_result(validation_results, "checkov")
+
+    if trivy_result and not trivy_result.get("passed", True):
+        return True
+    if checkov_result and not checkov_result.get("passed", True):
+        return True
+    return False
+
 def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     iteration = state["current_iteration"]
     print(f"\n[Remediator] Analyzing errors (iteration {iteration})...")
@@ -277,14 +317,21 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"]))
     )
 
-    policy_source_context  = _build_policy_source_context(state["validation_results"])
+    policy_source_context = ""
+    cfn_graph_context = ""
 
-    cfn_graph_context, strategy = _get_cfn_schema_context(
-        validation_results=state.get("validation_results"),
-        deploy_validation_result=state.get("deploy_validation_result"),
-        template_yaml=state["cloudformation_template"],
-    )
-    print(f"[Remediator] CFN schema context ({strategy}): {len(cfn_graph_context)} chars")
+    if _should_include_policy_source_context(state):
+        policy_source_context = _build_policy_source_context(state["validation_results"])
+
+    if _should_include_remediation_context(state):
+        cfn_graph_context, strategy = _get_cfn_schema_context(
+            validation_results=state.get("validation_results"),
+            deploy_validation_result=state.get("deploy_validation_result"),
+            template_yaml=state["cloudformation_template"],
+        )
+        print(f"[Remediator] CFN schema context ({strategy}): {len(cfn_graph_context)} chars")
+    else:
+        print("[Remediator] Context injection skipped for non-YAML/cfn-lint/deploy failures.")
 
     user_content = REMEDIATOR_USER.format(
         iteration=iteration,
@@ -307,9 +354,11 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         response=content, token_usage=usage,
     )
 
+    formatted_errors = _build_validation_errors_text(state)
     new_history_entry: RemediationHistory = {
         "iteration": iteration,
         "errors": state["validation_results"],
+        "formatted_errors": formatted_errors,
         "suggestion": content,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

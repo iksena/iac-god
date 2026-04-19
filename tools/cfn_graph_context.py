@@ -133,7 +133,7 @@ def get_cfn_graph_context(
     """Deterministic exact-match context builder."""
     G = _load_graph()
     if G is None:
-        return "CFN schema graph not available (data/cfn_graph.pkl missing)."
+        return ""
 
     errors = _extract_errors(validation_results, deploy_validation_result)
     if not errors:
@@ -151,7 +151,7 @@ def get_cfn_graph_context(
 
     active_types = template_types | error_mentioned_types
     if not active_types:
-        return "No AWS resource types identified in the template or errors."
+        return ""
 
     # 3. Map properties mentioned in errors strictly to active resource types
     prop_index = _build_prop_index(G)
@@ -185,7 +185,7 @@ def get_cfn_graph_context(
             blocks.append(block)
 
     if not blocks:
-        return "No schema context required (errors do not implicate specific resource properties)."
+        return ""
 
     header = textwrap.dedent("""\
         ## Relevant AWS CloudFormation Resource Schemas

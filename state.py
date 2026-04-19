@@ -30,6 +30,7 @@ class DeployValidationResult(TypedDict):
 class RemediationHistory(TypedDict):
     iteration: int
     errors: list[ValidationResult]
+    formatted_errors: str       # Human-readable error context
     suggestion: str     # Remediator's fix suggestion
     timestamp: str
 
