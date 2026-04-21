@@ -1,0 +1,2582 @@
+check_id,avd_url,service,title,description,impact,remediation_cfn,remediation_tf,cfn_good_example,tf_good_example,links
+AVD-AWS-0001,https://avd.aquasec.com/misconfig/aws/apigateway/aws-0001/,apigateway,,API Gateway stages should have access log settings block configured to track all access to a particular stage. This should be applied to both v1 and v2 gateway stages.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable logging for API Gateway stages'],['Enable logging for API Gateway stages'],"AWSTemplateFormatVersion: ""2010-09-09""
+
+Description: Good Example of ApiGateway
+
+Resources:
+  GoodApi:
+    Type: AWS::ApiGatewayV2::Api
+
+  GoodApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      AccessLogSettings:
+        DestinationArn: gateway-logging
+        Format: json
+      ApiId: !Ref GoodApi
+      StageName: GoodApiStage","resource ""aws_apigatewayv2_stage"" ""good_example"" {
+  api_id = aws_apigatewayv2_api.example.id
+  name   = ""example-stage""
+
+  access_log_settings {
+    destination_arn = ""arn:aws:logs:region:0123456789:log-group:access_logging""
+    format          = ""json""
+  }
+}",https://docs.aws.amazon.com/apigateway/latest/developerguide/set-up-logging.html
+AVD-AWS-0002,https://avd.aquasec.com/misconfig/aws/apigateway/aws-0002/,apigateway,,Method cache encryption ensures that any sensitive data in the cache is not vulnerable to compromise in the event of interception,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Enable cache encryption'],,"resource ""aws_api_gateway_rest_api"" ""example"" {}
+
+resource ""aws_api_gateway_stage"" ""example"" {
+  rest_api_id = aws_api_gateway_rest_api.example.id
+}
+
+resource ""aws_api_gateway_method_settings"" ""good_example"" {
+  rest_api_id = aws_api_gateway_rest_api.example.id
+  stage_name  = aws_api_gateway_stage.example.stage_name
+  method_path = ""path1/GET""
+
+  settings {
+    caching_enabled      = true
+    cache_data_encrypted = true
+  }
+}",
+AVD-AWS-0003,https://avd.aquasec.com/misconfig/aws/apigateway/aws-0003/,apigateway,,X-Ray tracing enables end-to-end debugging and analysis of all API Gateway HTTP requests.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Enable tracing'],,"resource ""aws_api_gateway_rest_api"" ""test"" {}
+
+resource ""aws_api_gateway_stage"" ""good_example"" {
+  stage_name           = ""prod""
+  rest_api_id          = aws_api_gateway_rest_api.test.id
+  deployment_id        = aws_api_gateway_deployment.test.id
+  xray_tracing_enabled = true
+}",
+AVD-AWS-0004,https://avd.aquasec.com/misconfig/aws/apigateway/aws-0004/,apigateway,,API Gateway methods should generally be protected by authorization or api key. OPTION verb calls can be used without authorization,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Use and authorization method or require API Key'],,"resource ""aws_api_gateway_rest_api"" ""example"" {}
+
+resource ""aws_api_gateway_resource"" ""example"" {
+  rest_api_id = aws_api_gateway_rest_api.MyDemoAPI.id
+}
+
+resource ""aws_api_gateway_method"" ""good_example"" {
+  rest_api_id   = aws_api_gateway_rest_api.example.id
+  resource_id   = aws_api_gateway_resource.example.id
+  http_method   = ""GET""
+  authorization = ""AWS_IAM""
+}",
+AVD-AWS-0005,https://avd.aquasec.com/misconfig/aws/apigateway/aws-0005/,apigateway,,You should not use outdated/insecure TLS versions for encryption. You should be using TLS v1.2+.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Use the most modern TLS/SSL policies available'],,"resource ""aws_api_gateway_domain_name"" ""good_example"" {
+  security_policy      = ""SecurityPolicy_TLS13_1_2_PFS_PQ_2025_09""
+  endpoint_access_mode = ""STRICT""
+  endpoint_configuration {
+    types = [""REGIONAL""]
+  }
+}",https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-custom-domain-tls-version.html | https://docs.aws.amazon.com/apigateway/latest/developerguide/apigateway-security-policies-list.html
+AVD-AWS-0006,https://avd.aquasec.com/misconfig/aws/athena/aws-0006/,athena,,Data can be read if the Athena Database is compromised. Athena databases and workspace result sets should be encrypted at rests. These databases and query sets are generally derived from data in S3 buckets and should have the same level of at rest protection.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable encryption at rest for Athena databases and workgroup configurations'],['Enable encryption at rest for Athena databases and workgroup configurations'],"Resources:
+  GoodExample:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: goodExample
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          EncryptionConfiguration:
+            EncryptionOption: SSE_KMS","resource ""aws_athena_database"" ""good_example"" {
+  name   = ""database_name""
+  bucket = aws_s3_bucket.hoge.bucket
+
+  encryption_configuration {
+    encryption_option = ""SSE_KMS""
+    kms_key_arn       = aws_kms_key.example.arn
+  }
+}",https://docs.aws.amazon.com/athena/latest/ug/encryption.html
+AVD-AWS-0007,https://avd.aquasec.com/misconfig/aws/athena/aws-0007/,athena,,Clients can ignore encryption requirements without enforced configuration. Athena workgroup configuration should be enforced to prevent client side changes to disable encryption settings.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enforce the configuration to prevent client overrides'],['Enforce the configuration to prevent client overrides'],"Resources:
+  GoodExample:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: goodExample
+      WorkGroupConfiguration:
+        EnforceWorkGroupConfiguration: true
+        ResultConfiguration:
+          EncryptionConfiguration:
+            EncryptionOption: SSE_KMS","resource ""aws_athena_workgroup"" ""good_example"" {
+  name = ""example""
+
+  configuration {
+    enforce_workgroup_configuration    = true
+    publish_cloudwatch_metrics_enabled = true
+
+    result_configuration {
+      output_location = ""s3://${aws_s3_bucket.example.bucket}/output/""
+
+      encryption_configuration {
+        encryption_option = ""SSE_KMS""
+        kms_key_arn       = aws_kms_key.example.arn
+      }
+    }
+  }
+}",https://docs.aws.amazon.com/athena/latest/ug/manage-queries-control-costs-with-workgroups.html
+AVD-AWS-0008,https://avd.aquasec.com/misconfig/aws/ec2/aws-0008/,ec2,,Block devices should be encrypted to ensure sensitive data is held securely at rest.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Turn on encryption for all block devices'],['Turn on encryption for all block devices'],"Resources:
+  GoodExample:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: root
+          Ebs:
+            Encrypted: true
+      ImageId: ami-123456
+      InstanceType: t2.small","resource ""aws_launch_configuration"" ""good_example"" {
+  root_block_device {
+    encrypted = true
+  }
+}",https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/RootDeviceStorage.html
+AVD-AWS-0009,https://avd.aquasec.com/misconfig/aws/ec2/aws-0009/,ec2,,"You should limit the provision of public IP addresses for resources. Resources should not be exposed on the public internet, but should have access limited to consumers required for the function of your application.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Set the instance to not be publicly accessible'],['Set the instance to not be publicly accessible'],"Resources:
+  GoodExample:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: ami-123456
+      InstanceType: t2.small","resource ""aws_launch_configuration"" ""good_example"" {
+  associate_public_ip_address = false
+}",https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-instance-addressing.html
+AVD-AWS-0010,https://avd.aquasec.com/misconfig/aws/cloudfront/aws-0010/,cloudfront,,You should configure CloudFront Access Logging to create log files that contain detailed information about every user request that CloudFront receives,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable logging for CloudFront distributions'],['Enable logging for CloudFront distributions'],"Resources:
+  GoodExample:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        DefaultCacheBehavior:
+          TargetOriginId: target
+          ViewerProtocolPolicy: https-only
+        Enabled: true
+        Logging:
+          Bucket: logging-bucket
+        Origins:
+          - DomainName: https://some.domain
+            Id: somedomain1","resource ""aws_cloudfront_distribution"" ""good_example"" {
+  // other config
+  logging_config {
+    include_cookies = false
+    bucket          = ""mylogs.s3.amazonaws.com""
+    prefix          = ""myprefix""
+  }
+}",https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/AccessLogs.html
+AVD-AWS-0011,https://avd.aquasec.com/misconfig/aws/cloudfront/aws-0011/,cloudfront,,You should configure a Web Application Firewall in front of your CloudFront distribution. This will mitigate many types of attacks on your web application.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable WAF for the CloudFront distribution'],['Enable WAF for the CloudFront distribution'],"Resources:
+  GoodExample:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        DefaultCacheBehavior:
+          TargetOriginId: target
+          ViewerProtocolPolicy: https-only
+        Enabled: true
+        Logging:
+          Bucket: logging-bucket
+        Origins:
+          - DomainName: https://some.domain
+            Id: somedomain1
+        WebACLId: waf_id","resource ""aws_cloudfront_distribution"" ""good_example"" {
+
+  origin {
+    domain_name = aws_s3_bucket.primary.bucket_regional_domain_name
+    origin_id   = ""primaryS3""
+
+    s3_origin_config {
+      origin_access_identity = aws_cloudfront_origin_access_identity.default.cloudfront_access_identity_path
+    }
+  }
+
+  origin {
+    domain_name = aws_s3_bucket.failover.bucket_regional_domain_name
+    origin_id   = ""failoverS3""
+
+    s3_origin_config {
+      origin_access_identity = aws_cloudfront_origin_access_identity.default.cloudfront_access_identity_path
+    }
+  }
+
+  default_cache_behavior {
+    target_origin_id = ""groupS3""
+  }
+
+  web_acl_id = ""waf_id""
+}",https://docs.aws.amazon.com/waf/latest/developerguide/cloudfront-features.html
+AVD-AWS-0012,https://avd.aquasec.com/misconfig/aws/cloudfront/aws-0012/,cloudfront,,"Plain HTTP is unencrypted and human-readable. This means that if a malicious actor was to eavesdrop on your connection, they would be able to see all of your data flowing back and forth.
+You should use HTTPS, which is HTTP over an encrypted (TLS) connection, meaning eavesdroppers cannot read your traffic.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Only allow HTTPS for CloudFront distribution communication'],['Only allow HTTPS for CloudFront distribution communication'],"Resources:
+  GoodExample:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        DefaultCacheBehavior:
+          TargetOriginId: target
+          ViewerProtocolPolicy: https-only
+        Enabled: true
+        Logging:
+          Bucket: logging-bucket
+        Origins:
+          - DomainName: https://some.domain
+            Id: somedomain1
+        WebACLId: waf_id","resource ""aws_cloudfront_distribution"" ""good_example"" {
+  default_cache_behavior {
+    viewer_protocol_policy = ""redirect-to-https""
+  }
+}",https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-https-cloudfront-to-s3-origin.html
+AVD-AWS-0013,https://avd.aquasec.com/misconfig/aws/cloudfront/aws-0013/,cloudfront,,"You should not use outdated/insecure TLS versions for encryption. You should be using the latest TLS policies available.
+Note: that setting *minimum_protocol_version = ""TLSv1.X""* is only possible when *cloudfront_default_certificate* is false (eg. you are not using the cloudfront.net domain name).
+If *cloudfront_default_certificate* is true then the Cloudfront API will only allow setting *minimum_protocol_version = ""TLSv1""*, and setting it to any other value will result in a perpetual diff in your *terraform plan*'s.
+The only option when using the cloudfront.net domain name is to ignore this rule.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Use the most modern TLS/SSL policies available'],['Use the most modern TLS/SSL policies available'],"Resources:
+  GoodExample:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        DefaultCacheBehavior:
+          TargetOriginId: target
+          ViewerProtocolPolicy: https-only
+        Enabled: true
+        Logging:
+          Bucket: logging-bucket
+        Origins:
+          - DomainName: https://some.domain
+            Id: somedomain1
+        ViewerCertificate:
+          MinimumProtocolVersion: TLSv1.2_2025","resource ""aws_cloudfront_distribution"" ""good_example"" {
+  viewer_certificate {
+    cloudfront_default_certificate = false
+    minimum_protocol_version       = ""TLSv1.2_2025""
+  }
+}",https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/secure-connections-supported-viewer-protocols-ciphers.html | https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/distribution-web-values-specify.html#DownloadDistValuesGeneral
+AVD-AWS-0014,https://avd.aquasec.com/misconfig/aws/cloudtrail/aws-0014/,cloudtrail,,"Activity could be happening in your account in a different region. When creating Cloudtrail in the AWS Management Console the trail is configured by default to be multi-region, this isn't the case with the Terraform resource. Cloudtrail should cover the full AWS account to ensure you can track changes in regions you are not actively operating in.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable Cloudtrail in all regions'],['Enable Cloudtrail in all regions'],"Resources:
+  GoodExample:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      IsLogging: true
+      IsMultiRegionTrail: true
+      S3BucketName: CloudtrailBucket
+      S3KeyPrefix: /trailing
+      TrailName: Cloudtrail","resource ""aws_cloudtrail"" ""good_example"" {
+  is_multi_region_trail = true
+}",https://docs.aws.amazon.com/awscloudtrail/latest/userguide/receive-cloudtrail-log-files-from-multiple-regions.html
+AVD-AWS-0015,https://avd.aquasec.com/misconfig/aws/cloudtrail/aws-0015/,cloudtrail,,"Using AWS managed keys does not allow for fine grained control.  Using Customer managed keys provides comprehensive control over cryptographic keys, enabling management of policies, permissions, and rotation, thus enhancing security and compliance measures for sensitive data and systems.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Use Customer managed key'],['Use Customer managed key'],"Resources:
+  GoodExample:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      IsLogging: true
+      IsMultiRegionTrail: true
+      KmsKeyId: alias/CloudtrailKey
+      S3BucketName: CloudtrailBucket
+      S3KeyPrefix: /trailing
+      TrailName: Cloudtrail","resource ""aws_kms_key"" ""trail"" {
+  enable_key_rotation = true
+}
+resource ""aws_kms_alias"" ""trail"" {
+  name          = ""alias/trail""
+  target_key_id = aws_kms_key.trail.key_id
+}
+
+resource ""aws_cloudtrail"" ""good_example"" {
+  kms_key_id = aws_kms_alias.trail.arn
+}",https://docs.aws.amazon.com/awscloudtrail/latest/userguide/encrypting-cloudtrail-log-files-with-aws-kms.html | https://docs.aws.amazon.com/kms/latest/developerguide/concepts.html#key-mgmt
+AVD-AWS-0016,https://avd.aquasec.com/misconfig/aws/cloudtrail/aws-0016/,cloudtrail,,Illicit activity could be removed from the logs. Log validation should be activated on Cloudtrail logs to prevent the tampering of the underlying data in the S3 bucket. It is feasible that a rogue actor compromising an AWS account might want to modify the log data to remove trace of their actions.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Turn on log validation for Cloudtrail'],['Turn on log validation for Cloudtrail'],"Resources:
+  GoodExample:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      EnableLogFileValidation: true
+      IsLogging: true
+      IsMultiRegionTrail: true
+      S3BucketName: CloudtrailBucket
+      S3KeyPrefix: /trailing
+      TrailName: Cloudtrail","resource ""aws_cloudtrail"" ""good_example"" {
+  enable_log_file_validation = true
+}",https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-log-file-validation-intro.html
+AVD-AWS-0017,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0017/,cloudwatch,,"CloudWatch log groups are encrypted by default, however, to get the full benefit of controlling key rotation and other KMS aspects a KMS CMK should be used.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable CMK encryption of CloudWatch Log Groups'],['Enable CMK encryption of CloudWatch Log Groups'],"Resources:
+  GoodExample:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      KmsKeyId: arn:aws:kms:us-west-2:111122223333:key/lambdalogging
+      LogGroupName: aws/lambda/goodExample
+      RetentionInDays: 30","resource ""aws_kms_key"" ""cloudwatch"" {
+  enable_key_rotation = true
+}
+
+resource ""aws_kms_alias"" ""cloudwatch"" {
+  name          = ""alias/cloudwatch""
+  target_key_id = aws_kms_key.cloudwatch.key_id
+}
+resource ""aws_cloudwatch_log_group"" ""good_example"" {
+  name = ""good_example""
+
+  kms_key_id = aws_kms_alias.cloudwatch.arn
+}",https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/encrypt-log-data-kms.html
+AVD-AWS-0018,https://avd.aquasec.com/misconfig/aws/codebuild/aws-0018/,codebuild,All artifacts produced by your CodeBuild project pipeline should always be encrypted,,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable encryption for CodeBuild project artifacts'],['Enable encryption for CodeBuild project artifacts'],"Resources:
+  GoodProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Artifacts:
+        EncryptionDisabled: false
+      SecondaryArtifacts:
+        - EncryptionDisabled: false","resource ""aws_codebuild_project"" ""good_example"" {
+  artifacts {}
+}",https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-codebuild-project-artifacts.html | https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-codebuild-project.html
+AVD-AWS-0019,https://avd.aquasec.com/misconfig/aws/config/aws-0019/,config,,"Sources that aren't covered by the aggregator are not include in the configuration. The configuration aggregator should be configured with all_regions for the source.
+This will help limit the risk of any unmonitored configuration in regions that are thought to be unused.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Set the aggregator to cover all regions'],['Set the aggregator to cover all regions'],"Resources:
+  GoodExample:
+    Type: AWS::Config::ConfigurationAggregator
+    Properties:
+      AccountAggregationSources:
+        - AllAwsRegions: true
+      ConfigurationAggregatorName: GoodAccountLevelAggregation","resource ""aws_config_configuration_aggregator"" ""good_example"" {
+  name = ""example""
+
+  account_aggregation_source {
+    account_ids = [""123456789012""]
+    all_regions = true
+  }
+}",https://docs.aws.amazon.com/config/latest/developerguide/aggregate-data.html
+AVD-AWS-0020,https://avd.aquasec.com/misconfig/aws/documentdb/aws-0020/,documentdb,,Document DB does not have auditing by default. To ensure that you are able to accurately audit the usage of your DocumentDB cluster you should enable export logs.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable export logs'],['Enable export logs'],"Resources:
+  GoodExample:
+    Type: AWS::DocDB::DBCluster
+    Properties:
+      DBClusterIdentifier: sample-cluster
+      DBClusterParameterGroupName: default.docdb3.6
+      EnableCloudwatchLogsExports:
+        - audit
+        - profiler
+
+  InstanceInstanceExample:
+    Type: AWS::DocDB::DBInstance
+    Properties:
+      DBClusterIdentifier: sample-cluster
+      DBInstanceClass: db.r5.large
+      DBInstanceIdentifier: sample-cluster-instance-0","resource ""aws_docdb_cluster"" ""good_example"" {
+  cluster_identifier              = ""my-docdb-cluster""
+  master_username                 = ""foo""
+  master_password                 = ""mustbeeightchars""
+  enabled_cloudwatch_logs_exports = ""audit""
+}",https://docs.aws.amazon.com/documentdb/latest/developerguide/event-auditing.html
+AVD-AWS-0021,https://avd.aquasec.com/misconfig/aws/documentdb/aws-0021/,documentdb,,"Unencrypted sensitive data is vulnerable to compromise. Encryption of the underlying storage used by DocumentDB ensures that if their is compromise of the disks, the data is still protected.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable storage encryption'],['Enable storage encryption'],"Resources:
+  GoodExample:
+    Type: AWS::DocDB::DBCluster
+    Properties:
+      DBClusterIdentifier: sample-cluster
+      DBClusterParameterGroupName: default.docdb3.6
+      StorageEncrypted: true
+
+  InstanceInstanceExample:
+    Type: AWS::DocDB::DBInstance
+    Properties:
+      DBClusterIdentifier: sample-cluster
+      DBInstanceClass: db.r5.large
+      DBInstanceIdentifier: sample-cluster-instance-0","resource ""aws_docdb_cluster"" ""good_example"" {
+  cluster_identifier = ""my-docdb-cluster""
+  master_username    = ""foo""
+  master_password    = ""mustbeeightchars""
+  storage_encrypted  = true
+}",https://docs.aws.amazon.com/documentdb/latest/developerguide/encryption-at-rest.html
+AVD-AWS-0022,https://avd.aquasec.com/misconfig/aws/documentdb/aws-0022/,documentdb,,Using AWS managed keys does not allow for fine grained control. Encryption using AWS keys provides protection for your DocumentDB underlying storage. To increase control of the encryption and manage factors like rotation use customer managed keys.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable encryption using customer managed keys'],['Enable encryption using customer managed keys'],"Resources:
+  GoodExample:
+    Type: AWS::DocDB::DBCluster
+    Properties:
+      DBClusterIdentifier: sample-cluster
+      DBClusterParameterGroupName: default.docdb3.6
+      KmsKeyId: your-kms-key-id
+
+  InstanceInstanceExample:
+    Type: AWS::DocDB::DBInstance
+    Properties:
+      DBClusterIdentifier: sample-cluster
+      DBInstanceClass: db.r5.large
+      DBInstanceIdentifier: sample-cluster-instance-0","resource ""aws_kms_key"" ""docdb_encryption"" {
+  enable_key_rotation = true
+}
+
+resource ""aws_docdb_cluster"" ""docdb"" {
+  cluster_identifier = ""my-docdb-cluster""
+  master_username    = ""foo""
+  master_password    = ""mustbeeightchars""
+  kms_key_id         = aws_kms_key.docdb_encryption.arn
+}",https://docs.aws.amazon.com/documentdb/latest/developerguide/security.encryption.ssl.public-key.html
+AVD-AWS-0023,https://avd.aquasec.com/misconfig/aws/dynamodb/aws-0023/,dynamodb,,Data can be freely read if compromised. Amazon DynamoDB Accelerator (DAX) encryption at rest provides an additional layer of data protection by helping secure your data from unauthorized access to the underlying storage.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable encryption at rest for DAX Cluster'],['Enable encryption at rest for DAX Cluster'],"Resources:
+  GoodExample:
+    Type: AWS::DAX::Cluster
+    Properties:
+      ClusterName: MyDAXCluster
+      IAMRoleARN: arn:aws:iam::111122223333:role/DaxAccess
+      NodeType: dax.r3.large
+      ReplicationFactor: 1
+      SSESpecification:
+        SSEEnabled: true","resource ""aws_dax_cluster"" ""good_example"" {
+  server_side_encryption {
+    enabled = true // enabled server side encryption
+  }
+}",https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/DAXEncryptionAtRest.html | https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-dax-cluster.html
+AVD-AWS-0024,https://avd.aquasec.com/misconfig/aws/dynamodb/aws-0024/,dynamodb,,"DynamoDB tables should be protected against accidentally or malicious write/delete actions by ensuring that there is adequate protection.
+By enabling point-in-time-recovery you can restore to a known point in the event of loss of data.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Enable point in time recovery'],,"resource ""aws_dynamodb_table"" ""good_example"" {
+  name             = ""example""
+  hash_key         = ""TestTableHashKey""
+  billing_mode     = ""PAY_PER_REQUEST""
+  stream_enabled   = true
+  stream_view_type = ""NEW_AND_OLD_IMAGES""
+
+  attribute {
+    name = ""TestTableHashKey""
+    type = ""S""
+  }
+
+  point_in_time_recovery {
+    enabled = true
+  }
+}",https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/PointInTimeRecovery.html
+AVD-AWS-0025,https://avd.aquasec.com/misconfig/aws/dynamodb/aws-0025/,dynamodb,,"Using AWS managed keys does not allow for fine grained control. DynamoDB tables are encrypted by default using AWS managed encryption keys. To increase control of the encryption and control the management of factors like key rotation, use a Customer Managed Key.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Enable server side encryption with a customer managed key'],,"resource ""aws_kms_key"" ""dynamo_db_kms"" {
+  enable_key_rotation = true
+}
+
+resource ""aws_dynamodb_table"" ""good_example"" {
+  name = ""example""
+  server_side_encryption {
+    enabled     = true
+    kms_key_arn = aws_kms_key.dynamo_db_kms.key_id
+  }
+}",https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/EncryptionAtRest.html
+AVD-AWS-0026,https://avd.aquasec.com/misconfig/aws/ec2/aws-0026/,ec2,,"By enabling encryption on EBS volumes you protect the volume, the disk I/O and any derived snapshots from compromise if intercepted.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable encryption of EBS volumes'],['Enable encryption of EBS volumes'],"Resources:
+  GoodExample:
+    DeletionPolicy: Snapshot
+    Type: AWS::EC2::Volume
+    Properties:
+      Encrypted: true","resource ""aws_ebs_volume"" ""good_example"" {
+  encrypted = true
+}",https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSEncryption.html
+AVD-AWS-0027,https://avd.aquasec.com/misconfig/aws/ec2/aws-0027/,ec2,,Encryption using AWS keys provides protection for your EBS volume. To increase control of the encryption and manage factors like rotation use customer managed keys.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable encryption using customer managed keys'],['Enable encryption using customer managed keys'],"Resources:
+  GoodExample:
+    Type: AWS::EC2::Volume
+    Properties:
+      KmsKeyId: alias/volumeEncrypt","resource ""aws_kms_key"" ""ebs_encryption"" {
+  enable_key_rotation = true
+}
+
+resource ""aws_ebs_volume"" ""example"" {
+  kms_key_id = aws_kms_key.ebs_encryption.arn
+}",https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSEncryption.html
+AVD-AWS-0028,https://avd.aquasec.com/misconfig/aws/ec2/aws-0028/,ec2,,"IMDS v2 (Instance Metadata Service) introduced session authentication tokens which improve security when talking to IMDS.
+By default <code>aws_instance</code> resource sets IMDS session auth tokens to be optional.
+To fully protect IMDS you need to enable session tokens by using <code>metadata_options</code> block and its <code>http_tokens</code> variable set to <code>required</code>.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Enable HTTP token requirement for IMDS'],,"resource ""aws_instance"" ""good_example"" {
+  ami           = ""ami-005e54dee72cc1d00""
+  instance_type = ""t2.micro""
+  metadata_options {
+    http_tokens = ""required""
+  }
+}",https://aws.amazon.com/blogs/security/defense-in-depth-open-firewalls-reverse-proxies-ssrf-vulnerabilities-ec2-instance-metadata-service
+AVD-AWS-0029,https://avd.aquasec.com/misconfig/aws/ec2/aws-0029/,ec2,,EC2 instance data is used to pass start up information into the EC2 instance. This userdata must not contain access key credentials. Instead use an IAM Instance Profile assigned to the instance to grant access to other AWS Services.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Remove sensitive data from the EC2 instance user-data'],['Remove sensitive data from the EC2 instance user-data'],"Resources:
+  GoodExample:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/sdm
+          Ebs:
+            DeleteOnTermination: ""false""
+            Iops: ""200""
+            VolumeSize: ""20""
+            VolumeType: io1
+        - DeviceName: /dev/sdk
+      ImageId: ami-79fd7eee
+      KeyName: testkey
+      UserData: export SSM_PATH=/database/creds","resource ""aws_instance"" ""good_example"" {
+  ami           = ""ami-12345667""
+  instance_type = ""t2.small""
+
+  user_data = <<EOF
+	 export GREETING=hello
+ EOF
+}",https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-add-user-data.html
+AVD-AWS-0030,https://avd.aquasec.com/misconfig/aws/ecr/aws-0030/,ecr,,Repository image scans should be enabled to ensure vulnerable software can be discovered and remediated as soon as possible.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable ECR image scanning'],['Enable ECR image scanning'],"Resources:
+  GoodExample:
+    Type: AWS::ECR::Repository
+    Properties:
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      RepositoryName: test-repository","resource ""aws_ecr_repository"" ""good_example"" {
+  name = ""bar""
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}",https://docs.aws.amazon.com/AmazonECR/latest/userguide/image-scanning.html
+AVD-AWS-0031,https://avd.aquasec.com/misconfig/aws/ecr/aws-0031/,ecr,,"ECR images should be set to IMMUTABLE to prevent code injection through image mutation.
+This can be done by setting <code>image_tag_mutability</code> to <code>IMMUTABLE</code>","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Only use immutable images in ECR'],['Only use immutable images in ECR'],"Resources:
+  GoodExample:
+    Type: AWS::ECR::Repository
+    Properties:
+      ImageTagMutability: IMMUTABLE
+      RepositoryName: test-repository","resource ""aws_ecr_repository"" ""good_example"" {
+  name                 = ""bar""
+  image_tag_mutability = ""IMMUTABLE""
+}",https://sysdig.com/blog/toctou-tag-mutability/
+AVD-AWS-0032,https://avd.aquasec.com/misconfig/aws/ecr/aws-0032/,ecr,Allowing public access to the ECR repository risks leaking sensitive of abusable information,,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Do not allow public access in the policy'],['Do not allow public access in the policy'],"Resources:
+  GoodExample:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: test-repository
+      RepositoryPolicyText:
+        Statement:
+          - Action:
+              - ecr:PutImage
+            Effect: Allow
+            Principal:
+              AWS:
+                - arn:aws:iam::123456789012:user/Alice
+            Sid: AllowPushPull
+        Version: ""2012-10-17""","resource ""aws_ecr_repository"" ""example"" {
+  name = ""bar""
+}
+
+resource ""aws_ecr_repository_policy"" ""example"" {
+  repository = aws_ecr_repository.example.name
+  policy     = <<EOF
+ {
+     ""Version"": ""2008-10-17"",
+     ""Statement"": [
+         {
+             ""Sid"": ""new policy"",
+             ""Effect"": ""Allow"",
+             ""Principal"": ""arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"",
+             ""Action"": [
+                 ""ecr:SetRepositoryPolicy""
+             ]
+         }
+     ]
+ }
+ EOF
+}",https://docs.aws.amazon.com/AmazonECR/latest/public/public-repository-policies.html
+AVD-AWS-0033,https://avd.aquasec.com/misconfig/aws/ecr/aws-0033/,ecr,,"Images in the ECR repository are encrypted by default using AWS managed encryption keys. To increase control of the encryption and control the management of factors like key rotation, use a Customer Managed Key.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Use customer managed keys'],['Use customer managed keys'],"Resources:
+  GoodExample:
+    Type: AWS::ECR::Repository
+    Properties:
+      EncryptionConfiguration:
+        EncryptionType: KMS
+        KmsKey: alias/ecr-key
+      RepositoryName: test-repository","resource ""aws_kms_key"" ""ecr_kms"" {
+  enable_key_rotation = true
+}
+
+resource ""aws_ecr_repository"" ""good_example"" {
+  name = ""bar""
+  encryption_configuration {
+    encryption_type = ""KMS""
+    kms_key         = aws_kms_key.ecr_kms.key_id
+  }
+}",https://docs.aws.amazon.com/AmazonECR/latest/userguide/encryption-at-rest.html
+AVD-AWS-0034,https://avd.aquasec.com/misconfig/aws/ecs/aws-0034/,ecs,,Cloudwatch Container Insights provide more metrics and logs for container based applications and micro services.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable Container Insights'],['Enable Container Insights'],"Resources:
+  GoodExample:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: MyCluster
+      ClusterSettings:
+        - Name: containerInsights
+          Value: enabled","resource ""aws_ecs_cluster"" ""good_example"" {
+  name = ""services-cluster""
+
+  setting {
+    name  = ""containerInsights""
+    value = ""enabled""
+  }
+}",https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/ContainerInsights.html
+AVD-AWS-0035,https://avd.aquasec.com/misconfig/aws/ecs/aws-0035/,ecs,,ECS task definitions that have volumes using EFS configuration should explicitly enable in transit encryption to prevent the risk of data loss due to interception.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable in transit encryption when using efs'],['Enable in transit encryption when using efs'],"Resources:
+  GoodExample:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - Image: amazon/amazon-ecs-sample
+      Volumes:
+        - EFSVolumeConfiguration:
+            FilesystemId: fs1
+            TransitEncryption: ENABLED
+          Name: jenkins-home","resource ""aws_ecs_task_definition"" ""good_example"" {
+  container_definitions = file(""task-definitions/service.json"")
+  volume {
+    name = ""service-storage""
+    efs_volume_configuration {
+      file_system_id     = aws_efs_file_system.fs.id
+      transit_encryption = ""ENABLED""
+    }
+  }
+}",https://docs.aws.amazon.com/AmazonECS/latest/userguide/efs-volumes.html | https://docs.aws.amazon.com/efs/latest/ug/encryption-in-transit.html
+AVD-AWS-0036,https://avd.aquasec.com/misconfig/aws/ecs/aws-0036/,ecs,,You should not make secrets available to a user in plaintext in any scenario. Secrets can instead be pulled from a secure secret storage system by the service requiring them.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Use secrets for the task definition'],['Use secrets for the task definition'],"Resources:
+  GoodExample:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      ContainerDefinitions:
+        - Image: amazon/amazon-ecs-sample","resource ""aws_ecs_task_definition"" ""good_example"" {
+  container_definitions = <<EOF
+ [
+   {
+     ""name"": ""my_service"",
+     ""environment"": [
+       { ""name"": ""ENVIRONMENT"", ""value"": ""development"" }
+     ]
+   }
+ ]
+ EOF
+}",https://docs.aws.amazon.com/systems-manager/latest/userguide/integration-ps-secretsmanager.html | https://www.vaultproject.io/
+AVD-AWS-0037,https://avd.aquasec.com/misconfig/aws/efs/aws-0037/,efs,,"If your organization is subject to corporate or regulatory policies that require encryption of data and metadata at rest, we recommend creating a file system that is encrypted at rest, and mounting your file system using encryption of data in transit.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable encryption for EFS'],['Enable encryption for EFS'],"Resources:
+  GoodExample:
+    Type: AWS::EFS::FileSystem
+    Properties:
+      Encrypted: true","resource ""aws_efs_file_system"" ""good_example"" {
+  name      = ""bar""
+  encrypted = true
+}",https://docs.aws.amazon.com/efs/latest/ug/encryption.html
+AVD-AWS-0038,https://avd.aquasec.com/misconfig/aws/eks/aws-0038/,eks,,"By default cluster control plane logging is not turned on. Logging is available for audit, api, authenticator, controllerManager and scheduler. All logging should be turned on for cluster control plane.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable logging for the EKS control plane'],['Enable logging for the EKS control plane'],"Resources:
+  GoodExample:
+    Type: AWS::EKS::Cluster
+    Properties:
+      Logging:
+        ClusterLogging:
+          EnabledTypes:
+            - Type: api
+            - Type: audit
+            - Type: authenticator
+            - Type: controllerManager
+            - Type: scheduler","resource ""aws_eks_cluster"" ""good_example"" {
+  enabled_cluster_log_types = [""api"", ""authenticator"", ""audit"", ""scheduler"", ""controllerManager""]
+}",https://docs.aws.amazon.com/eks/latest/userguide/control-plane-logs.html
+AVD-AWS-0039,https://avd.aquasec.com/misconfig/aws/eks/aws-0039/,eks,,EKS cluster resources should have the encryption_config block set with protection of the secrets resource.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable encryption of EKS secrets'],['Enable encryption of EKS secrets'],"Resources:
+  GoodExample:
+    Type: AWS::EKS::Cluster
+    Properties:
+      EncryptionConfig:
+        - Provider:
+            KeyArn: alias/eks-kms
+          Resources:
+            - secrets
+      Name: goodExample","resource ""aws_kms_key"" ""eks"" {
+  enable_key_rotation = true
+}
+
+resource ""aws_eks_cluster"" ""good_example"" {
+  encryption_config {
+    resources = [""secrets""]
+    provider {
+      key_arn = aws_kms_key.eks.arn
+    }
+  }
+}",https://aws.amazon.com/about-aws/whats-new/2020/03/amazon-eks-adds-envelope-encryption-for-secrets-with-aws-kms/
+AVD-AWS-0040,https://avd.aquasec.com/misconfig/aws/eks/aws-0040/,eks,,"EKS clusters are available publicly by default, this should be explicitly disabled in the vpc_config of the EKS cluster resource.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->","[""Don't enable public access to EKS Clusters""]","[""Don't enable public access to EKS Clusters""]","Resources:
+  EKSCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      ResourcesVpcConfig:
+        EndpointPublicAccess: false","resource ""aws_eks_cluster"" ""good_example"" {
+  name = ""good_example_cluster""
+  vpc_config {
+    endpoint_public_access = false
+  }
+}",https://docs.aws.amazon.com/eks/latest/userguide/cluster-endpoint.html
+AVD-AWS-0041,https://avd.aquasec.com/misconfig/aws/eks/aws-0041/,eks,,EKS Clusters have public access cidrs set to 0.0.0.0/0 by default which is wide open to the internet. This should be explicitly set to a more specific private CIDR range,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->","[""Don't enable public access to EKS Clusters""]","[""Don't enable public access to EKS Clusters""]","Resources:
+  EKSCluster:
+    Type: AWS::EKS::Cluster
+    Properties:
+      ResourcesVpcConfig:
+        EndpointPublicAccess: false
+        PublicAccessCidrs:
+          - 10.2.0.0/8","resource ""aws_eks_cluster"" ""good_example"" {
+  name = ""good_example_cluster""
+  vpc_config {
+    endpoint_public_access = false
+    public_access_cidrs    = [""0.0.0.0/0""]
+  }
+}",https://docs.aws.amazon.com/eks/latest/userguide/create-public-private-vpc.html
+AVD-AWS-0042,https://avd.aquasec.com/misconfig/aws/elasticsearch/aws-0042/,elasticsearch,,"Amazon ES exposes four Elasticsearch logs through Amazon CloudWatch Logs: error logs, search slow logs, index slow logs, and audit logs.
+Search slow logs, index slow logs, and error logs are useful for troubleshooting performance and stability issues.
+Audit logs track user activity for compliance purposes.
+All the logs are disabled by default.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable logging for ElasticSearch domains'],['Enable logging for ElasticSearch domains'],"Resources:
+  GoodExample:
+    Type: AWS::OpenSearchService::Domain
+    Properties:
+      LogPublishingOptions:
+        AUDIT_LOGS:
+          CloudWatchLogsLogGroupArn: arn:aws:logs:us-east-1:123456789012:log-group:/aws/opensearch/domains/opensearch-application-logs
+          Enabled: true","resource ""aws_elasticsearch_domain"" ""good_example"" {
+  log_publishing_options {
+    cloudwatch_log_group_arn = aws_cloudwatch_log_group.example.arn
+    log_type                 = ""AUDIT_LOGS""
+    enabled                  = true
+  }
+}",https://docs.aws.amazon.com/elasticsearch-service/latest/developerguide/es-createdomain-configure-slow-logs.html
+AVD-AWS-0043,https://avd.aquasec.com/misconfig/aws/elasticsearch/aws-0043/,elasticsearch,,Traffic flowing between Elasticsearch nodes should be encrypted to ensure sensitive data is kept private.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable encrypted node to node communication'],['Enable encrypted node to node communication'],"Resources:
+  GoodExample:
+    Type: AWS::OpenSearchService::Domain
+    Properties:
+      NodeToNodeEncryptionOptions:
+        Enabled: true","resource ""aws_elasticsearch_domain"" ""good_example"" {
+  domain_name = ""domain-foo""
+
+  node_to_node_encryption {
+    enabled = true
+  }
+}",https://docs.aws.amazon.com/elasticsearch-service/latest/developerguide/ntn.html
+AVD-AWS-0045,https://avd.aquasec.com/misconfig/aws/elasticache/aws-0045/,elasticache,,Data stored within an Elasticache replication node should be encrypted to ensure sensitive data is kept private.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable at-rest encryption for replication group'],['Enable at-rest encryption for replication group'],"Resources:
+  GoodExample:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Properties:
+      AtRestEncryptionEnabled: true","resource ""aws_elasticache_replication_group"" ""good_example"" {
+  replication_group_id          = ""foo""
+  replication_group_description = ""my foo cluster""
+
+  at_rest_encryption_enabled = true
+}",https://docs.aws.amazon.com/AmazonElastiCache/latest/red-ug/at-rest-encryption.html
+AVD-AWS-0046,https://avd.aquasec.com/misconfig/aws/elasticsearch/aws-0046/,elasticsearch,,"Plain HTTP is unencrypted and human-readable. This means that if a malicious actor was to eavesdrop on your connection, they would be able to see all of your data flowing back and forth.
+You should use HTTPS, which is HTTP over an encrypted (TLS) connection, meaning eavesdroppers cannot read your traffic.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enforce the use of HTTPS for ElasticSearch'],['Enforce the use of HTTPS for ElasticSearch'],"Resources:
+  GoodExample:
+    Type: AWS::Elasticsearch::Domain
+    Properties:
+      DomainEndpointOptions:
+        EnforceHTTPS: true","resource ""aws_elasticsearch_domain"" ""good_example"" {
+  domain_endpoint_options {
+    enforce_https = true
+  }
+}",https://docs.aws.amazon.com/elasticsearch-service/latest/developerguide/es-data-protection.html
+AVD-AWS-0047,https://avd.aquasec.com/misconfig/aws/elb/aws-0047/,elb,,You should not use outdated/insecure TLS versions for encryption. You should be using TLS v1.2+.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Use a more recent TLS/SSL policy for the load balancer'],['Use a more recent TLS/SSL policy for the load balancer'],"Resources:
+  myLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+
+  GoodExample:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref myLoadBalancer
+      Protocol: HTTPS
+      SslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06","resource ""aws_lb"" ""example"" {}
+
+resource ""aws_alb_listener"" ""good_example"" {
+  load_balancer_arn = aws_lb.example.arn
+  ssl_policy        = ""ELBSecurityPolicy-TLS13-1-2-2021-06""
+  protocol          = ""HTTPS""
+}",
+AVD-AWS-0048,https://avd.aquasec.com/misconfig/aws/elasticsearch/aws-0048/,elasticsearch,,You should ensure your Elasticsearch data is encrypted at rest to help prevent sensitive information from being read by unauthorised users.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable ElasticSearch domain encryption'],['Enable ElasticSearch domain encryption'],"Resources:
+  GoodExample:
+    Type: AWS::OpenSearchService::Domain
+    Properties:
+      EncryptionAtRestOptions:
+        Enabled: true","resource ""aws_elasticsearch_domain"" ""good_example"" {
+  encrypt_at_rest {
+    enabled = true
+  }
+}",https://docs.aws.amazon.com/elasticsearch-service/latest/developerguide/encryption-at-rest.html
+AVD-AWS-0049,https://avd.aquasec.com/misconfig/aws/elasticache/aws-0049/,elasticache,,"Security groups and security group rules should include a description for auditing purposes.
+Simplifies auditing, debugging, and managing security groups.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Add descriptions for all security groups and rules'],['Add descriptions for all security groups and rules'],"Resources:
+  GoodExample:
+    Type: AWS::ElastiCache::SecurityGroup
+    Properties:
+      Description: Some description","resource ""aws_elasticache_security_group"" ""good_example"" {
+  description = ""something""
+}",https://docs.aws.amazon.com/AmazonElastiCache/latest/mem-ug/SecurityGroups.Creating.html
+AVD-AWS-0050,https://avd.aquasec.com/misconfig/aws/elasticache/aws-0050/,elasticache,,Redis clusters should have a snapshot retention time to ensure that they are backed up and can be restored if required.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Configure snapshot retention for redis cluster'],['Configure snapshot retention for redis cluster'],"Resources:
+  GoodExample:
+    Type: AWS::ElastiCache::CacheCluster
+    Properties:
+      CacheNodeType: cache.m3.medium
+      Engine: redis
+      SnapshotRetentionLimit: 7","resource ""aws_elasticache_cluster"" ""good_example"" {
+  engine                   = ""redis""
+  node_type                = ""cache.m4.large""
+  snapshot_retention_limit = 5
+}",https://docs.aws.amazon.com/AmazonElastiCache/latest/red-ug/backups-automatic.html
+AVD-AWS-0051,https://avd.aquasec.com/misconfig/aws/elasticache/aws-0051/,elasticache,,Traffic flowing between Elasticache replication nodes should be encrypted to ensure sensitive data is kept private.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable in transit encryption for replication group'],['Enable in transit encryption for replication group'],"Resources:
+  GoodExample:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Properties:
+      TransitEncryptionEnabled: true","resource ""aws_elasticache_replication_group"" ""good_example"" {
+  transit_encryption_enabled = true
+}",https://docs.aws.amazon.com/AmazonElastiCache/latest/red-ug/in-transit-encryption.html
+AVD-AWS-0052,https://avd.aquasec.com/misconfig/aws/elb/aws-0052/,elb,,"Passing unknown or invalid headers through to the target poses a potential risk of compromise.
+By setting drop_invalid_header_fields to true, anything that does not conform to well known, defined headers will be removed by the load balancer.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Set drop_invalid_header_fields to true'],['Set drop_invalid_header_fields to true'],"Resources:
+  GoodExample:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      LoadBalancerAttributes:
+        - Key: routing.http.drop_invalid_header_fields.enabled
+          Value: true","resource ""aws_alb"" ""good_example"" {
+  drop_invalid_header_fields = true
+}",https://docs.aws.amazon.com/elasticloadbalancing/latest/application/application-load-balancers.html
+AVD-AWS-0053,https://avd.aquasec.com/misconfig/aws/elb/aws-0053/,elb,,"There are many scenarios in which you would want to expose a load balancer to the wider internet, but this check exists as a warning to prevent accidental exposure of internal assets. You should ensure that this resource should be exposed publicly.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Switch to an internal load balancer or add a tfsec ignore'],['Switch to an internal load balancer or add a tfsec ignore'],"Resources:
+  GoodExample:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Scheme: internal","resource ""aws_alb"" ""good_example"" {
+  load_balancer_type = ""gateway""
+  internal           = false
+}",
+AVD-AWS-0054,https://avd.aquasec.com/misconfig/aws/elb/aws-0054/,elb,,"Plain HTTP is unencrypted and human-readable. This means that if a malicious actor was to eavesdrop on your connection, they would be able to see all of your data flowing back and forth.
+You should use HTTPS, which is HTTP over an encrypted (TLS) connection, meaning eavesdroppers cannot read your traffic.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Switch to HTTPS to benefit from TLS security features'],['Switch to HTTPS to benefit from TLS security features'],"Resources:
+  myLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+
+  GoodExample:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref myLoadBalancer
+      Protocol: HTTPS","resource ""aws_lb"" ""example"" {}
+
+resource ""aws_alb_listener"" ""good_example"" {
+  load_balancer_arn = aws_lb.example.arn
+  protocol          = ""HTTPS""
+}",https://www.cloudflare.com/en-gb/learning/ssl/why-is-http-not-secure/
+AVD-AWS-0056,https://avd.aquasec.com/misconfig/aws/iam/aws-0056/,iam,,"IAM account password policies should prevent the reuse of passwords.
+The account password policy should be set to prevent using any of the last five used passwords.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Prevent password reuse in the policy'],,"resource ""aws_iam_account_password_policy"" ""good_example"" {
+  # ...
+  password_reuse_prevention = 5
+  # ...
+}",https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_passwords_account-policy.html#password-policy-details
+AVD-AWS-0057,https://avd.aquasec.com/misconfig/aws/iam/aws-0057/,iam,,"You should use the principle of least privilege when defining your IAM policies. This means you should specify each exact permission required without using wildcards, as this could cause the granting of access to certain undesired actions, resources and principals.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->","['Specify the exact permissions required, and to which resources they should apply instead of using wildcards.']","['Specify the exact permissions required, and to which resources they should apply instead of using wildcards.']","Resources:
+  GoodPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: CFNUsers
+      PolicyDocument:
+        Version: ""2012-10-17""
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:ListBuckets
+            Resource: specific-bucket","resource ""aws_iam_role_policy"" ""test_policy"" {
+  name = ""test_policy""
+  role = aws_iam_role.test_role.id
+
+  policy = data.aws_iam_policy_document.s3_policy.json
+}
+
+resource ""aws_iam_role"" ""test_role"" {
+  name = ""test_role""
+  assume_role_policy = jsonencode({
+    Version = ""2012-10-17""
+    Statement = [
+      {
+        Action = ""sts:AssumeRole""
+        Effect = ""Allow""
+        Sid    = """"
+        Principal = {
+          Service = ""s3.amazonaws.com""
+        }
+      },
+    ]
+  })
+}
+
+data ""aws_iam_policy_document"" ""s3_policy"" {
+  statement {
+    principals {
+      type        = ""AWS""
+      identifiers = [""arn:aws:iam::${data.aws_caller_identity.current.account_id}:root""]
+    }
+    actions   = [""s3:GetObject""]
+    resources = [aws_s3_bucket.example.arn]
+  }
+}",https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html
+AVD-AWS-0058,https://avd.aquasec.com/misconfig/aws/iam/aws-0058/,iam,,IAM account password policies should ensure that passwords content including at least one lowercase character.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,"['Enforce longer, more complex passwords in the policy']",,"resource ""aws_iam_account_password_policy"" ""good_example"" {
+  # ...
+  require_lowercase_characters = true
+  # ...
+}",https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_passwords_account-policy.html#password-policy-details
+AVD-AWS-0059,https://avd.aquasec.com/misconfig/aws/iam/aws-0059/,iam,,IAM account password policies should ensure that passwords content including at least one number.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,"['Enforce longer, more complex passwords in the policy']",,"resource ""aws_iam_account_password_policy"" ""good_example"" {
+  # ...
+  require_numbers = true
+  # ...
+}",https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_passwords_account-policy.html#password-policy-details
+AVD-AWS-0060,https://avd.aquasec.com/misconfig/aws/iam/aws-0060/,iam,,IAM account password policies should ensure that passwords content including a symbol.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,"['Enforce longer, more complex passwords in the policy']",,"resource ""aws_iam_account_password_policy"" ""good_example"" {
+  # ...
+  require_symbols = true
+  # ...
+}",https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_passwords_account-policy.html#password-policy-details
+AVD-AWS-0061,https://avd.aquasec.com/misconfig/aws/iam/aws-0061/,iam,",",IAM account password policies should ensure that passwords content including at least one uppercase character.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,"['Enforce longer, more complex passwords in the policy']",,"resource ""aws_iam_account_password_policy"" ""good_example"" {
+  # ...
+  require_uppercase_characters = true
+  # ...
+}",https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_passwords_account-policy.html#password-policy-details
+AVD-AWS-0062,https://avd.aquasec.com/misconfig/aws/iam/aws-0062/,iam,,"IAM account password policies should have a maximum age specified.
+The account password policy should be set to expire passwords after 90 days or less.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Limit the password duration with an expiry in the policy'],,"resource ""aws_iam_account_password_policy"" ""good_example"" {
+  max_password_age = 90
+}",https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_passwords_account-policy.html#password-policy-details
+AVD-AWS-0063,https://avd.aquasec.com/misconfig/aws/iam/aws-0063/,iam,,"IAM account password policies should ensure that passwords have a minimum length.
+The account password policy should be set to enforce minimum password length of at least 14 characters.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,"['Enforce longer, more complex passwords in the policy']",,"resource ""aws_iam_account_password_policy"" ""good_example"" {
+  minimum_password_length = 14
+}",https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_passwords_account-policy.html#password-policy-details
+AVD-AWS-0064,https://avd.aquasec.com/misconfig/aws/kinesis/aws-0064/,kinesis,,"Kinesis streams should be encrypted to ensure sensitive data is kept private. Additionally, non-default KMS keys should be used so granularity of access control can be ensured.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable in transit encryption'],['Enable in transit encryption'],"Resources:
+  GoodExample:
+    Type: AWS::Kinesis::Stream
+    Properties:
+      Name: GoodExample
+      RetentionPeriodHours: 168
+      ShardCount: 3
+      StreamEncryption:
+        EncryptionType: KMS
+        KeyId: alias/key
+      Tags:
+        - Key: Environment
+          Value: Production","resource ""aws_kinesis_stream"" ""good_example"" {
+  encryption_type = ""KMS""
+  kms_key_id      = ""my/special/key""
+}",https://docs.aws.amazon.com/streams/latest/dev/server-side-encryption.html
+AVD-AWS-0065,https://avd.aquasec.com/misconfig/aws/kms/aws-0065/,kms,,You should configure your KMS keys to auto rotate to maintain security and defend against compromise.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Configure KMS key to auto rotate'],,"resource ""aws_kms_key"" ""good_example"" {
+  enable_key_rotation = true
+}",https://docs.aws.amazon.com/kms/latest/developerguide/rotate-keys.html
+AVD-AWS-0066,https://avd.aquasec.com/misconfig/aws/lambda/aws-0066/,lambda,,"X-Ray tracing enables end-to-end debugging and analysis of all function activity. This will allow for identifying bottlenecks, slow downs and timeouts.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable tracing'],['Enable tracing'],"Resources:
+  GoodExample:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: my-bucket
+        S3Key: function.zip
+      Handler: index.handler
+      Runtime: nodejs12.x
+      TracingConfig:
+        Mode: Active","resource ""aws_lambda_function"" ""good_example"" {
+  filename         = ""lambda_function_payload.zip""
+  function_name    = ""lambda_function_name""
+  role             = ""arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole""
+  handler          = ""exports.test""
+  source_code_hash = filebase64sha256(""lambda_function_payload.zip"")
+
+  runtime = ""nodejs12.x""
+  tracing_config {
+    mode = ""Active""
+  }
+}",https://docs.aws.amazon.com/lambda/latest/dg/services-xray.html
+AVD-AWS-0067,https://avd.aquasec.com/misconfig/aws/lambda/aws-0067/,lambda,,"When the principal is an AWS service, the ARN of the specific resource within that service to grant permission to.
+Without this, any resource from principal will be granted permission – even if that resource is from another account.
+For S3, this should be the ARN of the S3 Bucket. For CloudWatch Events, this should be the ARN of the CloudWatch Events Rule. For API Gateway, this should be the ARN of the API","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Always provide a source arn for Lambda permissions'],['Always provide a source arn for Lambda permissions'],"Resources:
+  GoodExample:
+    Type: AWS::Lambda::Function
+    Properties:
+      Code:
+        S3Bucket: my-bucket
+        S3Key: function.zip
+      Handler: index.handler
+      Role: arn:aws:iam::123456789012:role/lambda-role
+      Runtime: nodejs12.x
+      Timeout: 5
+      TracingConfig:
+        Mode: Active
+      VpcConfig:
+        SecurityGroupIds:
+          - sg-085912345678492fb
+        SubnetIds:
+          - subnet-071f712345678e7c8
+          - subnet-07fd123456788a036
+
+  GoodPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref GoodExample
+      Principal: s3.amazonaws.com
+      SourceArn: lambda.amazonaws.com","resource ""aws_lambda_permission"" ""good_example"" {
+  statement_id  = ""AllowExecutionFromSNS""
+  action        = ""lambda:InvokeFunction""
+  function_name = aws_lambda_function.func.function_name
+  principal     = ""sns.amazonaws.com""
+  source_arn    = aws_sns_topic.default.arn
+}",https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-lambda-permission.html
+AVD-AWS-0070,https://avd.aquasec.com/misconfig/aws/mq/aws-0070/,mq,,Logging should be enabled to allow tracing of issues and activity to be investigated more fully. Logs provide additional information and context which is often invalauble during investigation,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable audit logging'],['Enable audit logging'],"Resources:
+  GoodBroker:
+    Type: AWS::AmazonMQ::Broker
+    Properties:
+      Logs:
+        Audit: true","resource ""aws_mq_broker"" ""good_example"" {
+  broker_name        = ""example""
+  engine_type        = ""ActiveMQ""
+  engine_version     = ""5.15.0""
+  host_instance_type = ""mq.t2.micro""
+  user {
+    username = ""ExampleUser""
+    password = ""MindTheGap""
+  }
+  logs {
+    audit = true
+  }
+}",https://docs.aws.amazon.com/amazon-mq/latest/developer-guide/configure-logging-monitoring-activemq.html
+AVD-AWS-0071,https://avd.aquasec.com/misconfig/aws/mq/aws-0071/,mq,,Logging should be enabled to allow tracing of issues and activity to be investigated more fully. Logs provide additional information and context which is often invalauble during investigation,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable general logging'],['Enable general logging'],"Resources:
+  GoodBroker:
+    Type: AWS::AmazonMQ::Broker
+    Properties:
+      Logs:
+        General: true","resource ""aws_mq_broker"" ""good_example"" {
+  broker_name        = ""example""
+  engine_type        = ""ActiveMQ""
+  engine_version     = ""5.15.0""
+  host_instance_type = ""mq.t2.micro""
+  user {
+    username = ""ExampleUser""
+    password = ""MindTheGap""
+  }
+  logs {
+    general = true
+  }
+}",https://docs.aws.amazon.com/amazon-mq/latest/developer-guide/configure-logging-monitoring-activemq.html
+AVD-AWS-0072,https://avd.aquasec.com/misconfig/aws/mq/aws-0072/,mq,,Public access of the MQ broker should be disabled and only allow routes to applications that require access.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Disable public access when not required'],['Disable public access when not required'],"Resources:
+  GoodBroker:
+    Type: AWS::AmazonMQ::Broker
+    Properties:
+      PubliclyAccessible: false","resource ""aws_mq_broker"" ""good_example"" {
+  broker_name        = ""example""
+  engine_type        = ""ActiveMQ""
+  engine_version     = ""5.15.0""
+  host_instance_type = ""mq.t2.micro""
+  user {
+    username = ""ExampleUser""
+    password = ""MindTheGap""
+  }
+  publicly_accessible = false
+}",https://docs.aws.amazon.com/amazon-mq/latest/developer-guide/using-amazon-mq-securely.html#prefer-brokers-without-public-accessibility
+AVD-AWS-0073,https://avd.aquasec.com/misconfig/aws/msk/aws-0073/,msk,,"Encryption should be forced for Kafka clusters, including for communication between nodes. This ensure sensitive data is kept private.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable in transit encryption'],['Enable in transit encryption'],"Resources:
+  GoodCluster:
+    Type: AWS::MSK::Cluster
+    Properties:
+      EncryptionInfo:
+        EncryptionInTransit:
+          ClientBroker: TLS","resource ""aws_msk_cluster"" ""good_example"" {
+  encryption_info {
+    encryption_in_transit {
+      client_broker = ""TLS""
+      in_cluster    = true
+    }
+  }
+}",https://docs.aws.amazon.com/msk/latest/developerguide/msk-encryption.html
+AVD-AWS-0074,https://avd.aquasec.com/misconfig/aws/msk/aws-0074/,msk,,"Managed streaming for Kafka can log to Cloud Watch, Kinesis Firehose and S3, at least one of these locations should be logged to","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable logging'],['Enable logging'],"Resources:
+  GoodCluster:
+    Type: AWS::MSK::Cluster
+    Properties:
+      LoggingInfo:
+        BrokerLogs:
+          S3:
+            Enabled: true","resource ""aws_msk_cluster"" ""example"" {
+  cluster_name           = ""example""
+  kafka_version          = ""2.4.1""
+  number_of_broker_nodes = 3
+
+  broker_node_group_info {
+    instance_type   = ""kafka.m5.large""
+    ebs_volume_size = 1000
+    client_subnets  = [aws_subnet.subnet_az1.id]
+    security_groups = [aws_security_group.sg.id]
+  }
+
+  logging_info {
+    broker_logs {
+      firehose {
+        enabled         = false
+        delivery_stream = aws_kinesis_firehose_delivery_stream.test_stream.name
+      }
+      s3 {
+        enabled = true
+        bucket  = aws_s3_bucket.bucket.id
+        prefix  = ""logs/msk-""
+      }
+    }
+  }
+}",https://docs.aws.amazon.com/msk/latest/developerguide/msk-logging.html
+AVD-AWS-0075,https://avd.aquasec.com/misconfig/aws/neptune/aws-0075/,neptune,,Neptune does not have auditing by default. To ensure that you are able to accurately audit the usage of your Neptune instance you should enable export logs.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable export logs'],['Enable export logs'],"Resources:
+  GoodCluster:
+    Type: AWS::Neptune::DBCluster
+    Properties:
+      EnableCloudwatchLogsExports:
+        - audit","resource ""aws_neptune_cluster"" ""good_example"" {
+  enable_cloudwatch_logs_exports = [""audit""]
+}",https://docs.aws.amazon.com/neptune/latest/userguide/auditing.html
+AVD-AWS-0076,https://avd.aquasec.com/misconfig/aws/neptune/aws-0076/,neptune,,"Encryption of Neptune storage ensures that if their is compromise of the disks, the data is still protected.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable encryption of Neptune storage'],['Enable encryption of Neptune storage'],"Resources:
+  GoodCluster:
+    Type: AWS::Neptune::DBCluster
+    Properties:
+      KmsKeyId: something
+      StorageEncrypted: true","resource ""aws_neptune_cluster"" ""good_example"" {
+  kms_key_arn       = ""test""
+  storage_encrypted = true
+}",https://docs.aws.amazon.com/neptune/latest/userguide/encrypt.html
+AVD-AWS-0077,https://avd.aquasec.com/misconfig/aws/rds/aws-0077/,rds,,"RDS backup retention for clusters defaults to 1 day, this may not be enough to identify and respond to an issue. Backup retention periods should be set to a period that is a balance on cost and limiting risk.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Explicitly set the retention period to greater than the default'],['Explicitly set the retention period to greater than the default'],"Resources:
+  GoodExample:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      BackupRetentionPeriod: 30","resource ""aws_rds_cluster"" ""good_example"" {
+  cluster_identifier      = ""aurora-cluster-demo""
+  engine                  = ""aurora-mysql""
+  engine_version          = ""5.7.mysql_aurora.2.03.2""
+  availability_zones      = [""us-west-2a"", ""us-west-2b"", ""us-west-2c""]
+  database_name           = ""mydb""
+  master_username         = ""foo""
+  master_password         = ""bar""
+  backup_retention_period = 5
+  preferred_backup_window = ""07:00-09:00""
+}",https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_WorkingWithAutomatedBackups.html#USER_WorkingWithAutomatedBackups.BackupRetention
+AVD-AWS-0078,https://avd.aquasec.com/misconfig/aws/rds/aws-0078/,rds,,"Amazon RDS uses the AWS managed key for your new DB instance. For complete control over KMS keys, including establishing and maintaining their key policies, IAM policies, and grants, enabling and disabling them, and rotating their cryptographic material, use a customer managed keys.
+The encryption key specified in `performance_insights_kms_key_id` references a KMS ARN","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Use Customer Managed Keys to encrypt Performance Insights data'],['Use Customer Managed Keys to encrypt Performance Insights data'],"Resources:
+  GoodExample:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      EnablePerformanceInsights: true
+      PerformanceInsightsKMSKeyId: something","resource ""aws_rds_cluster_instance"" ""good_example"" {
+  name                            = ""bar""
+  performance_insights_enabled    = true
+  performance_insights_kms_key_id = ""arn:aws:kms:us-west-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab""
+}",https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_PerfInsights.access-control.html#USER_PerfInsights.access-control.cmk-policy | https://docs.aws.amazon.com/kms/latest/developerguide/concepts.html#key-mgmt
+AVD-AWS-0079,https://avd.aquasec.com/misconfig/aws/rds/aws-0079/,rds,,"Encryption should be enabled for an RDS Aurora cluster.
+When enabling encryption by setting the kms_key_id, the storage_encrypted must also be set to true.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable encryption for RDS clusters'],['Enable encryption for RDS clusters'],"Resources:
+  GoodExample:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      KmsKeyId: something
+      StorageEncrypted: true","resource ""aws_rds_cluster"" ""good_example"" {
+  name              = ""bar""
+  kms_key_id        = ""arn:aws:kms:us-west-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab""
+  storage_encrypted = true
+}",https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Overview.Encryption.html
+AVD-AWS-0080,https://avd.aquasec.com/misconfig/aws/rds/aws-0080/,rds,,"Encryption should be enabled for an RDS Database instances.
+When enabling encryption by setting the kms_key_id.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable encryption for RDS instances'],['Enable encryption for RDS instances'],"Resources:
+  GoodExample:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      KmsKeyId: something
+      StorageEncrypted: true","resource ""aws_db_instance"" ""good_example"" {
+  storage_encrypted = true
+}",https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Overview.Encryption.html
+AVD-AWS-0083,https://avd.aquasec.com/misconfig/aws/redshift/aws-0083/,redshift,,"Security groups and security group rules should include a description for auditing purposes.
+Simplifies auditing, debugging, and managing security groups.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Add descriptions for all security groups and rules'],,"Resources:
+  GoodExample:
+    Type: AWS::Redshift::ClusterSecurityGroup
+    Properties:
+      Description: Disallow bad stuff",,https://www.cloudconformity.com/knowledge-base/aws/EC2/security-group-rules-description.html
+AVD-AWS-0084,https://avd.aquasec.com/misconfig/aws/redshift/aws-0084/,redshift,,Redshift clusters that contain sensitive data or are subject to regulation should be encrypted at rest to prevent data leakage should the infrastructure be compromised.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable encryption using CMK'],['Enable encryption using CMK'],"Resources:
+  GoodExample:
+    Type: AWS::Redshift::Cluster
+    Properties:
+      Encrypted: true
+      KmsKeyId: something","resource ""aws_kms_key"" ""redshift"" {
+  enable_key_rotation = true
+}
+
+resource ""aws_redshift_cluster"" ""good_example"" {
+  cluster_identifier = ""tf-redshift-cluster""
+  database_name      = ""mydb""
+  master_username    = ""foo""
+  master_password    = ""Mustbe8characters""
+  node_type          = ""dc1.large""
+  cluster_type       = ""single-node""
+  encrypted          = true
+  kms_key_id         = aws_kms_key.redshift.key_id
+}",https://docs.aws.amazon.com/redshift/latest/mgmt/working-with-db-encryption.html
+AVD-AWS-0085,https://avd.aquasec.com/misconfig/aws/redshift/aws-0085/,redshift,AWS Classic resources run in a shared environment with infrastructure owned by other AWS customers. You should run,resources in a VPC instead.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Switch to VPC resources'],,"AWSTemplateFormatVersion: ""2010-09-09""
+
+Description: Good example of redshift sgr
+
+Resources:
+  myCluster:
+    Type: AWS::Redshift::Cluster
+    Properties:
+      DBName: mydb",,https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-classic-platform.html
+AVD-AWS-0086,https://avd.aquasec.com/misconfig/aws/s3/aws-0086/,s3,,"S3 buckets should block public ACLs on buckets and any objects they contain. By blocking, PUTs with fail if the object has any public ACL a.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable blocking any PUT calls with a public ACL specified'],['Enable blocking any PUT calls with a public ACL specified'],"Resources:
+  GoodExample:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true","resource ""aws_s3_bucket"" ""good_example"" {
+  bucket = ""mybucket""
+}
+
+resource ""aws_s3_bucket_public_access_block"" ""good_example"" {
+  bucket            = aws_s3_bucket.good_example.id
+  block_public_acls = true
+}",https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+AVD-AWS-0087,https://avd.aquasec.com/misconfig/aws/s3/aws-0087/,s3,,S3 bucket policy should have block public policy to prevent users from putting a policy that enable public access.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Prevent policies that allow public access being PUT'],['Prevent policies that allow public access being PUT'],"Resources:
+  GoodExample:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicPolicy: true","resource ""aws_s3_bucket"" ""example"" {
+  bucket = ""mybucket""
+}
+
+resource ""aws_s3_bucket_public_access_block"" ""good_example"" {
+  bucket              = aws_s3_bucket.example.id
+  block_public_policy = true
+}",https://docs.aws.amazon.com/AmazonS3/latest/dev-retired/access-control-block-public-access.html
+AVD-AWS-0088,https://avd.aquasec.com/misconfig/aws/s3/aws-0088/,s3,,S3 Buckets should be encrypted to protect the data that is stored within them if access is compromised.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Configure bucket encryption'],['Configure bucket encryption'],"Resources:
+  GoodExample:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256","resource ""aws_s3_bucket"" ""good_example"" {
+  bucket = ""mybucket""
+
+  server_side_encryption_configuration {
+    rule {
+      apply_server_side_encryption_by_default {
+        kms_master_key_id = ""arn""
+        sse_algorithm     = ""aws:kms""
+      }
+    }
+  }
+}",https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucket-encryption.html
+AVD-AWS-0089,https://avd.aquasec.com/misconfig/aws/s3/aws-0089/,s3,Ensures S3 bucket logging is enabled for S3 buckets,,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Add a logging block to the resource to enable access logging'],['Add a logging block to the resource to enable access logging'],"Resources:
+  GoodExample:
+    Type: AWS::S3::Bucket
+    Properties:
+      LoggingConfiguration:
+        DestinationBucketName: !Ref TestLoggingBucket
+        LogFilePrefix: accesslogs/
+
+  TestLoggingBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: LogDeliveryWrite","resource ""aws_s3_bucket"" ""this"" {
+  bucket = ""test-bucket""
+  logging {
+    target_bucket = aws_s3_bucket.log_bucket.id
+    target_prefix = ""log/""
+  }
+}
+
+resource ""aws_s3_bucket"" ""log_bucket"" {
+  bucket = ""test-log-bucket""
+}
+
+resource ""aws_s3_bucket_acl"" ""log_bucket"" {
+  acl    = ""log-delivery-write""
+  bucket = aws_s3_bucket.log_bucket.id
+}",https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerLogs.html | https://docs.aws.amazon.com/AmazonS3/latest/userguide/enable-server-access-logging.html
+AVD-AWS-0090,https://avd.aquasec.com/misconfig/aws/s3/aws-0090/,s3,,"Versioning in Amazon S3 is a means of keeping multiple variants of an object in the same bucket.
+You can use the S3 Versioning feature to preserve, retrieve, and restore every version of every object stored in your buckets.
+With versioning you can recover more easily from both unintended user actions and application failures.
+When you enable versioning, also keep in mind the potential costs of storing noncurrent versions of objects. To help manage those costs, consider setting up an S3 Lifecycle configuration.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable versioning to protect against accidental/malicious removal or modification'],['Enable versioning to protect against accidental/malicious removal or modification'],"Resources:
+  GoodExample:
+    Type: AWS::S3::Bucket
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled","resource ""aws_s3_bucket"" ""good_example"" {
+  versioning {
+    enabled = true
+  }
+}",https://docs.aws.amazon.com/AmazonS3/latest/userguide/Versioning.html | https://aws.amazon.com/blogs/storage/reduce-storage-costs-with-fewer-noncurrent-versions-using-amazon-s3-lifecycle/
+AVD-AWS-0091,https://avd.aquasec.com/misconfig/aws/s3/aws-0091/,s3,,"S3 buckets should ignore public ACLs on buckets and any objects they contain. By ignoring rather than blocking, PUT calls with public ACLs will still be applied but the ACL will be ignored.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable ignoring the application of public ACLs in PUT calls'],['Enable ignoring the application of public ACLs in PUT calls'],"Resources:
+  GoodExample:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        IgnorePublicAcls: true","resource ""aws_s3_bucket"" ""example"" {
+  bucket = ""bucket""
+}
+
+resource ""aws_s3_bucket_public_access_block"" ""good_example"" {
+  bucket = aws_s3_bucket.example.id
+
+  ignore_public_acls = true
+}",https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+AVD-AWS-0092,https://avd.aquasec.com/misconfig/aws/s3/aws-0092/,s3,Buckets should not have ACLs that allow public access,,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->","[""Don't use canned ACLs or switch to private acl""]","[""Don't use canned ACLs or switch to private acl""]","Resources:
+  GoodExample:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private","resource ""aws_s3_bucket"" ""good_example"" {
+  acl = ""private""
+}",https://docs.aws.amazon.com/AmazonS3/latest/userguide/acl-overview.html
+AVD-AWS-0093,https://avd.aquasec.com/misconfig/aws/s3/aws-0093/,s3,,"S3 buckets should restrict public policies for the bucket. By enabling, the restrict_public_buckets, only the bucket owner and AWS Services can access if it has a public policy.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Limit the access to public buckets to only the owner or AWS Services (eg; CloudFront)'],['Limit the access to public buckets to only the owner or AWS Services (eg; CloudFront)'],"Resources:
+  GoodExample:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        RestrictPublicBuckets: true","resource ""aws_s3_bucket"" ""good_example"" {
+  bucket = ""bucket""
+}
+
+resource ""aws_s3_bucket_public_access_block"" ""example"" {
+  bucket = aws_s3_bucket.good_example.id
+
+  restrict_public_buckets = true
+}",https://docs.aws.amazon.com/AmazonS3/latest/dev-retired/access-control-block-public-access.html
+AVD-AWS-0094,https://avd.aquasec.com/misconfig/aws/s3/aws-0094/,s3,,"The ""block public access"" settings in S3 override individual policies that apply to a given bucket, meaning that all public access can be controlled in one central types for that bucket. It is therefore good practice to define these settings for each bucket in order to clearly define the public access that can be allowed for it.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Define a aws_s3_bucket_public_access_block for the given bucket to control public access policies'],['Define a aws_s3_bucket_public_access_block for the given bucket to control public access policies'],"Resources:
+  GoodExample:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true","resource ""aws_s3_bucket"" ""example"" {
+  bucket = ""example""
+  acl    = ""private-read""
+}
+
+resource ""aws_s3_bucket_public_access_block"" ""example"" {
+  bucket              = aws_s3_bucket.example.id
+  block_public_acls   = true
+  block_public_policy = true
+}",https://docs.aws.amazon.com/AmazonS3/latest/userguide/access-control-block-public-access.html
+AVD-AWS-0095,https://avd.aquasec.com/misconfig/aws/sns/aws-0095/,sns,,Topics should be encrypted to protect their contents.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Turn on SNS Topic encryption'],['Turn on SNS Topic encryption'],"Resources:
+  GoodTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      KmsMasterKeyId: some-key
+      TopicName: blah","resource ""aws_sns_topic"" ""good_example"" {
+  kms_master_key_id = ""/blah""
+}",https://docs.aws.amazon.com/sns/latest/dg/sns-server-side-encryption.html
+AVD-AWS-0096,https://avd.aquasec.com/misconfig/aws/sqs/aws-0096/,sqs,,Queues should be encrypted to protect queue contents.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Turn on SQS Queue encryption'],['Turn on SQS Queue encryption'],"AWSTemplateFormatVersion: ""2010-09-09""
+
+Description: Good example of queue
+
+Resources:
+  Queue:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: some-key
+      QueueName: my-queue","resource ""aws_sqs_queue"" ""good_example"" {
+  kms_master_key_id = ""/blah""
+}",https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-server-side-encryption.html
+AVD-AWS-0097,https://avd.aquasec.com/misconfig/aws/sqs/aws-0097/,sqs,,"SQS Policy actions should always be restricted to a specific set.
+This ensures that the queue itself cannot be modified or deleted, and prevents possible future additions to queue actions to be implicitly allowed.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Keep policy scope to the minimum that is required to be effective'],['Keep policy scope to the minimum that is required to be effective'],"AWSTemplateFormatVersion: ""2010-09-09""
+
+Description: Good example of queue policy
+
+Resources:
+  MyQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      Name: something
+
+  SampleSQSPolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      PolicyDocument:
+        Statement:
+          - Action:
+              - SQS:SendMessage
+              - SQS:ReceiveMessage
+            Effect: Allow
+            Principal:
+              AWS:
+                - ""111122223333""
+            Resource: arn:aws:sqs:us-east-2:444455556666:queue2
+      Queues:
+        - !Ref MyQueue","resource ""aws_sqs_queue_policy"" ""good_example"" {
+  queue_url = aws_sqs_queue.q.id
+
+  policy = <<POLICY
+ {
+   ""Statement"": [
+     {
+       ""Effect"": ""Allow"",
+       ""Principal"": ""*"",
+       ""Action"": ""sqs:SendMessage""
+     }
+   ]
+ }
+ POLICY
+}",https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-security-best-practices.html
+AVD-AWS-0098,https://avd.aquasec.com/misconfig/aws/ssm/aws-0098/,ssm,,"Secrets Manager encrypts secrets by default using a default key created by AWS. To ensure control and granularity of secret encryption, CMK's should be used explicitly.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Use customer managed keys'],['Use customer managed keys'],"AWSTemplateFormatVersion: ""2010-09-09""
+
+Description: Good example of ingress rule
+
+Resources:
+  Secret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: secret
+      KmsKeyId: my-key-id
+      Name: blah
+      SecretString: don't tell anyone","resource ""aws_kms_key"" ""secrets"" {
+  enable_key_rotation = true
+}
+
+resource ""aws_secretsmanager_secret"" ""good_example"" {
+  name       = ""lambda_password""
+  kms_key_id = aws_kms_key.secrets.arn
+}",https://docs.aws.amazon.com/kms/latest/developerguide/services-secrets-manager.html#asm-encrypt
+AVD-AWS-0099,https://avd.aquasec.com/misconfig/aws/ec2/aws-0099/,ec2,,"Security groups should include a description for auditing purposes.
+Simplifies auditing, debugging, and managing security groups.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Add descriptions for all security groups'],['Add descriptions for all security groups'],"Resources:
+  GoodSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Limits security group egress traffic
+      SecurityGroupEgress:
+        - CidrIp: 127.0.0.1/32
+          IpProtocol: ""-1""","resource ""aws_security_group"" ""good_example"" {
+  name        = ""http""
+  description = ""Allow inbound HTTP traffic""
+
+  ingress {
+    description = ""HTTP from VPC""
+    from_port   = 80
+    to_port     = 80
+    protocol    = ""tcp""
+    cidr_blocks = [aws_vpc.main.cidr_block]
+  }
+}",https://www.cloudconformity.com/knowledge-base/aws/EC2/security-group-rules-description.html
+AVD-AWS-0101,https://avd.aquasec.com/misconfig/aws/ec2/aws-0101/,ec2,,"Default VPC does not have a lot of the critical security features that standard VPC comes with, new resources should not be created in the default VPC and it should not be present in the Terraform.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Create a non-default vpc for resources to be created in'],,"# no aws default vpc present
+resource ""aws_vpc"" ""main"" {
+  cidr_block = ""10.0.0.0/16""
+}",https://docs.aws.amazon.com/vpc/latest/userguide/default-vpc.html
+AVD-AWS-0102,https://avd.aquasec.com/misconfig/aws/ec2/aws-0102/,ec2,,"Ensure access to specific required ports is allowed, and nothing else.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Set specific allowed ports'],['Set specific allowed ports'],"AWSTemplateFormatVersion: ""2010-09-09""
+
+Resources:
+  NetworkACL:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      RuleAction: allow
+      VpcId: something
+
+  Rule:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      NetworkAclId: !Ref NetworkACL
+      Protocol: 6
+      Ref: NetworkACL
+      RuleAction: allow","resource ""aws_network_acl_rule"" ""good_example"" {
+  egress      = false
+  protocol    = ""tcp""
+  from_port   = 22
+  to_port     = 22
+  rule_action = ""allow""
+  cidr_block  = ""0.0.0.0/0""
+}",https://docs.aws.amazon.com/vpc/latest/userguide/vpc-network-acls.html
+AVD-AWS-0104,https://avd.aquasec.com/misconfig/aws/ec2/aws-0104/,ec2,,Opening up ports to connect out to the public internet is generally to be avoided. You should restrict access to IP addresses or ranges that are explicitly required where possible.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Set a more restrictive cidr range'],['Set a more restrictive cidr range'],"AWSTemplateFormatVersion: ""2010-09-09""
+
+Resources:
+  BadSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Limits security group egress traffic
+      SecurityGroupEgress:
+        - CidrIp: 127.0.0.1/32
+          IpProtocol: ""6""","resource ""aws_security_group"" ""good_example"" {
+  egress {
+    cidr_blocks = [""1.2.3.4/32""]
+  }
+}",https://docs.aws.amazon.com/whitepapers/latest/building-scalable-secure-multi-vpc-network-infrastructure/centralized-egress-to-internet.html
+AVD-AWS-0105,https://avd.aquasec.com/misconfig/aws/ec2/aws-0105/,ec2,The Network Access Control List (NACL) function provide stateless filtering of ingress and,"egress network traffic to AWS resources. It is recommended that no NACL allows
+unrestricted ingress access to remote server administration ports, such as SSH to port 22
+and RDP to port 3389.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Set a more restrictive CIDR range'],['Set a more restrictive CIDR range'],"AWSTemplateFormatVersion: ""2010-09-09""
+
+Resources:
+  NetworkACL:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: something
+
+  Rule:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 10.0.0.0/8
+      NetworkAclId: !Ref NetworkACL
+      Protocol: 6
+      RuleAction: allow
+      PortRange:
+        From: 22
+        To: 22","resource ""aws_network_acl_rule"" ""good_example"" {
+  egress      = false
+  protocol    = ""tcp""
+  from_port   = 22
+  to_port     = 22
+  rule_action = ""allow""
+  cidr_block  = ""10.0.0.0/16""
+}",https://docs.aws.amazon.com/vpc/latest/userguide/vpc-network-acls.html | https://docs.aws.amazon.com/securityhub/latest/userguide/ec2-controls.html#ec2-21
+AVD-AWS-0107,https://avd.aquasec.com/misconfig/aws/ec2/aws-0107/,ec2,Security groups provide stateful filtering of ingress and egress network traffic to AWS,"resources. It is recommended that no security group allows unrestricted ingress access to
+remote server administration ports, such as SSH to port 22 and RDP to port 3389.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Set a more restrictive CIDR range'],['Set a more restrictive CIDR range'],"Resources:
+  GoodSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Limits security group egress traffic
+      SecurityGroupIngress:
+        - CidrIp: 127.0.0.1/32
+          IpProtocol: ""6""
+          FromPort: 22
+          ToPort: 22","resource ""aws_security_group_rule"" ""good_example"" {
+  type        = ""ingress""
+  cidr_blocks = [""10.0.0.0/16""]
+}",https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/security-group-rules-reference.html | https://docs.aws.amazon.com/securityhub/latest/userguide/ec2-controls.html#ec2-13 | https://docs.aws.amazon.com/securityhub/latest/userguide/ec2-controls.html#ec2-14
+AVD-AWS-0109,https://avd.aquasec.com/misconfig/aws/workspaces/aws-0109/,workspaces,,Workspace volumes for both user and root should be encrypted to protect the data stored on them.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Root and user volume encryption should be enabled'],['Root and user volume encryption should be enabled'],"Resources:
+  GoodExample:
+    Type: AWS::WorkSpaces::Workspace
+    Properties:
+      RootVolumeEncryptionEnabled: true
+      UserVolumeEncryptionEnabled: true","resource ""aws_workspaces_workspace"" ""good_example"" {
+  root_volume_encryption_enabled = true
+  user_volume_encryption_enabled = true
+}",https://docs.aws.amazon.com/workspaces/latest/adminguide/encrypt-workspaces.html
+AVD-AWS-0110,https://avd.aquasec.com/misconfig/aws/sam/aws-0110/,sam,,Method cache encryption ensures that any sensitive data in the cache is not vulnerable to compromise in the event of interception,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable cache encryption'],,"Resources:
+  GoodExample:
+    Type: AWS::Serverless::Api
+    Properties:
+      MethodSettings:
+        CacheDataEncrypted: true
+      Name: Good SAM API example
+      StageName: Prod",,https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-apigateway-stage-methodsetting.html#cfn-apigateway-stage-methodsetting-cachedataencrypted
+AVD-AWS-0111,https://avd.aquasec.com/misconfig/aws/sam/aws-0111/,sam,,X-Ray tracing enables end-to-end debugging and analysis of all API Gateway HTTP requests.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable tracing'],,"Resources:
+  GoodExample:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: Good SAM API example
+      StageName: Prod
+      TracingEnabled: true",,https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-api.html#sam-api-tracingenabled
+AVD-AWS-0112,https://avd.aquasec.com/misconfig/aws/sam/aws-0112/,sam,,You should not use outdated/insecure TLS versions for encryption. You should be using TLS v1.2+.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Use the most modern TLS/SSL policies available'],,"Resources:
+  GoodExample:
+    Type: AWS::Serverless::Api
+    Properties:
+      Domain:
+        SecurityPolicy: TLS_1_2
+      Name: Good SAM API example
+      StageName: Prod
+      TracingEnabled: false",,https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-property-api-domainconfiguration.html#sam-api-domainconfiguration-securitypolicy
+AVD-AWS-0113,https://avd.aquasec.com/misconfig/aws/sam/aws-0113/,sam,,API Gateway stages should have access log settings block configured to track all access to a particular stage. This should be applied to both v1 and v2 gateway stages.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable logging for API Gateway stages'],,"Resources:
+  GoodExample:
+    Type: AWS::Serverless::Api
+    Properties:
+      AccessLogSetting:
+        DestinationArn: gateway-logging
+        Format: json
+      Name: Good SAM API example
+      StageName: Prod",,https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-api.html#sam-api-accesslogsetting
+AVD-AWS-0114,https://avd.aquasec.com/misconfig/aws/sam/aws-0114/,sam,,"You should use the principle of least privilege when defining your IAM policies. This means you should specify each exact permission required without using wildcards, as this could cause the granting of access to certain undesired actions, resources and principals.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->","['Specify the exact permissions required, and to which resources they should apply instead of using wildcards.']",,"Resources:
+  GoodFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageUri: account-id.dkr.ecr.region.amazonaws.com/ecr-repo-name:image-name
+      ImageConfig:
+        Command:
+          - app.lambda_handler
+        EntryPoint:
+          - entrypoint1
+        WorkingDirectory: workDir
+      Policies:
+        - AWSLambdaExecute
+        - Version: ""2012-10-17""
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:GetObjectACL
+              Resource: arn:aws:s3:::my-bucket/*",,https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-function.html#sam-function-policies
+AVD-AWS-0116,https://avd.aquasec.com/misconfig/aws/sam/aws-0116/,sam,,API Gateway stages should have access log settings block configured to track all access to a particular stage. This should be applied to both v1 and v2 gateway stages.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable logging for API Gateway stages'],,"Resources:
+  GoodExample:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      AccessLogSettings:
+        DestinationArn: gateway-logging
+        Format: json
+      Name: Good SAM API example
+      StageName: Prod
+      Tracing: Activey",,https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-httpapi.html#sam-httpapi-accesslogsettings
+AVD-AWS-0117,https://avd.aquasec.com/misconfig/aws/sam/aws-0117/,sam,,X-Ray tracing enables end-to-end debugging and analysis of all state machine activities.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable tracing'],,"Resources:
+  GoodStateMachine:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Definition:
+        StartAt: MyLambdaState
+        States:
+          MyLambdaState:
+            End: true
+            Resource: arn:aws:lambda:us-east-1:123456123456:function:my-sample-lambda-app
+            Type: Task
+      Role: arn:aws:iam::123456123456:role/service-role/my-sample-role
+      Tracing:
+        Enabled: true",,https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-statemachine.html#sam-statemachine-tracing
+AVD-AWS-0119,https://avd.aquasec.com/misconfig/aws/sam/aws-0119/,sam,,Logging enables end-to-end debugging and analysis of all state machine activities.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable logging'],,"Resources:
+  GoodExample:
+    Type: AWS::AWS::Serverless::StateMachine
+    Properties:
+      Logging:
+        Level: ALL
+        Destinations:
+          - CloudWatchLogsLogGroup:
+              LogGroupArn: arn:aws:logs:us-east-1:123456789012:log-group:/aws/states/my-logs:*",,https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-statemachine.html#sam-statemachine-logging
+AVD-AWS-0120,https://avd.aquasec.com/misconfig/aws/sam/aws-0120/,sam,,"You should use the principle of least privilege when defining your IAM policies.
+This means you should specify each exact permission required without using wildcards, as this could cause the granting of access to certain undesired actions, resources and principals.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->","['Specify the exact permissions required, and to which resources they should apply instead of using wildcards.']",,"Resources:
+  GoodFunction:
+    Type: AWS::Serverless::StateMachine
+    Properties:
+      Definition:
+        StartAt: MyLambdaState
+        States:
+          MyLambdaState:
+            Type: Task
+            Resource: arn:aws:lambda:us-east-1:123456123456:function:my-sample-lambda-app
+            End: true
+      Role: arn:aws:iam::123456123456:role/service-role/my-sample-role
+      Tracing:
+        Enabled: true
+      Policies:
+        - AWSLambdaExecute
+        - Version: ""2012-10-17""
+          Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:GetObjectACL
+              Resource: arn:aws:s3:::my-bucket/*",,https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-statemachine.html#sam-statemachine-policies
+AVD-AWS-0121,https://avd.aquasec.com/misconfig/aws/sam/aws-0121/,sam,,Encryption should be enabled at all available levels to ensure that data is protected if compromised.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable server side encryption'],,"Resources:
+  GoodFunction:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      SSESpecification:
+        SSEEnabled: true
+      TableName: GoodTable",,https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-simpletable.html#sam-simpletable-ssespecification
+AVD-AWS-0122,https://avd.aquasec.com/misconfig/aws/ec2/aws-0122/,ec2,,"When creating Launch Configurations, user data can be used for the initial configuration of the instance. User data must not contain any sensitive data.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,"[""Don't use sensitive data in user data""]",,"resource ""aws_launch_configuration"" ""as_conf"" {
+  name          = ""web_config""
+  image_id      = data.aws_ami.ubuntu.id
+  instance_type = ""t2.micro""
+  user_data     = <<EOF
+ export GREETING=""Hello there""
+ EOF
+}",
+AVD-AWS-0123,https://avd.aquasec.com/misconfig/aws/iam/aws-0123/,iam,,IAM groups should be protected with multi factor authentication to add safe guards to password compromise.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Use terraform-module/enforce-mfa/aws to ensure that MFA is enforced'],,"resource ""aws_iam_group"" ""support"" {
+  name = ""support""
+}
+resource ""aws_iam_group_policy"" ""mfa"" {
+
+  group  = aws_iam_group.support.name
+  policy = <<EOF
+{
+  ""Version"": ""2012-10-17"",
+  ""Statement"": [
+    {
+      ""Sid"": """",
+      ""Effect"": ""Allow"",
+      ""Action"": ""ec2:*"",
+      ""Resource"": ""*"",
+      ""Condition"": {
+          ""Bool"": {
+              ""aws:MultiFactorAuthPresent"": [""true""]
+          }
+      }
+    }
+  ]
+}
+EOF
+}",https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_passwords_account-policy.html#password-policy-details
+AVD-AWS-0124,https://avd.aquasec.com/misconfig/aws/ec2/aws-0124/,ec2,,"Security group rules should include a description for auditing purposes.
+Simplifies auditing, debugging, and managing security groups.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Add descriptions for all security groups rules'],['Add descriptions for all security groups rules'],"Resources:
+  GoodSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Limits security group egress traffic
+      SecurityGroupEgress:
+        - CidrIp: 127.0.0.1/32
+          Description: Can connect to loopback
+          IpProtocol: ""-1""","resource ""aws_security_group"" ""good_example"" {
+  name        = ""http""
+  description = ""Allow inbound HTTP traffic""
+
+  ingress {
+    description = ""HTTP from VPC""
+    from_port   = 80
+    to_port     = 80
+    protocol    = ""tcp""
+    cidr_blocks = [aws_vpc.main.cidr_block]
+  }
+}",https://www.cloudconformity.com/knowledge-base/aws/EC2/security-group-rules-description.html
+AVD-AWS-0125,https://avd.aquasec.com/misconfig/aws/sam/aws-0125/,sam,,X-Ray tracing enables end-to-end debugging and analysis of the function.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable tracing'],,"Resources:
+  GoodFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      ImageConfig:
+        Command:
+          - app.lambda_handler
+        EntryPoint:
+          - entrypoint1
+        WorkingDirectory: workDir
+      ImageUri: account-id.dkr.ecr.region.amazonaws.com/ecr-repo-name:image-name
+      PackageType: Image
+      Tracing: Active",,https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-resource-function.html#sam-function-tracing
+AVD-AWS-0126,https://avd.aquasec.com/misconfig/aws/elasticsearch/aws-0126/,elasticsearch,,You should not use outdated/insecure TLS versions for encryption. You should be using TLS v1.2+.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Use the most modern TLS/SSL policies available'],['Use the most modern TLS/SSL policies available'],"Resources:
+  GoodExample:
+    Type: AWS::Elasticsearch::Domain
+    Properties:
+      DomainEndpointOptions:
+        TLSSecurityPolicy: Policy-Min-TLS-1-2-2019-07","resource ""aws_elasticsearch_domain"" ""good_example"" {
+  domain_endpoint_options {
+    enforce_https       = true
+    tls_security_policy = ""Policy-Min-TLS-1-2-2019-07""
+  }
+}",https://docs.aws.amazon.com/elasticsearch-service/latest/developerguide/es-data-protection.html
+AVD-AWS-0127,https://avd.aquasec.com/misconfig/aws/redshift/aws-0127/,redshift,,"Redshift clusters that are created without subnet details will be created in EC2 classic mode, meaning that they will be outside of a known VPC and running in tenant.
+In order to benefit from the additional security features achieved with using an owned VPC, the subnet should be set.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Deploy Redshift cluster into a non default VPC'],['Deploy Redshift cluster into a non default VPC'],"Resources:
+  GoodCluster:
+    Type: AWS::Redshift::Cluster
+    Properties:
+      ClusterSubnetGroupName: my-subnet-group","resource ""aws_redshift_cluster"" ""good_example"" {
+  cluster_identifier        = ""tf-redshift-cluster""
+  database_name             = ""mydb""
+  cluster_subnet_group_name = ""redshift_subnet""
+}",https://docs.aws.amazon.com/redshift/latest/mgmt/managing-clusters-vpc.html
+AVD-AWS-0128,https://avd.aquasec.com/misconfig/aws/neptune/aws-0128/,neptune,,Encryption using AWS keys provides protection for your Neptune underlying storage. To increase control of the encryption and manage factors like rotation use customer managed keys.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable encryption using customer managed keys'],['Enable encryption using customer managed keys'],"Resources:
+  GoodCluster:
+    Type: AWS::Neptune::DBCluster
+    Properties:
+      KmsKeyId: something
+      StorageEncrypted: true","resource ""aws_neptune_cluster"" ""good_example"" {
+  kms_key_arn = ""test""
+}",https://docs.aws.amazon.com/neptune/latest/userguide/encrypt.html
+AVD-AWS-0129,https://avd.aquasec.com/misconfig/aws/ec2/aws-0129/,ec2,,EC2 instance data is used to pass start up information into the EC2 instance. This userdata must not contain access key credentials. Instead use an IAM Instance Profile assigned to the instance to grant access to other AWS Services.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Remove sensitive data from the EC2 instance user-data generated by launch templates'],['Remove sensitive data from the EC2 instance user-data generated by launch templates'],"Resources:
+  GoodExample:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        DisableApiTermination: true
+        IamInstanceProfile:
+          Arn:
+            - MyIamInstanceProfile
+            - Arn
+        ImageId: ami-04d5cc9b88example
+        InstanceType: t2.micro
+        KeyName: MyKeyPair
+        MetadataOptions:
+          - HttpTokens: required
+        SecurityGroupIds:
+          - sg-083cd3bfb8example
+        UserData: export SSM_PATH=/database/creds
+      LaunchTemplateName: MyLaunchTemplate
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: MyIamInstanceProfile
+      Path: /
+      Roles:
+        - MyAdminRole","resource ""aws_launch_template"" ""good_example"" {
+  image_id      = ""ami-12345667""
+  instance_type = ""t2.small""
+  user_data     = <<EOF
+	 export GREETING=hello
+EOF
+}",https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/instancedata-add-user-data.html
+AVD-AWS-0130,https://avd.aquasec.com/misconfig/aws/ec2/aws-0130/,ec2,,"IMDS v2 (Instance Metadata Service) introduced session authentication tokens which improve security when talking to IMDS.
+By default <code>aws_instance</code> resource sets IMDS session auth tokens to be optional.
+To fully protect IMDS you need to enable session tokens by using <code>metadata_options</code> block and its <code>http_tokens</code> variable set to <code>required</code>.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable HTTP token requirement for IMDS'],['Enable HTTP token requirement for IMDS'],"Resources:
+  GoodExample:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      MetadataOptions:
+        HttpEndpoint: enabled
+        HttpTokens: required","resource ""aws_launch_template"" ""good_example"" {
+  image_id      = ""ami-005e54dee72cc1d00""
+  instance_type = ""t2.micro""
+  metadata_options {
+    http_tokens = ""required""
+  }
+}",https://aws.amazon.com/blogs/security/defense-in-depth-open-firewalls-reverse-proxies-ssrf-vulnerabilities-ec2-instance-metadata-service
+AVD-AWS-0131,https://avd.aquasec.com/misconfig/aws/ec2/aws-0131/,ec2,,Block devices should be encrypted to ensure sensitive data is held securely at rest.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Turn on encryption for all block devices'],['Turn on encryption for all block devices'],"Resources:
+  GoodExample:
+    Type: AWS::EC2::Instance
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/sdm
+          Ebs:
+            Encrypted: true
+      ImageId: ami-79fd7eee","resource ""aws_instance"" ""good_example"" {
+  ami           = ""ami-7f89a64f""
+  instance_type = ""t1.micro""
+
+  root_block_device {
+    encrypted = true
+  }
+
+  ebs_block_device {
+    device_name = ""/dev/sdg""
+    encrypted   = true
+  }
+}",https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/RootDeviceStorage.html
+AVD-AWS-0132,https://avd.aquasec.com/misconfig/aws/s3/aws-0132/,s3,,"Encryption using AWS keys provides protection for your S3 buckets. To gain greater control over encryption, such as key rotation, access policies, and auditability, use customer managed keys (CMKs) with SSE-KMS.
+Note that SSE-KMS is not supported for S3 server access logging destination buckets; in such cases, use SSE-S3 instead.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Use SSE-KMS with a customer managed key (CMK)'],['Use SSE-KMS with a customer managed key (CMK)'],"Resources:
+  GoodExample:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              KMSMasterKeyID: kms-arn
+              SSEAlgorithm: aws:kms","resource ""aws_kms_key"" ""mykey"" {}
+
+resource ""aws_s3_bucket"" ""good_example"" {
+  bucket = ""mybucket""
+}
+
+resource ""aws_s3_bucket_server_side_encryption_configuration"" ""example"" {
+  bucket = aws_s3_bucket.good_example.id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      kms_master_key_id = aws_kms_key.mykey.arn
+      sse_algorithm     = ""aws:kms""
+    }
+  }
+}",https://docs.aws.amazon.com/AmazonS3/latest/userguide/bucket-encryption.html
+AVD-AWS-0133,https://avd.aquasec.com/misconfig/aws/rds/aws-0133/,rds,,"Enabling Performance insights allows for greater depth in monitoring data.
+For example, information about active sessions could help diagose a compromise or assist in the investigation","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable performance insights'],['Enable performance insights'],"Resources:
+  GoodExample:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      EnablePerformanceInsights: true
+      PerformanceInsightsKMSKeyId: something","resource ""aws_rds_cluster_instance"" ""good_example"" {
+  name                            = ""bar""
+  performance_insights_enabled    = true
+  performance_insights_kms_key_id = ""arn:aws:kms:us-west-2:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab""
+}",https://aws.amazon.com/rds/performance-insights/
+AVD-AWS-0134,https://avd.aquasec.com/misconfig/aws/ssm/aws-0134/,ssm,,The data.http block can be used to send secret data outside of the organisation.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Remove this potential exfiltration HTTP request.'],,"resource ""aws_ssm_parameter"" ""db_password"" {
+  name  = ""db_password""
+  type  = ""SecureString""
+  value = var.db_password
+}",https://sprocketfox.io/xssfox/2022/02/09/terraformsupply/
+AVD-AWS-0135,https://avd.aquasec.com/misconfig/aws/sqs/aws-0135/,sqs,,"Queues should be encrypted with customer managed KMS keys and not default AWS managed keys, in order to allow granular control over access to specific queues.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Encrypt SQS Queue with a customer-managed key'],['Encrypt SQS Queue with a customer-managed key'],"AWSTemplateFormatVersion: ""2010-09-09""
+
+Description: Good example of queue
+
+Resources:
+  Queue:
+    Type: AWS::SQS::Queue
+    Properties:
+      KmsMasterKeyId: some-key
+      QueueName: my-queue","resource ""aws_sqs_queue"" ""good_example"" {
+  kms_master_key_id = ""/blah""
+}",https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-server-side-encryption.html
+AVD-AWS-0136,https://avd.aquasec.com/misconfig/aws/sns/aws-0136/,sns,,"Topics should be encrypted with customer managed KMS keys and not default AWS managed keys, in order to allow granular key management.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Use a CMK for SNS Topic encryption'],['Use a CMK for SNS Topic encryption'],"Resources:
+  GoodTopic:
+    Type: AWS::SQS::Topic
+    Properties:
+      KmsMasterKeyId: some-key
+      TopicName: blah","resource ""aws_sns_topic"" ""good_example"" {
+  kms_master_key_id = ""/blah""
+}",https://docs.aws.amazon.com/sns/latest/dg/sns-server-side-encryption.html
+AVD-AWS-0137,https://avd.aquasec.com/misconfig/aws/emr/aws-0137/,emr,,Data stored within an EMR cluster should be encrypted to ensure sensitive data is kept private.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Enable at-rest encryption for EMR cluster'],,"resource ""aws_emr_security_configuration"" ""good_example"" {
+  name = ""emrsc_other""
+
+  configuration = <<EOF
+  {
+    ""EncryptionConfiguration"": {
+      ""AtRestEncryptionConfiguration"": {
+        ""S3EncryptionConfiguration"": {
+          ""EncryptionMode"": ""SSE-S3""
+        },
+        ""LocalDiskEncryptionConfiguration"": {
+          ""EncryptionKeyProviderType"": ""AwsKms"",
+          ""AwsKmsKey"": ""arn:aws:kms:us-west-2:187416307283:alias/tf_emr_test_key""
+        }
+      },
+      ""EnableInTransitEncryption"": true,
+      ""EnableAtRestEncryption"": true
+    }
+  }
+  EOF
+}",https://docs.aws.amazon.com/config/latest/developerguide/operational-best-practices-for-nist_800-171.html
+AVD-AWS-0138,https://avd.aquasec.com/misconfig/aws/emr/aws-0138/,emr,,Data stored within an EMR cluster should be encrypted to ensure sensitive data is kept private.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Enable in-transit encryption for EMR cluster'],,"resource ""aws_emr_security_configuration"" ""good_example"" {
+  name = ""emrsc_other""
+
+  configuration = <<EOF
+  {
+    ""EncryptionConfiguration"": {
+      ""AtRestEncryptionConfiguration"": {
+        ""S3EncryptionConfiguration"": {
+          ""EncryptionMode"": ""SSE-S3""
+        },
+        ""LocalDiskEncryptionConfiguration"": {
+          ""EncryptionKeyProviderType"": ""AwsKms"",
+          ""AwsKmsKey"": ""arn:aws:kms:us-west-2:187416307283:alias/tf_emr_test_key""
+        }
+      },
+      ""EnableInTransitEncryption"": true,
+      ""EnableAtRestEncryption"": true
+    }
+  }
+  EOF
+}",https://docs.aws.amazon.com/config/latest/developerguide/operational-best-practices-for-nist_800-171.html
+AVD-AWS-0139,https://avd.aquasec.com/misconfig/aws/emr/aws-0139/,emr,,Data stored within an EMR instances should be encrypted to ensure sensitive data is kept private.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Enable local-disk encryption for EMR cluster'],,"resource ""aws_emr_security_configuration"" ""good_example"" {
+  name = ""emrsc_other""
+
+  configuration = <<EOF
+  {
+    ""EncryptionConfiguration"": {
+      ""AtRestEncryptionConfiguration"": {
+        ""S3EncryptionConfiguration"": {
+          ""EncryptionMode"": ""SSE-S3""
+        },
+        ""LocalDiskEncryptionConfiguration"": {
+          ""EncryptionKeyProviderType"": ""AwsKms"",
+          ""AwsKmsKey"": ""arn:aws:kms:us-west-2:187416307283:alias/tf_emr_test_key""
+        }
+      },
+      ""EnableInTransitEncryption"": true,
+      ""EnableAtRestEncryption"": true
+    }
+  }
+  EOF
+}",https://docs.aws.amazon.com/config/latest/developerguide/operational-best-practices-for-nist_800-171.html
+AVD-AWS-0140,https://avd.aquasec.com/misconfig/aws/iam/aws-0140/,iam,,The root user has unrestricted access to all services and resources in an AWS account. We highly recommend that you avoid using the root user for daily tasks. Minimizing the use of the root user and adopting the principle of least privilege for access management reduce the risk of accidental changes and unintended disclosure of highly privileged credentials.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html
+AVD-AWS-0141,https://avd.aquasec.com/misconfig/aws/iam/aws-0141/,iam,,CIS recommends that all access keys be associated with the root user be removed. Removing access keys associated with the root user limits vectors that the account can be compromised by. Removing the root user access keys also encourages the creation and use of role-based accounts that are least privileged.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,"['Use lower privileged accounts instead, so only required privileges are available.']",,"resource ""aws_iam_user"" ""test"" {
+  name = ""lowprivuser""
+}
+
+resource ""aws_iam_access_key"" ""test"" {
+  user = aws_iam_user.test.name
+}",https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html
+AVD-AWS-0142,https://avd.aquasec.com/misconfig/aws/iam/aws-0142/,iam,,"MFA adds an extra layer of protection on top of a user name and password. With MFA enabled, when a user signs in to an AWS website, they're prompted for their user name and password and for an authentication code from their AWS MFA device.
+When you use virtual MFA for the root user, CIS recommends that the device used is not a personal device. Instead, use a dedicated mobile device (tablet or phone) that you manage to keep charged and secured independent of any individual personal devices. This lessens the risks of losing access to the MFA due to device loss, device trade-in, or if the individual owning the device is no longer employed at the company.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/securityhub/latest/userguide/securityhub-cis-controls.html#securityhub-cis-controls-1.14
+AVD-AWS-0143,https://avd.aquasec.com/misconfig/aws/iam/aws-0143/,iam,,CIS recommends that you apply IAM policies directly to groups and roles but not users. Assigning privileges at the group or role level reduces the complexity of access management as the number of users grow. Reducing access management complexity might in turn reduce opportunity for a principal to inadvertently receive or retain excessive privileges.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Grant policies at the group level instead.'],,"resource ""aws_iam_group"" ""developers"" {
+  name = ""developers""
+  path = ""/users/""
+}
+
+resource ""aws_iam_user"" ""jim"" {
+  name = ""jim""
+}
+
+resource ""aws_iam_group_membership"" ""devteam"" {
+  name = ""developers-team""
+
+  users = [
+    aws_iam_user.jim.name,
+  ]
+
+  group = aws_iam_group.developers.name
+}
+
+resource ""aws_iam_group_policy"" ""ec2policy"" {
+  name  = ""test""
+  group = aws_iam_group.developers.name
+
+  policy = <<EOF
+{
+  ""Version"": ""2012-10-17"",
+  ""Statement"": [
+    {
+      ""Action"": [
+        ""ec2:Describe*""
+      ],
+      ""Effect"": ""Allow"",
+      ""Resource"": ""*""
+    }
+  ]
+}
+EOF
+}",https://console.aws.amazon.com/iam/
+AVD-AWS-0144,https://avd.aquasec.com/misconfig/aws/iam/aws-0144/,iam,,CIS recommends that you remove or deactivate all credentials that have been unused in 90 days or more. Disabling or removing unnecessary credentials reduces the window of opportunity for credentials associated with a compromised or abandoned account to be used.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://console.aws.amazon.com/iam/
+AVD-AWS-0145,https://avd.aquasec.com/misconfig/aws/iam/aws-0145/,iam,,IAM user accounts should be protected with multi factor authentication to add safe guards to password compromise.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://console.aws.amazon.com/iam/
+AVD-AWS-0146,https://avd.aquasec.com/misconfig/aws/iam/aws-0146/,iam,,Regularly rotating your IAM credentials helps prevent a compromised set of IAM access keys from accessing components in your AWS account.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/prescriptive-guidance/latest/patterns/automatically-rotate-iam-user-access-keys-at-scale-with-aws-organizations-and-aws-secrets-manager.html
+AVD-AWS-0147,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0147/,cloudwatch,,"You can do real-time monitoring of API calls by directing CloudTrail logs to CloudWatch Logs and establishing corresponding metric filters and alarms. You can have more than one VPC in an account, and you can create a peer connection between two VPCs, enabling network traffic to route between VPCs.
+CIS recommends that you create a metric filter and alarm for changes to VPCs. Monitoring these changes helps ensure that authentication and authorization controls remain intact.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/encrypt-log-data-kms.html
+AVD-AWS-0148,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0148/,cloudwatch,,"You can do real-time monitoring of API calls by directing CloudTrail logs to CloudWatch Logs and establishing corresponding metric filters and alarms.
+CIS recommends that you create a metric filter and alarm console logins that  aren't protected by MFA. Monitoring for single-factor console logins increases visibility into accounts that aren't protected by MFA.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://aws.amazon.com/iam/features/mfa/
+AVD-AWS-0149,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0149/,cloudwatch,,"You can do real-time monitoring of API calls directing CloudTrail logs to CloudWatch Logs and establishing corresponding metric filters and alarms.
+CIS recommends that you create a metric filter and alarm for root user login attempts. Monitoring for root user logins provides visibility into the use of a fully privileged account and an opportunity to reduce the use of it.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://aws.amazon.com/iam/features/mfa/
+AVD-AWS-0150,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0150/,cloudwatch,,"You can do real-time monitoring of API calls by directing CloudTrail logs to CloudWatch Logs and establishing corresponding metric filters and alarms.
+CIS recommends that you create a metric filter and alarm for changes made to IAM policies. Monitoring these changes helps ensure that authentication and authorization controls remain intact.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudwatch-alarms-for-cloudtrail.html
+AVD-AWS-0151,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0151/,cloudwatch,,"You can do real-time monitoring of API calls by directing CloudTrail logs to CloudWatch Logs and establishing corresponding metric filters and alarms.
+CIS recommends that you create a metric filter and alarm for changes to CloudTrail configuration settings. Monitoring these changes helps ensure sustained visibility to activities in the account.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudwatch-alarms-for-cloudtrail.html
+AVD-AWS-0152,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0152/,cloudwatch,,"You can do real-time monitoring of API calls by directing CloudTrail logs to CloudWatch Logs and establishing corresponding metric filters and alarms.
+CIS recommends that you create a metric filter and alarm for failed console authentication attempts. Monitoring failed console logins might decrease lead time to detect an attempt to brute-force a credential, which might provide an indicator, such as source IP, that you can use in other event correlations.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudtrail-event-reference-aws-console-sign-in-events.html
+AVD-AWS-0153,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0153/,cloudwatch,,"You can do real-time monitoring of API calls by directing CloudTrail logs to CloudWatch Logs and establishing corresponding metric filters and alarms.
+CIS recommends that you create a metric filter and alarm for customer managed keys that have changed state to disabled or scheduled deletion. Data encrypted with disabled or deleted keys is no longer accessible.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudwatch-alarms-for-cloudtrail.html
+AVD-AWS-0154,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0154/,cloudwatch,,"You can do real-time monitoring of API calls by directing CloudTrail logs to CloudWatch Logs and establishing corresponding metric filters and alarms.
+CIS recommends that you create a metric filter and alarm for changes to S3 bucket policies. Monitoring these changes might reduce time to detect and correct permissive policies on sensitive S3 buckets.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudwatch-alarms-for-cloudtrail.html
+AVD-AWS-0155,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0155/,cloudwatch,,"You can do real-time monitoring of API calls by directing CloudTrail logs to CloudWatch Logs and establishing corresponding metric filters and alarms.
+CIS recommends that you create a metric filter and alarm for changes to AWS Config configuration settings. Monitoring these changes helps ensure sustained visibility of configuration items in the account.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudwatch-alarms-for-cloudtrail.html
+AVD-AWS-0156,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0156/,cloudwatch,,"You can do real-time monitoring of API calls by directing CloudTrail logs to CloudWatch Logs and establishing corresponding metric filters and alarms.
+Security groups are a stateful packet filter that controls ingress and egress traffic in a VPC.
+CIS recommends that you create a metric filter and alarm for changes to security groups. Monitoring these changes helps ensure that resources and services aren't unintentionally exposed.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudwatch-alarms-for-cloudtrail.html
+AVD-AWS-0157,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0157/,cloudwatch,,"You can do real-time monitoring of API calls by directing CloudTrail logs to CloudWatch Logs and establishing corresponding metric filters and alarms.
+NACLs are used as a stateless packet filter to control ingress and egress traffic for subnets in a VPC.
+CIS recommends that you create a metric filter and alarm for changes to NACLs. Monitoring these changes helps ensure that AWS resources and services aren't unintentionally exposed.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudwatch-alarms-for-cloudtrail.html
+AVD-AWS-0158,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0158/,cloudwatch,,"You can do real-time monitoring of API calls by directing CloudTrail logs to CloudWatch Logs and establishing corresponding metric filters and alarms.
+Network gateways are required to send and receive traffic to a destination outside a VPC.
+CIS recommends that you create a metric filter and alarm for changes to network gateways. Monitoring these changes helps ensure that all ingress and egress traffic traverses the VPC border via a controlled path.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudwatch-alarms-for-cloudtrail.html
+AVD-AWS-0159,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0159/,cloudwatch,,"You can do real-time monitoring of API calls by directing CloudTrail logs to CloudWatch Logs and establishing corresponding metric filters and alarms.
+Routing tables route network traffic between subnets and to network gateways.
+CIS recommends that you create a metric filter and alarm for changes to route tables. Monitoring these changes helps ensure that all VPC traffic flows through an expected path.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudwatch-alarms-for-cloudtrail.html
+AVD-AWS-0160,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0160/,cloudwatch,,"You can do real-time monitoring of API calls by directing CloudTrail logs to CloudWatch Logs and establishing corresponding metric filters and alarms.
+You can have more than one VPC in an account, and you can create a peer connection between two VPCs, enabling network traffic to route between VPCs.
+CIS recommends that you create a metric filter and alarm for changes to VPCs. Monitoring these changes helps ensure that authentication and authorization controls remain intact.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/awscloudtrail/latest/userguide/cloudwatch-alarms-for-cloudtrail.html
+AVD-AWS-0161,https://avd.aquasec.com/misconfig/aws/cloudtrail/aws-0161/,cloudtrail,,"CloudTrail logs will be publicly exposed, potentially containing sensitive information. CloudTrail logs a record of every API call made in your account. These log files are stored in an S3 bucket. CIS recommends that the S3 bucket policy, or access control list (ACL), applied to the S3 bucket that CloudTrail logs to prevents public access to the CloudTrail logs. Allowing public access to CloudTrail log content might aid an adversary in identifying weaknesses in the affected account's use or configuration.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Restrict public access to the S3 bucket'],['Restrict public access to the S3 bucket'],"Resources:
+  GoodExampleBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      AccessControl: Private
+      BucketName: my-bucket
+
+  GoodExampleTrail:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      IsLogging: true
+      S3BucketName: my-bucket
+      TrailName: Cloudtrail","resource ""aws_cloudtrail"" ""good_example"" {
+  s3_bucket_name = aws_s3_bucket.example.id
+}
+
+resource ""aws_s3_bucket"" ""example"" {
+  bucket = ""example""
+  acl    = ""private""
+}",https://docs.aws.amazon.com/AmazonS3/latest/userguide/configuring-block-public-access-bucket.html
+AVD-AWS-0162,https://avd.aquasec.com/misconfig/aws/cloudtrail/aws-0162/,cloudtrail,,"Realtime log analysis is not available without enabling CloudWatch logging.
+CloudTrail is a web service that records AWS API calls made in a given account. The recorded information includes the identity of the API caller, the time of the API call, the source IP address of the API caller, the request parameters, and the response elements returned by the AWS service.
+CloudTrail uses Amazon S3 for log file storage and delivery, so log files are stored durably. In addition to capturing CloudTrail logs in a specified Amazon S3 bucket for long-term analysis, you can perform real-time analysis by configuring CloudTrail to send logs to CloudWatch Logs.
+For a trail that is enabled in all Regions in an account, CloudTrail sends log files from all those Regions to a CloudWatch Logs log group.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable logging to CloudWatch'],['Enable logging to CloudWatch'],"Resources:
+  GoodExampleTrail:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      CloudWatchLogsLogGroupArn: arn:aws:logs:us-east-1:123456789012:log-group:CloudTrail/DefaultLogGroup:*
+      TrailName: Cloudtrail","resource ""aws_cloudtrail"" ""good_example"" {
+  cloud_watch_logs_group_arn = ""${aws_cloudwatch_log_group.example.arn}:*""
+}
+
+resource ""aws_cloudwatch_log_group"" ""example"" {
+  name = ""Example""
+}",https://docs.aws.amazon.com/awscloudtrail/latest/userguide/send-cloudtrail-events-to-cloudwatch-logs.html#send-cloudtrail-events-to-cloudwatch-logs-console
+AVD-AWS-0163,https://avd.aquasec.com/misconfig/aws/cloudtrail/aws-0163/,cloudtrail,,"Amazon S3 bucket access logging generates a log that contains access records for each request made to your S3 bucket. An access log record contains details about the request, such as the request type, the resources specified in the request worked, and the time and date the request was processed.
+CIS recommends that you enable bucket access logging on the CloudTrail S3 bucket.
+By enabling S3 bucket logging on target S3 buckets, you can capture all events that might affect objects in a target bucket. Configuring logs to be placed in a separate bucket enables access to log information, which can be useful in security and incident response workflows.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable access logging on the bucket'],['Enable access logging on the bucket'],"Resources:
+  GoodExampleBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: my-bucket
+      LoggingConfiguration:
+        DestinationBucketName: logging-bucket
+        LogFilePrefix: accesslogs/
+
+  GoodExampleTrail:
+    Type: AWS::CloudTrail::Trail
+    Properties:
+      IsLogging: true
+      S3BucketName: my-bucket
+      TrailName: Cloudtrail","resource ""aws_cloudtrail"" ""good_example"" {
+  s3_bucket_name = aws_s3_bucket.example.id
+}
+
+resource ""aws_s3_bucket"" ""example"" {
+  bucket = ""example""
+  logging {
+    target_bucket = ""target-bucket""
+  }
+}",https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerLogs.html
+AVD-AWS-0164,https://avd.aquasec.com/misconfig/aws/ec2/aws-0164/,ec2,,"You should limit the provision of public IP addresses for resources. Resources should not be exposed on the public internet, but should have access limited to consumers required for the function of your application.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Set the instance to not be publicly accessible'],['Set the instance to not be publicly accessible'],"Resources:
+  GoodExample:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: vpc-123456","resource ""aws_subnet"" ""good_example"" {
+  vpc_id                  = ""vpc-123456""
+  map_public_ip_on_launch = false
+}",https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/using-instance-addressing.html#concepts-public-addresses
+AVD-AWS-0165,https://avd.aquasec.com/misconfig/aws/iam/aws-0165/,iam,,"Hardware MFA adds an extra layer of protection on top of a user name and password. With MFA enabled, when a user signs in to an AWS website, they're prompted for their user name and password and for an authentication code from their AWS MFA device.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_mfa_enable_physical.html
+AVD-AWS-0166,https://avd.aquasec.com/misconfig/aws/iam/aws-0166/,iam,,"AWS IAM users can access AWS resources using different types of credentials, such as passwords or access keys. It is recommended that all credentials that have been unused in45 or greater days be deactivated or removed.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://console.aws.amazon.com/iam/
+AVD-AWS-0167,https://avd.aquasec.com/misconfig/aws/iam/aws-0167/,iam,,Multiple active access keys widens the scope for compromise.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://console.aws.amazon.com/iam/
+AVD-AWS-0168,https://avd.aquasec.com/misconfig/aws/iam/aws-0168/,iam,Removing expired SSL/TLS certificates eliminates the risk that an invalid certificate will be,"deployed accidentally to a resource such as AWS Elastic Load Balancer (ELB), which can
+damage the credibility of the application/website behind the ELB. As a best practice, it is
+recommended to delete expired certificates.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://console.aws.amazon.com/iam/
+AVD-AWS-0169,https://avd.aquasec.com/misconfig/aws/iam/aws-0169/,iam,"By implementing least privilege for access control, an IAM Role will require an appropriate",IAM Policy to allow Support Center Access in order to manage Incidents with AWS Support.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://console.aws.amazon.com/iam/
+AVD-AWS-0170,https://avd.aquasec.com/misconfig/aws/s3/aws-0170/,s3,,"Adding MFA delete to an S3 bucket, requires additional authentication when you change the version state of your bucket or you delete an object version, adding another layer of security in the event your security credentials are compromised or unauthorized access is obtained.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Enable MFA deletion protection on the bucket'],,"resource ""aws_s3_bucket"" ""example"" {
+  bucket = ""bucket""
+}
+
+resource ""aws_s3_bucket_versioning"" ""good_example"" {
+  bucket = aws_s3_bucket.example.id
+
+  versioning_configuration {
+    status     = ""Enabled""
+    mfa_delete = ""Enabled""
+  }
+}",https://docs.aws.amazon.com/AmazonS3/latest/userguide/MultiFactorAuthenticationDelete.html
+AVD-AWS-0171,https://avd.aquasec.com/misconfig/aws/s3/aws-0171/,s3,,"Enabling object-level logging will help you meet data compliance requirements within your organization, perform comprehensive security analysis, monitor specific patterns of user behavior in your AWS account or take immediate actions on any object-level API activity within your S3 Buckets using Amazon CloudWatch Events.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Enable Object-level logging for S3 buckets.'],,"resource ""aws_s3_bucket"" ""good_example"" {
+  bucket = ""my-bucket""
+}
+
+resource ""aws_cloudtrail"" ""example"" {
+  event_selector {
+    read_write_type = ""WriteOnly""
+    data_resource {
+      type   = ""AWS::S3::Object""
+      values = [""arn:aws:s3""]
+    }
+  }
+}",https://docs.aws.amazon.com/AmazonS3/latest/userguide/enable-cloudtrail-logging-for-s3.html
+AVD-AWS-0172,https://avd.aquasec.com/misconfig/aws/s3/aws-0172/,s3,,"Enabling object-level logging will help you meet data compliance requirements within your organization, perform comprehensive security analysis, monitor specific patterns of user behavior in your AWS account or take immediate actions on any object-level API activity within your S3 Buckets using Amazon CloudWatch Events.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Enable Object-level logging for S3 buckets.'],,"resource ""aws_s3_bucket"" ""good_example"" {
+  bucket = ""my-bucket""
+}
+
+resource ""aws_cloudtrail"" ""example"" {
+  event_selector {
+    read_write_type = ""ReadOnly""
+    data_resource {
+      type   = ""AWS::S3::Object""
+      values = [""arn:aws:s3:::${aws_s3_bucket.good_example.bucket}/""]
+    }
+  }
+}",https://docs.aws.amazon.com/AmazonS3/latest/userguide/enable-cloudtrail-logging-for-s3.html
+AVD-AWS-0173,https://avd.aquasec.com/misconfig/aws/ec2/aws-0173/,ec2,Configuring all VPC default security groups to restrict all traffic will encourage least,"privilege security group development and mindful placement of AWS resources into
+security groups which will in-turn reduce the exposure of those resources.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/default-custom-security-groups.html
+AVD-AWS-0174,https://avd.aquasec.com/misconfig/aws/cloudwatch/aws-0174/,cloudwatch,"Monitoring AWS Organizations changes can help you prevent any unwanted, accidental or","intentional modifications that may lead to unauthorized access or other security breaches.
+This monitoring technique helps you to ensure that any unexpected changes performed
+within your AWS Organizations can be investigated and any unwanted changes can be
+rolled back.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/organizations/latest/userguide/orgs_security_incident-response.html
+AVD-AWS-0175,https://avd.aquasec.com/misconfig/aws/accessanalyzer/aws-0175/,accessanalyzer,AWS IAM Access Analyzer helps you identify the resources in your organization and,"accounts, such as Amazon S3 buckets or IAM roles, that are shared with an external entity.
+This lets you identify unintended access to your resources and data. Access Analyzer
+identifies resources that are shared with external principals by using logic-based reasoning
+to analyze the resource-based policies in your AWS environment. IAM Access Analyzer
+continuously monitors all policies for S3 bucket, IAM roles, KMS(Key Management Service)
+keys, AWS Lambda functions, and Amazon SQS(Simple Queue Service) queues.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/IAM/latest/UserGuide/what-is-access-analyzer.html
+AVD-AWS-0176,https://avd.aquasec.com/misconfig/aws/rds/aws-0176/,rds,Ensure IAM Database Authentication is enabled for RDS database instances to manage database access,,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/neptune/latest/userguide/iam-auth.html
+AVD-AWS-0177,https://avd.aquasec.com/misconfig/aws/rds/aws-0177/,rds,,Ensure deletion protection is enabled for RDS database instances.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://aws.amazon.com/about-aws/whats-new/2018/09/amazon-rds-now-provides-database-deletion-protection/
+AVD-AWS-0178,https://avd.aquasec.com/misconfig/aws/ec2/aws-0178/,ec2,,VPC Flow Logs provide visibility into network traffic that traverses the VPC and can be used to detect anomalous traffic or insight during security workflows.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Enable flow logs for VPC'],,"resource ""aws_vpc"" ""example"" {
+  cidr_block = ""10.0.0.0/16""
+}
+
+resource ""aws_flow_log"" ""example"" {
+  log_group_name = ""example""
+  traffic_type   = ""ALL""
+  vpc_id         = aws_vpc.example.id
+}",https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/RootDeviceStorage.html
+AVD-AWS-0179,https://avd.aquasec.com/misconfig/aws/msk/aws-0179/,msk,,"Encryption should be forced for Kafka clusters, including at rest. This ensures sensitive data is kept private.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Enable at rest encryption'],['Enable at rest encryption'],"Resources:
+  GoodCluster:
+    Type: AWS::MSK::Cluster
+    Properties:
+      EncryptionInfo:
+        EncryptionAtRest:
+          DataVolumeKMSKeyId: foo-bar-key","resource ""aws_msk_cluster"" ""good_example"" {
+  encryption_info {
+    encryption_at_rest_kms_key_arn = ""foo-bar-key""
+  }
+}",https://docs.aws.amazon.com/msk/latest/developerguide/msk-encryption.html
+AVD-AWS-0180,https://avd.aquasec.com/misconfig/aws/rds/aws-0180/,rds,,Ensures RDS instances and RDS Cluster instances are not launched into the public cloud.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Remove the public endpoint from the RDS instance.'],['Remove the public endpoint from the RDS instance.'],"Resources:
+  GoodExample:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      PubliclyAccessible: false","resource ""aws_db_instance"" ""good_example"" {
+  publicly_accessible = false
+}",http://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/USER_VPC.html
+AVD-AWS-0190,https://avd.aquasec.com/misconfig/aws/apigateway/aws-0190/,apigateway,,"A REST API in API Gateway is a collection of resources and methods that are integrated with backend HTTP endpoints, Lambda functions, or other AWS services. You can enable API caching in Amazon API Gateway to cache your endpoint responses. With caching, you can reduce the number of calls made to your endpoint and also improve the latency of requests to your API.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Enable cache'],,"resource ""aws_api_gateway_rest_api"" ""example"" {}
+
+resource ""aws_api_gateway_stage"" ""example"" {
+  rest_api_id = aws_api_gateway_rest_api.example.id
+}
+
+resource ""aws_api_gateway_method_settings"" ""good_example"" {
+  rest_api_id = aws_api_gateway_rest_api.example.id
+  stage_name  = aws_api_gateway_stage.example.stage_name
+  method_path = ""path1/GET""
+
+  settings {
+    caching_enabled = true
+  }
+}",https://docs.aws.amazon.com/apigateway/latest/developerguide/api-gateway-caching.html
+AVD-AWS-0320,https://avd.aquasec.com/misconfig/aws/s3/aws-0320/,s3,,Ensures that S3 buckets have DNS complaint bucket names.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/AmazonS3/latest/dev/transfer-acceleration.html
+AVD-AWS-0342,https://avd.aquasec.com/misconfig/aws/iam/aws-0342/,iam,,Ensures any IAM pass role attached to roles are flagged and warned.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_use_passrole.html
+AVD-AWS-0343,https://avd.aquasec.com/misconfig/aws/rds/aws-0343/,rds,,Ensure deletion protection is enabled for RDS clusters.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://docs.aws.amazon.com/config/latest/developerguide/rds-cluster-deletion-protection-enabled.html
+AVD-AWS-0344,https://avd.aquasec.com/misconfig/aws/ami/aws-0344/,ami,,"AWS AMI data source should specify owners to avoid using unverified AMIs.
+The owners field helps ensure you're using AMIs from known and trusted sources.","<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,['Specify the owners field in the AWS AMI data source configuration'],,"data ""aws_ami"" ""example"" {
+  most_recent = true
+  owners      = [""099720109477""] # Canonical
+  filter {
+    name   = ""name""
+    values = [""ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*""]
+  }
+}",https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/ami
+AVD-AWS-0345,https://avd.aquasec.com/misconfig/aws/iam/aws-0345/,iam,,Ensure that the creation of the unrestricted S3 IAM policies is disallowed.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",['Create more restrictive S3 policies'],['Create more restrictive S3 policies'],"AWSTemplateFormatVersion: ""2010-09-09""
+
+Resources:
+  GoodPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: good_policy
+      PolicyDocument:
+        Version: ""2012-10-17""
+        Statement:
+          - Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Resource: arn:aws:s3:::examplebucket/*
+      Roles:
+        - !Ref GoodRole
+
+  GoodRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: good_role
+      AssumeRolePolicyDocument:
+        Version: ""2012-10-17""
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole","resource ""aws_iam_policy"" ""good_policy"" {
+  name = ""good_policy""
+  policy = jsonencode({
+    Version = ""2012-10-17""
+    Statement = [
+      {
+        Effect = ""Allow""
+        Action = [
+          ""s3:GetObject"",
+          ""s3:PutObject""
+        ]
+        Resource = ""arn:aws:s3:::examplebucket/*""
+      }
+    ]
+  })
+}
+
+resource ""aws_iam_role"" ""good_role"" {
+  name = ""good_role""
+  assume_role_policy = jsonencode({
+    Version = ""2012-10-17""
+    Statement = [
+      {
+        Effect = ""Allow""
+        Principal = {
+          Service = ""ec2.amazonaws.com""
+        }
+        Action = ""sts:AssumeRole""
+      }
+    ]
+  })
+}
+
+resource ""aws_iam_role_policy_attachment"" ""good_role_policy_attachment"" {
+  role       = aws_iam_role.good_role.name
+  policy_arn = aws_iam_policy.good_policy.arn
+}",
+AVD-AWS-0346,https://avd.aquasec.com/misconfig/aws/iam/aws-0346/,iam,,Unnecessary access to S3 buckets can lead to unauthorized access or information disclosure.,"<!-- Add Impact here -->
+
+<!-- DO NOT CHANGE -->",,,,,https://www.aquasec.com/blog/shadow-roles-aws-defaults-lead-to-service-takeover/

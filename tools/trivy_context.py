@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any
 
 _CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "trivy_cfn_policy_map.csv"
+_REMEDIATION_CSV_PATH = (
+    Path(__file__).resolve().parents[1] / "data" / "avd_remediation_map.csv"
+)
 
 
 def _extract_check_id(finding: Any) -> str:
@@ -47,6 +50,20 @@ def _load_policy_map() -> dict[str, dict]:
         }
 
 
+@lru_cache(maxsize=1)
+def _load_remediation_map() -> dict[str, dict]:
+    """Load remediation CSV once and return {check_id: remediation_row}."""
+    if not _REMEDIATION_CSV_PATH.exists():
+        return {}
+    with _REMEDIATION_CSV_PATH.open(encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        return {
+            str(row["check_id"]).strip().upper(): row
+            for row in reader
+            if row.get("check_id")
+        }
+
+
 def get_trivy_policy_context(findings: list[Any]) -> str:
     """
     Given failed Trivy findings, return formatted source-code blocks for matched
@@ -74,5 +91,54 @@ def get_trivy_policy_context(findings: list[Any]) -> str:
                 f"### [{row.get('check_id', check_id)}] {row.get('check_name', '')}{description_block}\n"
                 f"```rego\n{row.get('source_code', '')}\n```"
             )
+
+    return "\n\n".join(blocks)
+
+
+def get_trivy_remediation_context(findings: list[Any]) -> str:
+    """
+    Given failed Trivy findings, return remediation context from
+    avd_remediation_map.csv including only check_id, title, description,
+    remediation_cfn, and cfn_good_example.
+    """
+    remediation_map = _load_remediation_map()
+    blocks: list[str] = []
+    seen: set[str] = set()
+
+    for finding in findings:
+        check_id = _extract_check_id(finding)
+        if not check_id or check_id in seen:
+            continue
+        seen.add(check_id)
+
+        row = None
+        for candidate in _id_candidates(check_id):
+            row = remediation_map.get(candidate)
+            if row:
+                break
+
+        if row:
+            mapped_check_id = str(row.get("check_id") or check_id).strip()
+            title = str(row.get("title") or "").strip()
+            description = str(row.get("description") or "").strip()
+            remediation_cfn = str(row.get("remediation_cfn") or "").strip()
+            cfn_good_example = str(row.get("cfn_good_example") or "").strip()
+
+            header = f"### [{mapped_check_id}]"
+            if title:
+                header = f"{header} {title}"
+
+            section_lines = [header]
+            if description:
+                section_lines.append(f"Description: {description}")
+            if remediation_cfn:
+                section_lines.append(f"Remediation (CloudFormation): {remediation_cfn}")
+            if cfn_good_example:
+                section_lines.append(
+                    "CloudFormation Good Example:\n"
+                    f"```yaml\n{cfn_good_example}\n```"
+                )
+
+            blocks.append("\n".join(section_lines))
 
     return "\n\n".join(blocks)

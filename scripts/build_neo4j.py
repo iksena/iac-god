@@ -37,15 +37,25 @@ class CFNGraphBuilder:
             required = prop_details.get("Required", False)
             primitive_type = prop_details.get("PrimitiveType", "Complex")
             item_type = prop_details.get("ItemType", prop_details.get("Type", ""))
+            description = prop_details.get("Documentation", "")  # ADD THIS
+            update_type = prop_details.get("UpdateType", "Mutable")  # ADD THIS
 
-            # Create Property Node and link it to Parent
             session.run(f"""
                 MATCH (parent:{parent_label} {{name: $parent_name}})
                 MERGE (p:Property {{id: $prop_id}})
-                SET p.name = $prop_name, p.type = $type, p.required = $required
+                SET p.name = $prop_name,
+                    p.type = $type,
+                    p.required = $required,
+                    p.description = $description,
+                    p.update_type = $update_type
                 MERGE (parent)-[:HAS_PROPERTY]->(p)
-            """, parent_name=parent_name, prop_id=f"{parent_name}/{prop_name}", 
-                 prop_name=prop_name, type=primitive_type, required=required)
+            """, parent_name=parent_name,
+                prop_id=f"{parent_name}/{prop_name}",
+                prop_name=prop_name,
+                type=primitive_type,
+                required=required,
+                description=description,
+                update_type=update_type)
 
             # If it references a nested PropertyType, link them
             if item_type and item_type != "List" and item_type != "Map":
