@@ -7,7 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-_CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "trivy_cfn_policy_map.csv"
+_CSV_PATH = Path(__file__).resolve().parents[1] / "data" / "trivy_enriched.csv"
 _REMEDIATION_CSV_PATH = (
     Path(__file__).resolve().parents[1] / "data" / "avd_remediation_map.csv"
 )
@@ -86,9 +86,22 @@ def get_trivy_policy_context(findings: list[Any]) -> str:
                 break
         if row:
             description = str(row.get("description") or "").strip()
+            remediation_cfn = str(row.get("remediation_cfn") or "").strip()
+            cfn_good_example = str(row.get("cfn_good_example") or "").strip()
             description_block = f"\nDescription: {description}" if description else ""
+            remediation_block = (
+                f"\nRemediation (CloudFormation): {remediation_cfn}"
+                if remediation_cfn
+                else ""
+            )
+            cfn_example_block = (
+                f"\nCloudFormation Good Example:\n```yaml\n{cfn_good_example}\n```"
+                if cfn_good_example
+                else ""
+            )
             blocks.append(
-                f"### [{row.get('check_id', check_id)}] {row.get('check_name', '')}{description_block}\n"
+                f"### [{row.get('check_id', check_id)}] {row.get('check_name', '')}"
+                f"{description_block}{remediation_block}{cfn_example_block}\n"
                 f"```rego\n{row.get('source_code', '')}\n```"
             )
 

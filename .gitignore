@@ -4,3 +4,5 @@
 **/*.pyc
 **/.env
 **/benchmark_runs/**
+**/scraped_html/**
+**/cfn_chroma_db/**

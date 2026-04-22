@@ -119,24 +119,19 @@ def merge_results(csv_paths, merged_csv_path, jsonl_paths=None, merged_jsonl_pat
 if __name__ == "__main__":
     # You can change input_csv, base_dir, and output_csv as needed
     merge_results_with_reports(
-        input_csv="./benchmark_runs/Deployable Grok4.1Fast 0-143/results_merged.csv", 
-        base_dir="runs/Deployable Grok4.1Fast/", 
-        output_csv="./benchmark_runs/Deployable Grok4.1Fast 0-143/results_agg.csv"
+        input_csv="./benchmark_runs/20260419_143256 Secure Neo4J Grok4.1Fast No History/results_merged.csv", 
+        base_dir="runs/", 
+        output_csv="./benchmark_runs/20260419_143256 Secure Neo4J Grok4.1Fast No History/results_agg.csv"
     )
-    # Example usage (Uncomment to use):
     # merge_results(
     #     csv_paths=[
-    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 0-153/results.csv', 
-    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 106/results.csv',
-    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 140/results.csv',
-    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 147/results.csv'
+    #         './benchmark_runs/20260419_143256 Secure Neo4J Grok4.1Fast No History/results.csv', 
+    #         './benchmark_runs/20260420_123134 Secure Neo4J Grok4.1Fast No History 141-152/results.csv',
     #     ], 
-    #     merged_csv_path='./benchmark_runs/Secure + DetContext Grok4.1Fast 0-153/results_merged.csv',
+    #     merged_csv_path='./benchmark_runs/20260419_143256 Secure Neo4J Grok4.1Fast No History/results_merged.csv',
     #     jsonl_paths=[
-    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 0-153/results.jsonl', 
-    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 106/results.jsonl',
-    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 140/results.jsonl',
-    #         './benchmark_runs/Secure + DetContext Grok4.1Fast 147/results.jsonl'
+    #         './benchmark_runs/20260419_143256 Secure Neo4J Grok4.1Fast No History/results.jsonl', 
+    #         './benchmark_runs/20260420_123134 Secure Neo4J Grok4.1Fast No History 141-152/results.jsonl',
     #     ],
-    #     merged_jsonl_path='./benchmark_runs/Secure + DetContext Grok4.1Fast 0-153/results_merged.jsonl'
+    #     merged_jsonl_path='./benchmark_runs/20260419_143256 Secure Neo4J Grok4.1Fast No History/results_merged.jsonl'
     # )

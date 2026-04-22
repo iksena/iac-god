@@ -12,6 +12,7 @@ from tools.cfn_graph_context_rag import get_cfn_schema_context
 from tools.cfn_aws_doc_context import get_cfn_aws_doc_context_for_state
 from tools.cfn_graph_context import get_cfn_graph_context
 from tools.cfn_graph_neo4j_rag import get_cfn_graph_context_for_state
+from tools.cfn_hybrid_rag import get_cfn_graph_context_for_state
 
 # ---------------------------------------------------------------------------
 # CFN context strategy selector
@@ -62,6 +63,14 @@ def _get_cfn_schema_context(
             template_yaml=template_yaml,
         )
          return ctx, "neo4j"
+    
+    elif _CFN_STRATEGY == "hybrid":
+        ctx = get_cfn_graph_context_for_state(
+            validation_results=validation_results,
+            deploy_validation_result=deploy_validation_result,
+            template_yaml=template_yaml,
+        )
+        return ctx, "hybrid"
     
     print(f"[Remediator] Using strategy '{_CFN_STRATEGY}'.")
     ctx = get_cfn_graph_context(

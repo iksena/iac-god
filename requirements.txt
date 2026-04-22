@@ -17,3 +17,6 @@ sentence_transformers
 httpx
 pandas
 neo4j
+chromadb
+langchain-chroma
+langchain-huggingface
