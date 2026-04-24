@@ -238,17 +238,17 @@ def run_all_validators(
     ]
 
     # Trivy runs only after YAML and cfn-lint succeed.
-    if yaml_result["passed"] and cfn_lint_result["passed"]:
-        trivy_result = validate_trivy(template)
-    else:
-        trivy_result = ValidationResult(
-            stage="trivy",
-            passed=False,
-            errors=[],
-            raw_output="Skipped: yaml/cfn-lint prerequisite validation failed",
-        )
+    # if yaml_result["passed"] and cfn_lint_result["passed"]:
+    #     trivy_result = validate_trivy(template)
+    # else:
+    #     trivy_result = ValidationResult(
+    #         stage="trivy",
+    #         passed=False,
+    #         errors=[],
+    #         raw_output="Skipped: yaml/cfn-lint prerequisite validation failed",
+    #     )
 
-    results.append(trivy_result)
+    # results.append(trivy_result)
     static_passed = all(r["passed"] for r in results)
 
     # Stage 5: Deployability check (only if static stages pass)

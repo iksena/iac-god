@@ -69,6 +69,7 @@ def _get_cfn_schema_context(
             validation_results=validation_results,
             deploy_validation_result=deploy_validation_result,
             template_yaml=template_yaml,
+            smell_report=None,
         )
         return ctx, "hybrid", queries
     
@@ -341,6 +342,23 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         )
         print(f"[Remediator] CFN schema context ({strategy}): {len(cfn_graph_context)} chars, "
           f"{len(retrieval_queries)} retrieval queries generated.")
+        
+        if retrieval_queries:
+            recorder.record_tool_call(
+                state=state,
+                agent="remediator",
+                tool_name=f"hybrid_rag:{strategy}",
+                inputs={
+                    "validation_results": state.get("validation_results"),
+                    "deploy_validation_result": state.get("deploy_validation_result"),
+                    "template_yaml": state["cloudformation_template"],
+                },
+                outputs={
+                    "retrieval_queries": retrieval_queries,
+                    "context_chars": len(cfn_graph_context),
+                    "strategy": strategy,
+                },
+            )
     else:
         print("[Remediator] Context injection skipped for non-YAML/cfn-lint/deploy failures.")
 

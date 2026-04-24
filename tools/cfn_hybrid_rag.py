@@ -7,6 +7,7 @@ from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from neo4j import GraphDatabase
 from agents.engineer import _build_client
+from tools.template_annotator import annotate_template, attach_smells, TemplateAnnotation
 
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 GLOBAL_EMBEDDINGS = HuggingFaceEmbeddings(
@@ -164,26 +165,65 @@ def query_knowledge_graph(driver, resource_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 QUERY_GEN_SYSTEM = """\
-You are an AWS CloudFormation schema expert. Given a list of validation errors from a CFN template,
-generate a list of precise retrieval queries. Each query must target a specific Resource.Property
-combination to look up its schema, required constraints, or correct usage.
+You are an AWS CloudFormation schema expert. You are given:
+1. A list of validation errors from a CFN template.
+2. A structured annotation of the template's resources: their logical IDs, AWS resource types, \
+   source line numbers, and any detected security smells.
+
+Using this context, generate a list of precise retrieval queries. Each query must target a specific \
+Resource.Property combination to look up its schema, required constraints, or correct usage.
 
 Output a JSON array of strings only. Each string should be a natural-language question like:
 "What are the required properties for AWS::S3::Bucket BucketEncryption ServerSideEncryptionConfiguration?"
 "What type is AWS::RDS::DBInstance DBSubnetGroupName and is it required?"
-Limit to at most 8 queries. Focus on properties mentioned in the errors."""
+"What values are valid for AWS::IAM::Role AssumeRolePolicyDocument Version?"
+
+Prioritise resources that appear in the errors. Limit to at most 8 queries.\
+"""
+
+def _build_annotation_summary(annotation: TemplateAnnotation) -> str:
+    """
+    Serialize a TemplateAnnotation into a compact text block for the query-gen prompt.
+    Keeps token cost low while giving the LLM full resource-type + smell signal.
+    """
+    lines = [f"Template: {annotation.file_path} ({annotation.template_type})"]
+    for r in annotation.resources:
+        smell_ids = ", ".join(s.get("rule_id", "?") for s in r.smells) or "none"
+        lines.append(
+            f"  - [{r.resource_id}] type={r.resource_type} "
+            f"line={r.start_line} smells=[{smell_ids}]"
+        )
+    return "\n".join(lines)
 
 
-def generate_retrieval_queries(errors: list[str], template_yaml: str | None) -> list[str]:
-    """HyDE-style: LLM reformulates errors into schema-targeted retrieval queries."""
+def generate_retrieval_queries(
+    errors: list[str],
+    template_yaml: str | None,
+    annotation: TemplateAnnotation | None = None,   # NEW optional param
+) -> list[str]:
+    """HyDE-style: LLM reformulates errors + annotation into schema-targeted retrieval queries."""
     if not errors:
         return []
 
     client, model = _build_client()
-    user_content = (
-        f"## Validation Errors\n" + "\n".join(f"- {e}" for e in errors) +
-        (f"\n\n## Template Snippet (for resource type context)\n```yaml\n{template_yaml[:2000]}\n```" if template_yaml else "")
-    )
+
+    # Build user content: errors first, then annotation (compact), then raw YAML fallback
+    user_parts = ["## Validation Errors\n" + "\n".join(f"- {e}" for e in errors)]
+
+    if annotation and not annotation.parse_error:
+        user_parts.append(
+            "## Template Resource Annotation\n"
+            "(Logical IDs, resource types, source lines, detected smells)\n"
+            + _build_annotation_summary(annotation)
+        )
+    elif template_yaml:
+        # Fallback: raw YAML snippet as before
+        user_parts.append(
+            f"## Template Snippet (for resource type context)\n"
+            f"```yaml\n{template_yaml[:2000]}\n```"
+        )
+
+    user_content = "\n\n".join(user_parts)
 
     try:
         response = client.chat.completions.create(
@@ -203,24 +243,47 @@ def generate_retrieval_queries(errors: list[str], template_yaml: str | None) -> 
     except Exception as e:
         print(f"[RAG Tool] Query generation failed, falling back to raw errors: {e}")
 
-    return errors  # safe fallback to original behaviour
+    return errors
 
 def get_cfn_graph_context_for_state(
     validation_results: list[dict],
     deploy_validation_result: dict | None,
     template_yaml: str | None,
+    smell_report: list[dict] | None = None,
 ) -> tuple[str, list[str]]:
     """
-    Executes the Hybrid RAG workflow with HyDE query reformulation.
-    Returns (context_text, retrieval_queries) so queries can be stored on RemediationHistory.
+    Executes the Hybrid RAG workflow with annotation-enriched HyDE query reformulation.
+    Returns (context_text, retrieval_queries).
     """
-    print("[RAG Tool] Assembling G-Retrieval Context (HyDE mode)...")
+    print("[RAG Tool] Assembling G-Retrieval Context (HyDE + Annotation mode)...")
 
-    identified_resources = _get_active_resources(template_yaml)
     errors = _extract_errors(validation_results, deploy_validation_result)
 
-    # ── HyDE STAGE 0: Query Reformulation ──────────────────────────────────
-    retrieval_queries = generate_retrieval_queries(errors, template_yaml)
+    annotation: TemplateAnnotation | None = None
+    if template_yaml:
+        try:
+            annotation = annotate_template(
+                file_path="<in-memory>",
+                content=template_yaml,
+            )
+            if smell_report:
+                annotation = attach_smells(annotation, smell_report)
+            print(
+                f"[RAG Tool] Annotation: {len(annotation.resources)} resources parsed, "
+                f"{sum(len(r.smells) for r in annotation.resources)} smells attached."
+            )
+        except Exception as exc:
+            print(f"[RAG Tool] Annotation failed (non-fatal): {exc}")
+            annotation = None
+
+    # Derive identified_resources from annotation (more precise than regex scan)
+    if annotation and annotation.resources:
+        identified_resources: set[str] = {r.resource_type for r in annotation.resources}
+    else:
+        identified_resources = _get_active_resources(template_yaml)  # fallback
+
+    # ── HyDE STAGE 0: Query Reformulation (annotation-enriched) ───────────
+    retrieval_queries = generate_retrieval_queries(errors, template_yaml, annotation)
     print(f"[RAG Tool] Stage 0: Generated {len(retrieval_queries)} retrieval queries.")
 
     # ── STAGE 1: Semantic Search (ChromaDB) — multi-query ──────────────────

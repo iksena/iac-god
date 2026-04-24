@@ -170,13 +170,10 @@ def _parse_cloudformation(content: str, file_path: str) -> TemplateAnnotation:
     raw: dict = {}
 
     try:
-        if path.suffix.lower() in (".yaml", ".yml"):
-            raw = load_cfn_yaml(content)
-            line_map = _yaml_with_line_numbers(content)
-        else:
-            # JSON CloudFormation
-            raw = json.loads(content)
-            line_map = {}
+        # Always try YAML first (YAML is a superset of JSON, handles both formats)
+        # This works for in-memory templates without file extensions too
+        raw = load_cfn_yaml(content)
+        line_map = _yaml_with_line_numbers(content)
     except Exception as exc:
         logger.warning("Failed to parse CloudFormation template %s: %s", file_path, exc)
         return TemplateAnnotation(

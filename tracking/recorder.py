@@ -70,6 +70,28 @@ class ResearchRecorder:
             f.write(json.dumps(record) + "\n")
         return record
 
+    def record_tool_call(
+        self,
+        state: GraphState,
+        agent: str,
+        tool_name: str,
+        inputs: dict | None = None,
+        outputs: dict | None = None,
+    ) -> dict:
+        """Record a tool invocation with inputs and outputs."""
+        record = {
+            "agent": agent,
+            "iteration": state["current_iteration"],
+            "tool_name": tool_name,
+            "inputs": inputs or {},
+            "outputs": outputs or {},
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        # Append to JSONL file for streaming access
+        with open(self.output_dir / "tool_calls.jsonl", "a") as f:
+            f.write(json.dumps(record) + "\n")
+        return record
+
     def save_iteration_snapshot(self, state: GraphState):
         """Save full state snapshot at each iteration boundary."""
         iteration = state["current_iteration"]
