@@ -33,6 +33,8 @@ class RemediationHistory(TypedDict):
     formatted_errors: str       # Human-readable error context
     suggestion: str     # Remediator's fix suggestion
     timestamp: str
+    cfn_context: str
+    retrieval_queries: list[str]
 
 class LLMCallRecord(TypedDict):
     agent: str

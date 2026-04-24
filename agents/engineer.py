@@ -34,6 +34,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
             iteration=latest["iteration"],
             error_context=latest["formatted_errors"],
             remediation_suggestion=latest["suggestion"],
+            cfn_context=latest.get("cfn_context", ""),
         )
 
     user_msg: Message = {"role": "user", "content": user_content}

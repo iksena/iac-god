@@ -26,6 +26,12 @@ Iteration {iteration} — Apply these fixes based on validation errors and remed
 ## Remediation Suggestion
 {remediation_suggestion}
 
+## Retrieved CloudFormation Schema Context
+The following schema context was retrieved specifically for the errors above.
+Use it to produce property-correct, constraint-aware YAML:
+
+{cfn_context}
+
 The final template must also satisfy Original User Request and Grounded Objectives.
 These fix objectives can override or extend previous fix objectives and Grounded Objectives.
 Output the complete corrected CloudFormation YAML.

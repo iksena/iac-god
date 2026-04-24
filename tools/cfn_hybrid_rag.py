@@ -1,10 +1,12 @@
 import os
 import yaml
+import json
 import chromadb
 from typing import Dict, Any
 from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from neo4j import GraphDatabase
+from agents.engineer import _build_client
 
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 GLOBAL_EMBEDDINGS = HuggingFaceEmbeddings(
@@ -160,54 +162,111 @@ def query_knowledge_graph(driver, resource_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Main Orchestration Method for the Remediator Agent
 # ---------------------------------------------------------------------------
-def get_cfn_graph_context_for_state(
-    validation_results: list[dict], 
-    deploy_validation_result: dict | None, 
-    template_yaml: str | None
-) -> str:
-    """
-    Executes the Hybrid RAG workflow for the remediator agent.
-    Combines template resources with semantically matched resources from validation errors.
-    """
-    print("[RAG Tool] Assembling G-Retrieval Context...")
 
-    # Step 1: Base resources explicitly defined in the template
+QUERY_GEN_SYSTEM = """\
+You are an AWS CloudFormation schema expert. Given a list of validation errors from a CFN template,
+generate a list of precise retrieval queries. Each query must target a specific Resource.Property
+combination to look up its schema, required constraints, or correct usage.
+
+Output a JSON array of strings only. Each string should be a natural-language question like:
+"What are the required properties for AWS::S3::Bucket BucketEncryption ServerSideEncryptionConfiguration?"
+"What type is AWS::RDS::DBInstance DBSubnetGroupName and is it required?"
+Limit to at most 8 queries. Focus on properties mentioned in the errors."""
+
+
+def generate_retrieval_queries(errors: list[str], template_yaml: str | None) -> list[str]:
+    """HyDE-style: LLM reformulates errors into schema-targeted retrieval queries."""
+    if not errors:
+        return []
+
+    client, model = _build_client()
+    user_content = (
+        f"## Validation Errors\n" + "\n".join(f"- {e}" for e in errors) +
+        (f"\n\n## Template Snippet (for resource type context)\n```yaml\n{template_yaml[:2000]}\n```" if template_yaml else "")
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": QUERY_GEN_SYSTEM},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.0,
+            max_tokens=512,
+        )
+        raw = response.choices[0].message.content.strip()
+        raw = raw.removeprefix("```json").removesuffix("```").strip()
+        queries = json.loads(raw)
+        if isinstance(queries, list):
+            return [str(q) for q in queries[:8]]
+    except Exception as e:
+        print(f"[RAG Tool] Query generation failed, falling back to raw errors: {e}")
+
+    return errors  # safe fallback to original behaviour
+
+def get_cfn_graph_context_for_state(
+    validation_results: list[dict],
+    deploy_validation_result: dict | None,
+    template_yaml: str | None,
+) -> tuple[str, list[str]]:
+    """
+    Executes the Hybrid RAG workflow with HyDE query reformulation.
+    Returns (context_text, retrieval_queries) so queries can be stored on RemediationHistory.
+    """
+    print("[RAG Tool] Assembling G-Retrieval Context (HyDE mode)...")
+
     identified_resources = _get_active_resources(template_yaml)
-    
-    # Step 2: Extract errors from state
     errors = _extract_errors(validation_results, deploy_validation_result)
 
-    # STAGE 1: Semantic Search (ChromaDB)
-    if errors:
-        print(f"[RAG Tool] Stage 1: Embedding {len(errors)} error messages for semantic search...")
+    # ── HyDE STAGE 0: Query Reformulation ──────────────────────────────────
+    retrieval_queries = generate_retrieval_queries(errors, template_yaml)
+    print(f"[RAG Tool] Stage 0: Generated {len(retrieval_queries)} retrieval queries.")
+
+    # ── STAGE 1: Semantic Search (ChromaDB) — multi-query ──────────────────
+    if retrieval_queries:
         try:
             chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
-            
             vectorstore = Chroma(
                 client=chroma_client,
-                collection_name="cloudformation_docs",
-                embedding_function=GLOBAL_EMBEDDINGS
+                collection_name="cfn_schema_properties",
+                embedding_function=GLOBAL_EMBEDDINGS,
             )
 
-            # Combine errors into a single query to retrieve relevant documentation chunks
-            combined_query = " ".join(errors)
-            top_chunks = vectorstore.similarity_search(combined_query, k=5)
-            
-            # Extract unique resource metadata from semantic matches
-            for chunk in top_chunks:
-                if "resource_name" in chunk.metadata:
-                    identified_resources.add(chunk.metadata["resource_name"])
-                    
+            seen_resources: set[str] = set()
+            property_chunks: list[str] = []
+
+            for query in retrieval_queries:
+                chunks = vectorstore.similarity_search(query, k=3)
+                for chunk in chunks:
+                    meta = chunk.metadata
+                    res = meta.get("resource_name", "")
+                    prop = meta.get("property_name", "")
+                    if res:
+                        identified_resources.add(res)
+                    # Capture property-level text for direct context injection
+                    prop_key = f"{res}.{prop}"
+                    if prop_key not in seen_resources:
+                        seen_resources.add(prop_key)
+                        property_chunks.append(chunk.page_content)
+
         except Exception as e:
             print(f"[RAG Tool] Warning: ChromaDB Semantic Search failed. {e}")
+            property_chunks = []
+    else:
+        property_chunks = []
 
-    # STAGE 2: Exact Schema Traversal (Neo4j)
+    # ── STAGE 2: Exact Schema Traversal (Neo4j) ────────────────────────────
     if not identified_resources:
-        return "No specific AWS resources identified in template or errors."
+        return "No specific AWS resources identified in template or errors.", retrieval_queries
 
-    print(f"[RAG Tool] Stage 2: Querying Neo4j for {len(identified_resources)} identified resources...")
+    print(f"[RAG Tool] Stage 2: Querying Neo4j for {len(identified_resources)} resources...")
     final_context_blocks = ["## Official AWS CloudFormation Schema Context\n"]
-    
+
+    # Inject property-level chunks from semantic stage (highest relevance first)
+    if property_chunks:
+        final_context_blocks.append("### Semantically Matched Properties\n" + "\n---\n".join(property_chunks))
+
     try:
         driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
         for resource in identified_resources:
@@ -217,6 +276,6 @@ def get_cfn_graph_context_for_state(
         driver.close()
     except Exception as e:
         print(f"[RAG Tool] Warning: Neo4j retrieval failed. {e}")
-        return "Failed to connect to Knowledge Graph."
+        return "Failed to connect to Knowledge Graph.", retrieval_queries
 
-    return "\n\n".join(final_context_blocks)
+    return "\n\n".join(final_context_blocks), retrieval_queries
