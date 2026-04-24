@@ -6,7 +6,7 @@ from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_core.documents import Document
 
-CHROMA_DB_DIR = "../cfn_chroma_db"
+CHROMA_DB_DIR = "../cfn-chroma-docker"
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 
 def build_vector_db():
@@ -20,19 +20,49 @@ def build_vector_db():
     print("Chunking CloudFormation data...")
     
     for res_name, res_data in kg_data.items():
-        # Create a semantic text chunk for the resource
-        text_content = f"Resource: {res_name}\n"
-        text_content += f"Description: {res_data.get('description', '')}\n"
-        text_content += "Properties:\n"
-        
-        # Add basic property descriptions to the text chunk
-        for prop_name, prop_details in res_data.get("properties", {}).items():
-            text_content += f"- {prop_name}: {prop_details.get('Documentation', 'No description available')}\n"
+        res_description = res_data.get("description", "")
 
-        # Create a LangChain Document with critical metadata
+        for prop_name, prop_details in res_data.get("properties", {}).items():
+            prop_type = prop_details.get("Type", prop_details.get("PrimitiveType", "Unknown"))
+            required = prop_details.get("Required", False)
+            update_type = prop_details.get("UpdateType", "Unknown")
+            doc_url = prop_details.get("Documentation", "")
+            description = prop_details.get("Description", "")
+
+            text_content = (
+                f"Resource: {res_name}\n"
+                f"Resource Description: {res_description}\n"
+                f"Property: {prop_name}\n"
+                f"Property ID: {res_name}.{prop_name}\n"
+                f"Type: {prop_type}\n"
+                f"Required: {required}\n"
+                f"Update Type: {update_type}\n"
+                f"Description: {description}\n"
+                f"Documentation: {doc_url}\n"
+            )
+
+            doc = Document(
+                page_content=text_content,
+                metadata={
+                    "resource_name": res_name,
+                    "property_name": prop_name,
+                    "property_id": f"{res_name}.{prop_name}",  # aligns with Neo4j node ID
+                    "required": required,
+                    "update_type": update_type,
+                    "type": prop_type,
+                }
+            )
+            documents.append(doc)
+    
+    for i, example_code in enumerate(res_data.get("examples", [])):
         doc = Document(
-            page_content=text_content,
-            metadata={"resource_name": res_name} # This metadata is critical for Stage 2
+            page_content=f"CloudFormation example for {res_name}:\n{example_code}",
+            metadata={
+                "resource_name": res_name,
+                "chunk_type": "example",
+                "example_index": i,
+                "property_id": None,   # can be enriched later if example is tagged
+            }
         )
         documents.append(doc)
 
@@ -42,11 +72,11 @@ def build_vector_db():
     chroma_client = chromadb.HttpClient(host="localhost", port=8000)
     
     # Store in Docker ChromaDB under a specific collection name
-    vectorstore = Chroma.from_documents(
+    Chroma.from_documents(
         documents=documents, 
         embedding=embeddings, 
         client=chroma_client,
-        collection_name="cloudformation_docs"
+        collection_name="cfn_schema_properties"
     )
     print("Vector database successfully built inside Docker!")
 

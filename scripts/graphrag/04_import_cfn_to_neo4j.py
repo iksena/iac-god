@@ -36,9 +36,39 @@ def import_cfn_graph(session, data):
             session.run(f"""
                 MATCH (r:Resource {{name: $res_name}})
                 MERGE (p:{node_label} {{id: $prop_id}})
-                SET p.name = $prop_name, p.type = $prop_type, p.required = $req
+                SET p.name        = $prop_name,
+                    p.type        = $prop_type,
+                    p.required    = $req,
+                    p.update_type = $update_type,
+                    p.doc_url     = $doc_url,
+                    p.description = $description,
+                    p.primitive_item_type = $primitive_item_type,
+                    p.duplicates_allowed  = $duplicates_allowed
                 MERGE (r)-[:{rel_type}]->(p)
-            """, res_name=res_name, prop_id=f"{res_name}_{prop_name}", prop_name=prop_name, prop_type=prop_type, req=required)
+            """,
+                res_name=res_name,
+                prop_id=f"{res_name}.{prop_name}",
+                prop_name=prop_name,
+                prop_type=prop_type,
+                req=required,
+                update_type=prop_details.get("UpdateType", "Unknown"),
+                doc_url=prop_details.get("Documentation", ""),
+                description=prop_details.get("Description", ""),
+                primitive_item_type=prop_details.get("PrimitiveItemType", ""),
+                duplicates_allowed=prop_details.get("DuplicatesAllowed", False),
+            )
+
+            # After creating the NestedType node, add this block:
+            referenced_type = prop_details.get("ItemType") or prop_details.get("Type")
+            if referenced_type and referenced_type not in ["String", "Integer", "Boolean", "Timestamp", "Double", "Long", "Json", "List", "Map"]:
+                ref_id = f"{res_name}.{referenced_type}"
+                session.run("""
+                    MERGE (t:NestedType {id: $ref_id})
+                    SET t.name = $ref_name
+                    WITH t
+                    MATCH (p:NestedType {id: $prop_id})
+                    MERGE (p)-[:REFERENCES_TYPE]->(t)
+                """, ref_id=ref_id, ref_name=referenced_type, prop_id=f"{res_name}.{prop_name}")
 
         # Create Example Nodes
         for i, example_code in enumerate(res_data.get("examples", [])):
@@ -49,12 +79,19 @@ def import_cfn_graph(session, data):
                 MERGE (r)-[:HAS_EXAMPLE]->(e)
             """, res_name=res_name, ex_id=f"{res_name}_ex_{i}", code=example_code, index=i)
 
+def create_indexes(session):
+    print("Creating indexes...")
+    session.run("CREATE INDEX resource_name IF NOT EXISTS FOR (r:Resource) ON (r.name)")
+    session.run("CREATE INDEX property_id IF NOT EXISTS FOR (p:Property) ON (p.id)")
+    session.run("CREATE INDEX nested_type_id IF NOT EXISTS FOR (t:NestedType) ON (t.id)")
+
 if __name__ == "__main__":
     driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
     with open("cfn_knowledge_graph.json", "r") as f:
         kg_data = json.load(f)
     
     with driver.session() as session:
+        create_indexes(session)
         clear_database(session)
         import_cfn_graph(session, kg_data)
     driver.close()

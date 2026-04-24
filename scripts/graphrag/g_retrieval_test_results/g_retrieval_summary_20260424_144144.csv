@@ -1,0 +1,194 @@
+stage,source_csv,raw_error,natural_query,retrieved_resources,num_chunks_retrieved,prompt_length,prompt_snippet,success,error
+yaml,grok_deployable_results_agg,"[truthy] line 34, column 14: truthy value should be one of [false, no, true, yes] | [truthy] line 36, column 9: truthy value should be one of [false, no, true, yes] | [truthy] line 37, column 9: truthy value should be one of [false, no, true, yes]","How do I fix a YAML truthy error in a CloudFormation template? The error is: truthy value should be one of [false, no, true, yes]",AWS::Wisdom::KnowledgeBase; AWS::CloudFormation::TypeActivation; AWS::FraudDetector::Variable; AWS::Wisdom::Assistant; AWS::FraudDetector::Outcome,5,4620,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::Wisdom::KnowledgeBase
+Description: Specifies a knowledge base. To declare this entity in your CloudFormation template, use the following syntax: When you pass the logical ID of this resource to the intrinsicReffunction,Refreturns the knowledge base ID.
+
+Required Properties:
+- Name (String)
+- KnowledgeBaseType (String)
+
+Optional Properties:
+- Descript",True,
+yaml,grok_secure_neo4j_results_agg,"[None] line 18, column 44: syntax error: found unexpected end of stream (syntax)",How do I fix a YAML None error in a CloudFormation template? The error is: syntax error: found unexpected end of stream,AWS::CloudFormation::Macro; AWS::CloudTrail::Channel; AWS::MediaLive::CloudWatchAlarmTemplateGroup; AWS::MediaLive::CloudWatchAlarmTemplate; AWS::Bedrock::Blueprint,5,3988,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::CloudFormation::Macro
+Description: TheAWS::CloudFormation::Macroresource is a CloudFormation
+            resource type that creates a CloudFormation macro to perform custom processing
+            on CloudFormation templates. For more information, seePerform custom
+                processing on CloudFormation templates with template macrosin theCloudF",True,
+yaml,grok_deployable_results_agg,"[None] line 99, column 9: syntax error: could not find expected ':' (syntax)",How do I fix a YAML None error in a CloudFormation template? The error is: syntax error: could not find expected ':',AWS::CloudFormation::Macro; AWS::MediaLive::SdiSource; AWS::CloudFormation::TypeActivation; AWS::MediaLive::CloudWatchAlarmTemplateGroup; AWS::Bedrock::Blueprint,5,3915,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::CloudFormation::Macro
+Description: TheAWS::CloudFormation::Macroresource is a CloudFormation
+            resource type that creates a CloudFormation macro to perform custom processing
+            on CloudFormation templates. For more information, seePerform custom
+                processing on CloudFormation templates with template macrosin theCloudF",True,
+yaml,grok_secure_neo4j_results_agg,"[None] line 2, column 326: syntax error: found unexpected end of stream (syntax)",How do I fix a YAML None error in a CloudFormation template? The error is: syntax error: found unexpected end of stream,AWS::CloudFormation::Macro; AWS::CloudTrail::Channel; AWS::MediaLive::CloudWatchAlarmTemplateGroup; AWS::MediaLive::CloudWatchAlarmTemplate; AWS::Bedrock::Blueprint,5,3988,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::CloudFormation::Macro
+Description: TheAWS::CloudFormation::Macroresource is a CloudFormation
+            resource type that creates a CloudFormation macro to perform custom processing
+            on CloudFormation templates. For more information, seePerform custom
+                processing on CloudFormation templates with template macrosin theCloudF",True,
+yaml,grok_secure_neo4j_results_agg,"[None] line 9, column 12: syntax error: could not find expected ':' (syntax)",How do I fix a YAML None error in a CloudFormation template? The error is: syntax error: could not find expected ':',AWS::CloudFormation::Macro; AWS::MediaLive::SdiSource; AWS::CloudFormation::TypeActivation; AWS::MediaLive::CloudWatchAlarmTemplateGroup; AWS::Bedrock::Blueprint,5,3915,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::CloudFormation::Macro
+Description: TheAWS::CloudFormation::Macroresource is a CloudFormation
+            resource type that creates a CloudFormation macro to perform custom processing
+            on CloudFormation templates. For more information, seePerform custom
+                processing on CloudFormation templates with template macrosin theCloudF",True,
+cfn-lint,grok_deployable_results_agg,"[E3002] {'ColumnNumber': 7, 'LineNumber': 61}: Additional properties are not allowed ('RuleName' was unexpected)",What is the correct CloudFormation property name? cfn-lint  reports 'RuleName' is not allowed or unexpected.,AWS::Lex::ResourcePolicy; AWS::Glue::MLTransform; AWS::ControlTower::EnabledBaseline; AWS::IoT::Command; AWS::FraudDetector::Variable,5,4659,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::Lex::ResourcePolicy
+Description: Specifies a new resource policy with the specified policy
+         statements. To declare this entity in your CloudFormation template, use the following syntax: TheFn::GetAttintrinsic function returns a value for a specified attribute of this type. The following are the available attributes and sample return values.
+
+",True,
+cfn-lint,grok_deployable_results_agg,"[E3002] {'ColumnNumber': 7, 'LineNumber': 14}: Additional properties are not allowed ('LogGroupName' was unexpected. Did you mean 'LogGroupNames'?) | [E3002] {'ColumnNumber': 7, 'LineNumber': 21}: Additional properties are not allowed ('Tags' was unexpected) | [E3002] {'ColumnNumber': 7, 'LineNumber",What is the correct CloudFormation property name? cfn-lint  reports 'LogGroupName' is not allowed or unexpected.,AWS::CloudFront::RealtimeLogConfig; AWS::Logs::LogGroup; AWS::CodeGuruProfiler::ProfilingGroup; AWS::IoT::ResourceSpecificLogging; AWS::IoT::Logging,5,4445,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::CloudFront::RealtimeLogConfig
+Description: A real-time log configuration. To declare this entity in your CloudFormation template, use the following syntax: When you pass the logical ID of this resource to the intrinsicReffunction,Refreturns the Amazon Resource Name (ARN) of the real-time log
+                configuration. For example:arn:aws:cloudfro",True,
+cfn-lint,grok_deployable_results_agg,"[E3051] {'ColumnNumber': 7, 'LineNumber': 180}: Document is not valid ('Template could not be parsed: a string or stream input is required') | [E3003] {'ColumnNumber': 5, 'LineNumber': 237}: 'Name' is a required property | [E3002] {'ColumnNumber': 7, 'LineNumber': 238}: Additional properties are not","How do I fix this CloudFormation cfn-lint  error: [E3051] {'ColumnNumber': 7, 'LineNumber': 180}: Document is not valid ('Template could not be parsed: a string or stream input is required')",AWS::ServiceCatalog::Portfolio; AWS::ServiceCatalog::LaunchTemplateConstraint; AWS::ControlTower::EnabledBaseline; AWS::CodeCommit::Repository; AWS::IoT::Command,5,4282,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::ServiceCatalog::Portfolio
+Description: Specifies a portfolio. To declare this entity in your CloudFormation template, use the following syntax: When you pass the logical ID of this resource to the intrinsicReffunction,Refreturns the portfolio identifier.
+
+Required Properties:
+- DisplayName (String)
+- ProviderName (String)
+
+Optional Properties:
+- Acce",True,
+cfn-lint,grok_secure_neo4j_results_agg,"[E1001] {'ColumnNumber': 1, 'LineNumber': 1}: 'Resources' is a required property | [W2001] {'ColumnNumber': 3, 'LineNumber': 5}: Parameter ShardCount not used. | [W2001] {'ColumnNumber': 3, 'LineNumber': 11}: Parameter BucketNamePrefix not used. | [W2001] {'ColumnNumber': 3, 'LineNumber': 16}: Param","How do I fix this CloudFormation cfn-lint  error: [E1001] {'ColumnNumber': 1, 'LineNumber': 1}: 'Resources' is a required property",AWS::ServiceCatalog::Portfolio; AWS::ServiceCatalog::LaunchTemplateConstraint; AWS::ControlTower::EnabledBaseline; AWS::CodeCommit::Repository; AWS::ServiceCatalog::StackSetConstraint,5,4042,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::ServiceCatalog::Portfolio
+Description: Specifies a portfolio. To declare this entity in your CloudFormation template, use the following syntax: When you pass the logical ID of this resource to the intrinsicReffunction,Refreturns the portfolio identifier.
+
+Required Properties:
+- DisplayName (String)
+- ProviderName (String)
+
+Optional Properties:
+- Acce",True,
+cfn-lint,grok_deployable_results_agg,"[E3001] {'ColumnNumber': 5, 'LineNumber': 37}: Additional properties are not allowed ('Tags' was unexpected) | [W3005] {'ColumnNumber': 5, 'LineNumber': 44}: 'DemoCliEventsTopic' dependency already enforced by a 'Ref' at 'Resources/DemoCliEventsRule/Properties/Targets/0/Arn'",What is the correct CloudFormation property name? cfn-lint  reports 'Tags' is not allowed or unexpected.,AWS::ServiceCatalog::Portfolio; AWS::ServiceCatalog::TagOption; AWS::InspectorV2::Filter; AWS::MediaLive::EventBridgeRuleTemplateGroup; AWS::IoT::Command,5,3947,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::ServiceCatalog::Portfolio
+Description: Specifies a portfolio. To declare this entity in your CloudFormation template, use the following syntax: When you pass the logical ID of this resource to the intrinsicReffunction,Refreturns the portfolio identifier.
+
+Required Properties:
+- DisplayName (String)
+- ProviderName (String)
+
+Optional Properties:
+- Acce",True,
+trivy,grok_secure_neo4j_results_agg,[AWS-0028] HIGH: aws_instance should activate session tokens for Instance Metadata Service. — Instance does not require IMDS access to require a token. | [AWS-0104] CRITICAL: A security group rule should not allow unrestricted egress to any IP address. — Security group rule allows unrestricted egres,How do I configure a CloudFormation resource to fix a HIGH security issue? Trivy rule AWS-0028: aws_instance should activate session tokens for Instance Metadata Service.,AWS::Connect::SecurityKey; AWS::SecurityAgent::Application; AWS::EC2::VerifiedAccessGroup; AWS::GuardDuty::TrustedEntitySet; AWS::EC2::VerifiedAccessInstance,5,5200,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::Connect::SecurityKey
+Description: The security key for the instance. To declare this entity in your CloudFormation template, use the following syntax: TheFn::GetAttintrinsic function returns a value for a specified attribute of this type. The following are the available attributes and sample return values.
+
+Required Properties:
+- Key (String)
+- Insta",True,
+trivy,grok_secure_neo4j_results_agg,[AWS-0028] HIGH: aws_instance should activate session tokens for Instance Metadata Service. — Instance does not require IMDS access to require a token.,How do I configure a CloudFormation resource to fix a HIGH security issue? Trivy rule AWS-0028: aws_instance should activate session tokens for Instance Metadata Service.,AWS::Connect::SecurityKey; AWS::SecurityAgent::Application; AWS::EC2::VerifiedAccessGroup; AWS::GuardDuty::TrustedEntitySet; AWS::EC2::VerifiedAccessInstance,5,5200,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::Connect::SecurityKey
+Description: The security key for the instance. To declare this entity in your CloudFormation template, use the following syntax: TheFn::GetAttintrinsic function returns a value for a specified attribute of this type. The following are the available attributes and sample return values.
+
+Required Properties:
+- Key (String)
+- Insta",True,
+trivy,grok_secure_neo4j_results_agg,[AWS-0031] HIGH: ECR images tags shouldn't be mutable. — Repository tags are mutable.,How do I configure a CloudFormation resource to fix a HIGH security issue? Trivy rule AWS-0031: ECR images tags shouldn't be mutable.,AWS::SecurityAgent::Application; AWS::Shield::ProtectionGroup; AWS::ECR::SigningConfiguration; AWS::WorkSpacesWeb::DataProtectionSettings; AWS::GuardDuty::TrustedEntitySet,5,4755,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::SecurityAgent::Application
+Description: TheAWS::SecurityAgent::Applicationresource specifies a Security Agent application. An application provides the top-level configuration for Security Agent, including identity and access management settings and encryption options. To declare this entity in your CloudFormation template, use the following syntax: W",True,
+trivy,grok_secure_neo4j_results_agg,[AWS-0104] CRITICAL: A security group rule should not allow unrestricted egress to any IP address. — Security group rule allows unrestricted egress to any IP address. | [AWS-0104] CRITICAL: A security group rule should not allow unrestricted egress to any IP address. — Security group rule allows unr,How do I configure a CloudFormation resource to fix a CRITICAL security issue? Trivy rule AWS-0104: A security group rule should not allow unrestricted egress to any IP address.,AWS::MediaLive::InputSecurityGroup; AWS::EC2::VerifiedAccessGroup; AWS::GuardDuty::IPSet; AWS::GuardDuty::TrustedEntitySet; AWS::EC2::VerifiedAccessInstance,5,5544,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::MediaLive::InputSecurityGroup
+Description: The AWS::MediaLive::InputSecurityGroup is a MediaLive resource type that creates an input security group. A MediaLive input security group is associated with a MediaLive input. The input security group is an ""allow
+   list"" of IP addresses that controls whether an external IP address can push content to the ",True,
+trivy,grok_secure_neo4j_results_agg,[AWS-0104] CRITICAL: A security group rule should not allow unrestricted egress to any IP address. — Security group rule allows unrestricted egress to any IP address. | [AWS-0132] HIGH: S3 encryption should use Customer Managed Keys — Bucket does not encrypt data with a customer managed key.,How do I configure a CloudFormation resource to fix a CRITICAL security issue? Trivy rule AWS-0104: A security group rule should not allow unrestricted egress to any IP address.,AWS::MediaLive::InputSecurityGroup; AWS::EC2::VerifiedAccessGroup; AWS::GuardDuty::IPSet; AWS::GuardDuty::TrustedEntitySet; AWS::EC2::VerifiedAccessInstance,5,5544,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::MediaLive::InputSecurityGroup
+Description: The AWS::MediaLive::InputSecurityGroup is a MediaLive resource type that creates an input security group. A MediaLive input security group is associated with a MediaLive input. The input security group is an ""allow
+   list"" of IP addresses that controls whether an external IP address can push content to the ",True,
+deploy,grok_deployable_results_agg,An error occurred (ValidationError) when calling the CreateStack operation: Parameters: [BucketName] must have values,How do I fix this AWS CloudFormation deployment error: An error occurred (ValidationError) when calling the CreateStack operation: Parameters: [BucketName] must have values,AWS::M2::Deployment; AWS::ApiGatewayV2::Deployment; AWS::LaunchWizard::Deployment; AWS::MSK::ServerlessCluster; AWS::S3::Bucket,5,6388,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::M2::Deployment
+Description: Creates and starts a deployment to deploy an application into a runtime
+         environment. To declare this entity in your CloudFormation template, use the following syntax:
+
+Required Properties:
+- ApplicationId (String)
+- ApplicationVersion (Integer)
+- EnvironmentId (String)
+
+Optional Properties:
+- None (None)
+
+Nested C",True,
+deploy,grok_deployable_results_agg,An error occurred (AlreadyExistsException) when calling the CreateStack operation: Stack [iac-god-eval-917101ff] already exists,How do I fix this AWS CloudFormation deployment error: An error occurred (AlreadyExistsException) when calling the CreateStack operation: Stack [iac-god-eval-917101ff] already exists,AWS::EC2::Instance; AWS::CloudFormation::StackSet; AWS::M2::Deployment; AWS::LaunchWizard::Deployment; AWS::ServiceCatalog::StackSetConstraint,5,7849,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::EC2::Instance
+Description: Specifies an EC2 instance. If an Elastic IP address is attached to your instance, AWS CloudFormation
+         reattaches the Elastic IP address after it updates the instance. For more information about
+         updating stacks, seeAWS CloudFormation Stacks Updates. To declare this entity in your CloudFormation template, use",True,
+deploy,grok_deployable_results_agg,Stack creation timed out after 900s,How do I fix this AWS CloudFormation deployment error: Stack creation timed out after 900s,AWS::EC2::Instance; AWS::CloudFormation::WaitCondition; AWS::M2::Deployment; AWS::SSMQuickSetup::LifecycleAutomation; AWS::CloudFormation::CustomResource,5,7254,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::EC2::Instance
+Description: Specifies an EC2 instance. If an Elastic IP address is attached to your instance, AWS CloudFormation
+         reattaches the Elastic IP address after it updates the instance. For more information about
+         updating stacks, seeAWS CloudFormation Stacks Updates. To declare this entity in your CloudFormation template, use",True,
+deploy,grok_deployable_results_agg,An error occurred (AlreadyExistsException) when calling the CreateStack operation: Stack [iac-god-eval-e2c6b8e2] already exists,How do I fix this AWS CloudFormation deployment error: An error occurred (AlreadyExistsException) when calling the CreateStack operation: Stack [iac-god-eval-e2c6b8e2] already exists,AWS::EC2::Instance; AWS::CloudFormation::StackSet; AWS::M2::Deployment; AWS::LaunchWizard::Deployment; AWS::ServiceCatalog::StackSetConstraint,5,7849,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::EC2::Instance
+Description: Specifies an EC2 instance. If an Elastic IP address is attached to your instance, AWS CloudFormation
+         reattaches the Elastic IP address after it updates the instance. For more information about
+         updating stacks, seeAWS CloudFormation Stacks Updates. To declare this entity in your CloudFormation template, use",True,
+deploy,grok_deployable_results_agg,An error occurred (AlreadyExistsException) when calling the CreateStack operation: Stack [iac-god-eval-8d0f46f0] already exists,How do I fix this AWS CloudFormation deployment error: An error occurred (AlreadyExistsException) when calling the CreateStack operation: Stack [iac-god-eval-8d0f46f0] already exists,AWS::EC2::Instance; AWS::CloudFormation::StackSet; AWS::M2::Deployment; AWS::LaunchWizard::Deployment; AWS::ServiceCatalog::StackSetConstraint,5,7849,"You are an expert AWS CloudFormation architect.
+Use the following official documentation context to answer the user query.
+
+CONTEXT:
+Resource: AWS::EC2::Instance
+Description: Specifies an EC2 instance. If an Elastic IP address is attached to your instance, AWS CloudFormation
+         reattaches the Elastic IP address after it updates the instance. For more information about
+         updating stacks, seeAWS CloudFormation Stacks Updates. To declare this entity in your CloudFormation template, use",True,
