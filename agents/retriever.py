@@ -44,8 +44,11 @@ def _generate_retrieval_queries(
     template_yaml: str | None,
     annotation,
     remediation_history: list[RemediationHistory],
-) -> tuple[str, str, list[str], dict | None]:
+) -> tuple[str, str, str, list[str], dict | None]:
     """Build the HyDE prompt, call the LLM, and parse retrieval queries.
+
+    Returns:
+        (model, user_content, raw_response, retrieval_queries, usage)
 
     Uses structured remediation history (not conversation turns) to guide
     query diversity across iterations.
