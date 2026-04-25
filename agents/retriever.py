@@ -1,7 +1,7 @@
 from state import GraphState, Message, RemediationHistory, append_and_cap
 from agents.engineer import _build_client, _call_llm_with_history
 from tracking.recorder import ResearchRecorder
-from tools.template_annotator import annotate_template, attach_smells
+from tools.template_annotator import annotate_template, attach_smells, render_annotated_template
 from tools.cfn_hybrid_rag import (
     _extract_errors,
     _build_annotation_summary,
@@ -52,13 +52,26 @@ def _generate_retrieval_queries(
 
     Uses structured remediation history (not conversation turns) to guide
     query diversity across iterations.
+
+    Change 2: Injects an annotated CFN YAML with inline # ERROR comments
+    anchored to each resource, replacing the plain annotation summary.
+    The plain summary is kept as a fallback when annotation fails.
     """
     user_parts = ["## Validation Errors\n" + "\n".join(f"- {e}" for e in errors)]
+
     if annotation and annotation.resources:
+        # Change 2: render inline-commented YAML instead of flat annotation summary
+        annotated_yaml = render_annotated_template(
+            annotation=annotation,
+            errors=errors,
+            include_security_smells=False,
+        )
         user_parts.append(
-            "## Template Resource Annotation\n"
-            "(Logical IDs, resource types, property keys present, detected smells)\n"
-            + _build_annotation_summary(annotation)
+            "## Annotated CloudFormation Template\n"
+            "Each resource block has inline # ERROR comments showing which errors\n"
+            "apply to that specific resource. Use these as the primary signal for\n"
+            "which Resource.Property combinations need schema retrieval.\n"
+            f"```yaml\n{annotated_yaml}\n```"
         )
     elif template_yaml:
         user_parts.append(

@@ -29,62 +29,115 @@ CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 
 # ---------------------------------------------------------------------------
+# Change 1: Security stage filter constant
+# ---------------------------------------------------------------------------
+# Validation stages that emit security policy violations (checkov, trivy).
+# These do not benefit from CFN schema retrieval — the remediator already knows
+# the fix (e.g. enable encryption) without needing property-level schema context.
+# Import this constant in retriever.py if you want to log skipped stages.
+SECURITY_STAGES = {"checkov", "trivy"}
+
+# ---------------------------------------------------------------------------
 # Helper Methods
 # ---------------------------------------------------------------------------
 def _extract_errors(validation_results: list[dict], deploy_validation_result: dict | None) -> list[str]:
-    """Extracts a flat list of error strings from the validation state."""
+    """Extracts a flat list of error strings from the validation state.
+
+    Security stages (checkov, trivy) are excluded — their findings are policy
+    violations, not schema errors, and do not require CFN schema retrieval.
+    """
     errors = []
-    
-    # Extract static validation errors
+
+    # Extract static validation errors, skipping security scanners
     for result in validation_results:
+        stage = str(result.get("stage") or "").strip().lower()
+        if stage in SECURITY_STAGES:  # Change 1: skip checkov/trivy
+            continue
         if not result.get("passed"):
             for err in result.get("errors", []):
-                if str(err).strip(): 
+                if str(err).strip():
                     errors.append(str(err))
-                    
-    # Extract live deployment errors
+
+    # Extract live deployment errors — these are never security errors
     if deploy_validation_result and not deploy_validation_result.get("passed"):
-        if deploy_validation_result.get("error_message"): 
+        if deploy_validation_result.get("error_message"):
             errors.append(deploy_validation_result["error_message"])
-            
+
         for fr in deploy_validation_result.get("failed_resources", []):
             name = fr.get("logical_name") or fr.get("resource") or ""
             reason = fr.get("status_reason") or fr.get("reason") or ""
-            if name or reason: 
+            if name or reason:
                 errors.append(f"{name} {reason}")
 
     return errors
 
+
+# ---------------------------------------------------------------------------
+# Change 4: Chroma chunk cleaner
+# ---------------------------------------------------------------------------
+_DOC_LINK_RE = re.compile(
+    r"https?://docs\.aws\.amazon\.com\S*", re.IGNORECASE
+)
+_DESCRIPTION_RE = re.compile(
+    r"(?:^|\n)Description:\s*.+?(?=\n[A-Z]|\Z)", re.DOTALL
+)
+
+
+def _clean_chroma_chunk(content: str) -> str:
+    """Remove AWS doc links and Description fields from a Chroma property chunk.
+
+    These fields bloat the ### Semantically Matched Properties section without
+    providing schema information the remediator can act on.
+    """
+    content = _DOC_LINK_RE.sub("", content)
+    content = _DESCRIPTION_RE.sub("", content)
+    # Collapse excess blank lines left behind by removals
+    content = re.sub(r"\n{3,}", "\n\n", content).strip()
+    return content
+
+
+# ---------------------------------------------------------------------------
+# Change 3: Compact Neo4j formatter
+# ---------------------------------------------------------------------------
 def format_prompt_from_neo4j_result(resource_data: dict) -> str:
-    """Formats the Neo4j schema response into a concise prompt for the LLM."""
+    """Formats Neo4j schema data into a concise single-block prompt section.
+
+    Changes from original:
+    - Resource description removed (not actionable for the remediator)
+    - Required and optional properties rendered as single comma-separated lines
+    - Optional properties capped at 20 to keep token budget lean
+    - Error sentinel uses '#' prefix to match YAML comment style
+    """
     if "error" in resource_data:
-        return f"Error: {resource_data['error']}"
+        return f"# {resource_data['error']}"
 
-    lines = [f"Resource: {resource_data['name']}"]
-    if resource_data.get('description'):
-        lines.append(f"Description: {resource_data['description']}\n")
+    lines = [f"### {resource_data['name']}"]
+    # Description intentionally omitted — not needed by the remediator
 
-    if resource_data.get("required_properties"):
-        lines.append("Required Properties:")
-        for prop in resource_data["required_properties"]:
-            lines.append(f"- {prop['name']} ({prop['type']})")
-        lines.append("")
+    req = resource_data.get("required_properties") or []
+    opt = resource_data.get("optional_properties") or []
 
-    if resource_data.get("optional_properties"):
-        lines.append("Optional Properties:")
-        for prop in resource_data["optional_properties"]:
-            lines.append(f"- {prop['name']} ({prop['type']})")
-        lines.append("")
+    if req:
+        lines.append("Required: " + ", ".join(
+            f"{p['name']}({p['type']})" for p in req
+        ))
+    if opt:
+        shown = opt[:20]
+        lines.append("Optional: " + ", ".join(
+            f"{p['name']}({p['type']})" for p in shown
+        ))
+        if len(opt) > 20:
+            lines.append(f"  ... and {len(opt) - 20} more optional properties")
 
     if resource_data.get("nested_types"):
-        lines.append("Nested Complex Types:")
-        for nt in resource_data["nested_types"]:
-            lines.append(f"- {nt['name']} ({nt['type']}) - Required: {nt['required']}")
-        lines.append("")
+        nt_list = ", ".join(
+            f"{nt['name']}({'req' if nt['required'] else 'opt'})"
+            for nt in resource_data["nested_types"]
+        )
+        lines.append(f"NestedTypes: {nt_list}")
 
     if resource_data.get("example"):
-        lines.append("YAML Example:")
-        lines.append(f"```yaml\n{resource_data['example']['code']}\n```")
+        lines.append(f"Example:\n```yaml\n{resource_data['example']['code']}\n```")
 
     return "\n".join(lines)
 
@@ -139,11 +192,20 @@ def query_knowledge_graph(driver, resource_name: str) -> Dict[str, Any]:
 # Main Orchestration Method for the Remediator Agent
 # ---------------------------------------------------------------------------
 
+# Change 2 + suggestion: updated system prompt instructs LLM to use inline
+# error comments as the primary signal for resource+property targeting.
 QUERY_GEN_SYSTEM = """\
 You are an AWS CloudFormation schema expert. You are given:
 1. A list of validation errors from a CFN template.
-2. A structured annotation of the template's resources: their logical IDs, AWS resource types,
-   source line numbers, and the property keys actually present in the template.
+2. An annotated CloudFormation template where each resource block has inline
+   # ERROR comments identifying which errors apply to that specific resource.
+3. (Optionally) a structured annotation of the template's resources: their logical IDs,
+   AWS resource types, source line numbers, and the property keys actually present.
+
+Use the inline error comments as the primary signal for which Resource.Property
+pairs need schema retrieval. Errors without a resource annotation are template-level
+and should inform general structural queries. Use the annotation summary as
+supplementary context when the annotated template is not available.
 
 Using this context, generate a list of precise retrieval queries. Each query must target a
 specific Resource.Property combination that is EITHER referenced in an error OR present in
@@ -263,7 +325,10 @@ def _execute_hybrid_retrieval(
                     if prop_key in seen_resources:
                         continue
                     seen_resources.add(prop_key)
-                    property_chunks.append(chunk.page_content)
+                    # Change 4: strip doc links and description noise
+                    cleaned = _clean_chroma_chunk(chunk.page_content)
+                    if cleaned:
+                        property_chunks.append(cleaned)
                     if res:
                         identified_resources.add(res)
         except Exception as e:

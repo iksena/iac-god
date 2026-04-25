@@ -371,3 +371,112 @@ def annotation_to_history_entry(annotation: TemplateAnnotation) -> dict:
             for r in annotation.resources
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Change 2: Annotated YAML renderer for retriever prompt
+# ---------------------------------------------------------------------------
+
+def render_annotated_template(
+    annotation: TemplateAnnotation,
+    errors: list[str],
+    include_security_smells: bool = False,
+) -> str:
+    """
+    Re-serialise the CFN template as YAML with inline comments that anchor
+    each validation/deployment error to the resource block it belongs to.
+
+    Produces output like:
+
+        Resources:
+          MyBucket:  # AWS::S3::Bucket | line 12
+            # ERROR: cfn-lint: E3001 Invalid resource type
+            # ERROR: deploy: CREATE_FAILED - BucketName must be globally unique
+            Type: AWS::S3::Bucket
+            Properties:
+              ...
+
+    Args:
+        annotation:              Output of annotate_template() + attach_smells().
+        errors:                  Flat list of error strings from _extract_errors().
+                                 Must already have security stages filtered out.
+        include_security_smells: When True, append # SMELL: comments for each
+                                 smell attached to the resource. Default False so
+                                 the retriever stays focused on structural errors.
+
+    Returns:
+        A YAML string of the Resources section with inline error comments.
+        If the annotation has no resources or raw template, returns a plain
+        error list string as a safe fallback.
+    """
+    if not annotation or not annotation.resources:
+        # Fallback: just list errors as YAML comments
+        if errors:
+            return "# No parseable template — errors:\n" + "\n".join(
+                f"# ERROR: {e}" for e in errors
+            )
+        return "# No template or errors available."
+
+    # Build a lookup: resource_id -> [error strings that mention it]
+    resource_errors: dict[str, list[str]] = {r.resource_id: [] for r in annotation.resources}
+    template_level_errors: list[str] = []
+
+    for err in errors:
+        matched = False
+        for r in annotation.resources:
+            # Match by logical ID or by resource type (e.g. AWS::S3::Bucket in cfn-lint msgs)
+            if r.resource_id in err or (r.resource_type and r.resource_type in err):
+                resource_errors[r.resource_id].append(err)
+                matched = True
+                break
+        if not matched:
+            template_level_errors.append(err)
+
+    lines: list[str] = []
+
+    # Emit template-level errors at the top
+    if template_level_errors:
+        lines.append("# --- Template-level errors ---")
+        for err in template_level_errors:
+            lines.append(f"# ERROR: {err}")
+        lines.append("")
+
+    lines.append("Resources:")
+
+    for r in annotation.resources:
+        # Resource heading with type and line hint
+        line_hint = f" | line {r.start_line}" if r.start_line else ""
+        lines.append(f"  {r.resource_id}:  # {r.resource_type}{line_hint}")
+
+        # Inline error comments anchored to this resource
+        for err in resource_errors.get(r.resource_id, []):
+            lines.append(f"    # ERROR: {err}")
+
+        # Optional: security smell comments
+        if include_security_smells:
+            for smell in r.smells:
+                rule_id = smell.get("rule_id", "?")
+                desc = smell.get("description", "")
+                lines.append(f"    # SMELL: {rule_id} — {desc}")
+
+        # Emit the resource body as YAML (Type + Properties)
+        rtype = r.resource_type or "Unknown"
+        lines.append(f"    Type: {rtype}")
+
+        props = r.raw.get("Properties", {}) if r.raw else {}
+        if props:
+            lines.append("    Properties:")
+            for key in sorted(props.keys()):
+                val = props[key]
+                # Render value as a compact inline YAML scalar where possible
+                if isinstance(val, (str, int, float, bool)) or val is None:
+                    lines.append(f"      {key}: {val}")
+                elif isinstance(val, dict):
+                    lines.append(f"      {key}: {{...}}  # {len(val)} keys")
+                elif isinstance(val, list):
+                    lines.append(f"      {key}: [...]  # {len(val)} items")
+                else:
+                    lines.append(f"      {key}: <{type(val).__name__}>")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
