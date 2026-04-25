@@ -11,7 +11,7 @@ from tools.trivy_context import get_trivy_policy_context
 from tools.cfn_graph_context_rag import get_cfn_schema_context
 from tools.cfn_aws_doc_context import get_cfn_aws_doc_context_for_state
 from tools.cfn_graph_context import get_cfn_graph_context
-from tools.cfn_graph_neo4j_rag import get_cfn_graph_context_for_state
+# from tools.cfn_graph_neo4j_rag import get_cfn_graph_context_for_state
 from tools.cfn_hybrid_rag import get_cfn_graph_context_for_state
 
 # ---------------------------------------------------------------------------
@@ -41,6 +41,7 @@ def _get_cfn_schema_context(
 
     strategy_label is logged so it is always clear which backend was used.
     """
+    print(f"[Remediator] CFN context strategy: '{_CFN_STRATEGY}'")
     if _CFN_STRATEGY == "aws_doc_mcp":
         ctx = get_cfn_aws_doc_context_for_state(
             validation_results=validation_results,
@@ -73,7 +74,6 @@ def _get_cfn_schema_context(
         )
         return ctx, "hybrid", queries
     
-    print(f"[Remediator] Using strategy '{_CFN_STRATEGY}'.")
     ctx = get_cfn_graph_context(
         validation_results=validation_results,
         deploy_validation_result=deploy_validation_result,

@@ -1,4 +1,5 @@
 import os
+import re
 import yaml
 import json
 import chromadb
@@ -167,39 +168,83 @@ def query_knowledge_graph(driver, resource_name: str) -> Dict[str, Any]:
 QUERY_GEN_SYSTEM = """\
 You are an AWS CloudFormation schema expert. You are given:
 1. A list of validation errors from a CFN template.
-2. A structured annotation of the template's resources: their logical IDs, AWS resource types, \
-   source line numbers, and any detected security smells.
+2. A structured annotation of the template's resources: their logical IDs, AWS resource types,
+   source line numbers, and the property keys actually present in the template.
 
-Using this context, generate a list of precise retrieval queries. Each query must target a specific \
-Resource.Property combination to look up its schema, required constraints, or correct usage.
+Using this context, generate a list of precise retrieval queries. Each query must target a
+specific Resource.Property combination that is EITHER referenced in an error OR present in
+the template annotation and relevant to the errors.
 
-Output a JSON array of strings only. Each string should be a natural-language question like:
-"What are the required properties for AWS::S3::Bucket BucketEncryption ServerSideEncryptionConfiguration?"
-"What type is AWS::RDS::DBInstance DBSubnetGroupName and is it required?"
-"What values are valid for AWS::IAM::Role AssumeRolePolicyDocument Version?"
+Output ONLY a JSON object with a single key "queries" whose value is an array of strings.
+Example:
+{
+  "queries": [
+    "What are the required properties for AWS::S3::Bucket BucketEncryption?",
+    "What valid values exist for AWS::RDS::DBInstance DBInstanceClass?"
+  ]
+}
 
-Prioritise resources that appear in the errors. Limit to at most 8 queries.\
+Prioritise resources that appear in the errors. Limit to at most 8 queries.
 """
+
+# cfn_hybrid_rag.py — replace _build_annotation_summary
 
 def _build_annotation_summary(annotation: TemplateAnnotation) -> str:
     """
-    Serialize a TemplateAnnotation into a compact text block for the query-gen prompt.
-    Keeps token cost low while giving the LLM full resource-type + smell signal.
+    Serialize a TemplateAnnotation into a richer text block for query-gen.
+    Includes actual property keys from the template so the LLM can target
+    specific Resource.Property combinations rather than just resource types.
     """
     lines = [f"Template: {annotation.file_path} ({annotation.template_type})"]
     for r in annotation.resources:
         smell_ids = ", ".join(s.get("rule_id", "?") for s in r.smells) or "none"
+        # Extract property keys actually present in the template
+        props = sorted(r.raw.get("Properties", {}).keys()) if r.raw else []
+        props_str = ", ".join(props) if props else "none"
         lines.append(
             f"  - [{r.resource_id}] type={r.resource_type} "
-            f"line={r.start_line} smells=[{smell_ids}]"
+            f"line={r.start_line} smells=[{smell_ids}]\n"
+            f"    properties_present=[{props_str}]"
         )
     return "\n".join(lines)
+
+def _parse_query_response(raw: str, max_queries: int = 8) -> list[str]:
+    """
+    Dedicated parser for the LLM's query-generation response.
+    Accepts both {"queries": [...]} object form and bare [...] array form.
+    Strips markdown fences before parsing.
+    """
+    # Strip markdown code fences
+    cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().removesuffix("```").strip()
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as e:
+        print(f"[RAG Tool] Query parse error (JSONDecodeError): {e}. Raw: {cleaned[:200]}")
+        return []
+
+    # Accept both {"queries": [...]} and bare [...] 
+    if isinstance(parsed, dict):
+        queries = parsed.get("queries") or parsed.get("query") or []
+    elif isinstance(parsed, list):
+        queries = parsed
+    else:
+        print(f"[RAG Tool] Unexpected query response type: {type(parsed)}")
+        return []
+
+    if not isinstance(queries, list):
+        print(f"[RAG Tool] 'queries' field is not a list: {queries}")
+        return []
+
+    result = [str(q).strip() for q in queries if str(q).strip()][:max_queries]
+    print(f"[RAG Tool] Parsed {len(result)} retrieval queries from LLM response.")
+    return result
 
 
 def generate_retrieval_queries(
     errors: list[str],
     template_yaml: str | None,
-    annotation: TemplateAnnotation | None = None,   # NEW optional param
+    annotation: TemplateAnnotation | None = None,
 ) -> list[str]:
     """HyDE-style: LLM reformulates errors + annotation into schema-targeted retrieval queries."""
     if not errors:
@@ -207,20 +252,17 @@ def generate_retrieval_queries(
 
     client, model = _build_client()
 
-    # Build user content: errors first, then annotation (compact), then raw YAML fallback
     user_parts = ["## Validation Errors\n" + "\n".join(f"- {e}" for e in errors)]
-
     if annotation and not annotation.parse_error:
         user_parts.append(
             "## Template Resource Annotation\n"
-            "(Logical IDs, resource types, source lines, detected smells)\n"
+            "(Logical IDs, resource types, property keys present, detected smells)\n"
             + _build_annotation_summary(annotation)
         )
     elif template_yaml:
-        # Fallback: raw YAML snippet as before
         user_parts.append(
             f"## Template Snippet (for resource type context)\n"
-            f"```yaml\n{template_yaml[:2000]}\n```"
+            f"```yaml\n{template_yaml}\n```"
         )
 
     user_content = "\n\n".join(user_parts)
@@ -236,13 +278,14 @@ def generate_retrieval_queries(
             max_tokens=512,
         )
         raw = response.choices[0].message.content.strip()
-        raw = raw.removeprefix("```json").removesuffix("```").strip()
-        queries = json.loads(raw)
-        if isinstance(queries, list):
-            return [str(q) for q in queries[:8]]
+        queries = _parse_query_response(raw)
+        if queries:
+            return queries
     except Exception as e:
-        print(f"[RAG Tool] Query generation failed, falling back to raw errors: {e}")
+        print(f"[RAG Tool] Query generation failed: {e}")
 
+    # Explicit fallback: use raw errors so Stage 1 still runs
+    print("[RAG Tool] Falling back to raw error strings as queries.")
     return errors
 
 def get_cfn_graph_context_for_state(
@@ -304,9 +347,14 @@ def get_cfn_graph_context_for_state(
                 for chunk in chunks:
                     meta = chunk.metadata
                     res = meta.get("resource_name", "")
-                    prop = meta.get("property_name", "")
-                    if res:
-                        identified_resources.add(res)
+                    prop = meta.get("property_name", "") or meta.get("property_path", "")
+                    # Use content hash as fallback key to avoid "" collisions
+                    prop_key = f"{res}.{prop}" if prop else f"{res}::content::{hash(chunk.page_content)}"
+                    if prop_key not in seen_resources:
+                        seen_resources.add(prop_key)
+                        property_chunks.append(chunk.page_content)
+                        if res:
+                            identified_resources.add(res)
                     # Capture property-level text for direct context injection
                     prop_key = f"{res}.{prop}"
                     if prop_key not in seen_resources:
@@ -332,7 +380,12 @@ def get_cfn_graph_context_for_state(
 
     try:
         driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
-        for resource in identified_resources:
+        seen_neo4j: set[str] = set()
+        for resource in sorted(identified_resources):
+            if resource in seen_neo4j:
+                print(f"[RAG Tool] Skipping duplicate schema: {resource}")
+                continue
+            seen_neo4j.add(resource)
             res_data = query_knowledge_graph(driver, resource)
             if "error" not in res_data:
                 final_context_blocks.append(format_prompt_from_neo4j_result(res_data))
