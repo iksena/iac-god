@@ -1,6 +1,5 @@
 from datetime import datetime, timezone
 import json
-import os
 import re
 from state import GraphState, RemediationHistory, Message, compact_message_history, append_and_cap
 from prompts.remediator_prompt import REMEDIATOR_SYSTEM, REMEDIATOR_USER
@@ -8,78 +7,6 @@ from tracking.recorder import ResearchRecorder
 from agents.engineer import _build_client, _call_llm_with_history
 from tools.checkov_context import get_checkov_policy_context
 from tools.trivy_context import get_trivy_policy_context
-from tools.cfn_graph_context_rag import get_cfn_schema_context
-from tools.cfn_aws_doc_context import get_cfn_aws_doc_context_for_state
-from tools.cfn_graph_context import get_cfn_graph_context
-# from tools.cfn_graph_neo4j_rag import get_cfn_graph_context_for_state
-from tools.cfn_hybrid_rag import get_cfn_graph_context_for_state
-
-# ---------------------------------------------------------------------------
-# CFN context strategy selector
-#
-# Set env var  CFN_CONTEXT_STRATEGY=aws_doc_mcp  to use the live AWS
-# Documentation MCP Server instead of the offline GraphRAG index.
-#
-# Default ("rag") uses the locally-built FAISS/BM25/graph index.
-# "aws_doc_mcp" fetches live CloudFormation documentation per resource type
-# via the awslabs.aws-documentation-mcp-server HTTP endpoint.
-#
-# The two strategies expose the same signature so swapping is zero-cost:
-#   get_cfn_schema_context(validation_results, deploy_validation_result, template_yaml)
-# ---------------------------------------------------------------------------
-
-_CFN_STRATEGY = os.environ.get("CFN_CONTEXT_STRATEGY", "rag").lower()
-
-
-def _get_cfn_schema_context(
-    validation_results: list[dict],
-    deploy_validation_result: dict | None,
-    template_yaml: str | None,
-) -> tuple[str, str, list[str]]:
-    """
-    Return (context_text, strategy_label, retrieval_queries) using the configured strategy.
-
-    strategy_label is logged so it is always clear which backend was used.
-    """
-    print(f"[Remediator] CFN context strategy: '{_CFN_STRATEGY}'")
-    if _CFN_STRATEGY == "aws_doc_mcp":
-        ctx = get_cfn_aws_doc_context_for_state(
-            validation_results=validation_results,
-            deploy_validation_result=deploy_validation_result,
-            template_yaml=template_yaml,
-        )
-        return ctx, "aws_doc_mcp", []
-
-    elif _CFN_STRATEGY == "rag":
-        ctx = get_cfn_schema_context(
-            queries="none",
-            template_yaml=template_yaml,
-        )
-        return ctx, "rag", []
-    
-    elif _CFN_STRATEGY == "neo4j":
-         ctx = get_cfn_graph_context_for_state(
-            validation_results=validation_results,
-            deploy_validation_result=deploy_validation_result,
-            template_yaml=template_yaml,
-        )
-         return ctx, "neo4j", []
-    
-    elif _CFN_STRATEGY == "hybrid":
-        ctx, queries = get_cfn_graph_context_for_state(
-            validation_results=validation_results,
-            deploy_validation_result=deploy_validation_result,
-            template_yaml=template_yaml,
-            smell_report=None,
-        )
-        return ctx, "hybrid", queries
-    
-    ctx = get_cfn_graph_context(
-        validation_results=validation_results,
-        deploy_validation_result=deploy_validation_result,
-        template_yaml=template_yaml,
-    )
-    return ctx, "exact_graph", []
 
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
@@ -328,37 +255,17 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     )
 
     policy_source_context = ""
-    cfn_graph_context = ""
+    cfn_graph_context = state.get("retriever_context", "")
+    retrieval_queries = state.get("retriever_queries", [])
 
     if _should_include_policy_source_context(state):
         policy_source_context = _build_policy_source_context(state["validation_results"])
 
-    retrieval_queries: list[str] = []
     if _should_include_remediation_context(state):
-        cfn_graph_context, strategy, retrieval_queries  = _get_cfn_schema_context(
-            validation_results=state.get("validation_results"),
-            deploy_validation_result=state.get("deploy_validation_result"),
-            template_yaml=state["cloudformation_template"],
+        print(
+            f"[Remediator] CFN schema context from retriever: {len(cfn_graph_context)} chars, "
+            f"{len(retrieval_queries)} retrieval queries used."
         )
-        print(f"[Remediator] CFN schema context ({strategy}): {len(cfn_graph_context)} chars, "
-          f"{len(retrieval_queries)} retrieval queries generated.")
-        
-        if retrieval_queries:
-            recorder.record_tool_call(
-                state=state,
-                agent="remediator",
-                tool_name=f"hybrid_rag:{strategy}",
-                inputs={
-                    "validation_results": state.get("validation_results"),
-                    "deploy_validation_result": state.get("deploy_validation_result"),
-                    "template_yaml": state["cloudformation_template"],
-                },
-                outputs={
-                    "retrieval_queries": retrieval_queries,
-                    "context_chars": len(cfn_graph_context),
-                    "strategy": strategy,
-                },
-            )
     else:
         print("[Remediator] Context injection skipped for non-YAML/cfn-lint/deploy failures.")
 

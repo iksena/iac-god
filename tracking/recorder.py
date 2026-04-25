@@ -112,6 +112,7 @@ class ResearchRecorder:
         self._write_agent_history("planner", state["planner_history"])
         self._write_agent_history("engineer", state["engineer_history"])
         self._write_agent_history("remediator", state["remediator_history"])
+        self._write_agent_history("retriever", state.get("retriever_history", []))
 
     def save_final_report(self, state: GraphState):
         """Save complete research report at end of run."""
@@ -129,6 +130,7 @@ class ResearchRecorder:
             "validation_results": state["validation_results"],
             "policy_metrics": policy_metrics,
             "deploy_validation_result": state.get("deploy_validation_result"),
+            "retriever_history": state.get("retriever_history", []),
         }
         (self.output_dir / "final_report.json").write_text(
             json.dumps(report, indent=2)

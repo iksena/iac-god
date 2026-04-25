@@ -1,33 +1,22 @@
 import os
 import re
-import yaml
 import json
-import chromadb
+from functools import lru_cache
 from typing import Dict, Any
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
 from neo4j import GraphDatabase
-from agents.engineer import _build_client
-from tools.template_annotator import annotate_template, attach_smells, TemplateAnnotation
+from tools.template_annotator import annotate_template, TemplateAnnotation
 
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
-GLOBAL_EMBEDDINGS = HuggingFaceEmbeddings(
-    model_name=EMBEDDING_MODEL,
-    model_kwargs={'device': 'cpu'}
-)
 
-# ---------------------------------------------------------------------------
-# Safe YAML Loading for CFN tags (!Ref, !Sub, etc.)
-# ---------------------------------------------------------------------------
-def _cfn_tag_constructor(loader, tag_suffix, node):
-    if isinstance(node, yaml.ScalarNode):
-        return loader.construct_scalar(node)
-    elif isinstance(node, yaml.SequenceNode):
-        return loader.construct_sequence(node)
-    elif isinstance(node, yaml.MappingNode):
-        return loader.construct_mapping(node)
 
-yaml.SafeLoader.add_multi_constructor("!", _cfn_tag_constructor)
+@lru_cache(maxsize=1)
+def _get_global_embeddings():
+    from langchain_huggingface import HuggingFaceEmbeddings
+
+    return HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL,
+        model_kwargs={"device": "cpu"},
+    )
 
 # ---------------------------------------------------------------------------
 # Environment Variables
@@ -38,7 +27,6 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
-EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 
 # ---------------------------------------------------------------------------
 # Helper Methods
@@ -66,21 +54,6 @@ def _extract_errors(validation_results: list[dict], deploy_validation_result: di
                 errors.append(f"{name} {reason}")
 
     return errors
-
-def _get_active_resources(template_yaml: str) -> set[str]:
-    """Parses the YAML template to find exactly which AWS resources are being used."""
-    resources = set()
-    if not template_yaml:
-        return resources
-    try:
-        parsed = yaml.safe_load(template_yaml)
-        if isinstance(parsed, dict) and "Resources" in parsed:
-            for _, res_val in parsed["Resources"].items():
-                if isinstance(res_val, dict) and "Type" in res_val:
-                    resources.add(res_val["Type"])
-    except Exception as e:
-        print(f"YAML parsing error during resource extraction: {e}")
-    return resources
 
 def format_prompt_from_neo4j_result(resource_data: dict) -> str:
     """Formats the Neo4j schema response into a concise prompt for the LLM."""
@@ -117,6 +90,7 @@ def format_prompt_from_neo4j_result(resource_data: dict) -> str:
 
 def query_knowledge_graph(driver, resource_name: str) -> Dict[str, Any]:
     """Executes the Cypher traversal to pull the schema structure for a resource."""
+
     CYPHER_QUERY = """
         MATCH (r:Resource {name: $resource_name})
         
@@ -187,8 +161,6 @@ Example:
 Prioritise resources that appear in the errors. Limit to at most 8 queries.
 """
 
-# cfn_hybrid_rag.py — replace _build_annotation_summary
-
 def _build_annotation_summary(annotation: TemplateAnnotation) -> str:
     """
     Serialize a TemplateAnnotation into a richer text block for query-gen.
@@ -241,144 +213,74 @@ def _parse_query_response(raw: str, max_queries: int = 8) -> list[str]:
     return result
 
 
-def generate_retrieval_queries(
-    errors: list[str],
+def _execute_hybrid_retrieval(
+    retrieval_queries: list[str],
+    annotation: TemplateAnnotation | None,
     template_yaml: str | None,
-    annotation: TemplateAnnotation | None = None,
-) -> list[str]:
-    """HyDE-style: LLM reformulates errors + annotation into schema-targeted retrieval queries."""
-    if not errors:
-        return []
-
-    client, model = _build_client()
-
-    user_parts = ["## Validation Errors\n" + "\n".join(f"- {e}" for e in errors)]
-    if annotation and not annotation.parse_error:
-        user_parts.append(
-            "## Template Resource Annotation\n"
-            "(Logical IDs, resource types, property keys present, detected smells)\n"
-            + _build_annotation_summary(annotation)
-        )
-    elif template_yaml:
-        user_parts.append(
-            f"## Template Snippet (for resource type context)\n"
-            f"```yaml\n{template_yaml}\n```"
-        )
-
-    user_content = "\n\n".join(user_parts)
-
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": QUERY_GEN_SYSTEM},
-                {"role": "user", "content": user_content},
-            ],
-            temperature=0.0,
-            max_tokens=512,
-        )
-        raw = response.choices[0].message.content.strip()
-        queries = _parse_query_response(raw)
-        if queries:
-            return queries
-    except Exception as e:
-        print(f"[RAG Tool] Query generation failed: {e}")
-
-    # Explicit fallback: use raw errors so Stage 1 still runs
-    print("[RAG Tool] Falling back to raw error strings as queries.")
-    return errors
-
-def get_cfn_graph_context_for_state(
-    validation_results: list[dict],
-    deploy_validation_result: dict | None,
-    template_yaml: str | None,
-    smell_report: list[dict] | None = None,
-) -> tuple[str, list[str]]:
+) -> str:
     """
-    Executes the Hybrid RAG workflow with annotation-enriched HyDE query reformulation.
-    Returns (context_text, retrieval_queries).
+    Execute retrieval only: ChromaDB semantic search followed by Neo4j schema lookup.
+
+    The annotation is used to seed exact resource identification. If none is
+    provided, a best-effort template parse is attempted locally.
     """
-    print("[RAG Tool] Assembling G-Retrieval Context (HyDE + Annotation mode)...")
-
-    errors = _extract_errors(validation_results, deploy_validation_result)
-
-    annotation: TemplateAnnotation | None = None
-    if template_yaml:
+    if annotation is None and template_yaml:
         try:
             annotation = annotate_template(
                 file_path="<in-memory>",
                 content=template_yaml,
             )
-            if smell_report:
-                annotation = attach_smells(annotation, smell_report)
-            print(
-                f"[RAG Tool] Annotation: {len(annotation.resources)} resources parsed, "
-                f"{sum(len(r.smells) for r in annotation.resources)} smells attached."
-            )
         except Exception as exc:
-            print(f"[RAG Tool] Annotation failed (non-fatal): {exc}")
+            print(f"[RAG Tool] Annotation failed during retrieval bootstrap: {exc}")
             annotation = None
 
-    # Derive identified_resources from annotation (more precise than regex scan)
     if annotation and annotation.resources:
-        identified_resources: set[str] = {r.resource_type for r in annotation.resources}
+        identified_resources: set[str] = {r.resource_type for r in annotation.resources if r.resource_type}
     else:
-        identified_resources = _get_active_resources(template_yaml)  # fallback
+        identified_resources = set()
 
-    # ── HyDE STAGE 0: Query Reformulation (annotation-enriched) ───────────
-    retrieval_queries = generate_retrieval_queries(errors, template_yaml, annotation)
-    print(f"[RAG Tool] Stage 0: Generated {len(retrieval_queries)} retrieval queries.")
-
-    # ── STAGE 1: Semantic Search (ChromaDB) — multi-query ──────────────────
+    property_chunks: list[str] = []
     if retrieval_queries:
         try:
+            import chromadb
+            from langchain_chroma import Chroma
+
             chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
             vectorstore = Chroma(
                 client=chroma_client,
                 collection_name="cfn_schema_properties",
-                embedding_function=GLOBAL_EMBEDDINGS,
+                embedding_function=_get_global_embeddings(),
             )
 
             seen_resources: set[str] = set()
-            property_chunks: list[str] = []
-
             for query in retrieval_queries:
                 chunks = vectorstore.similarity_search(query, k=3)
                 for chunk in chunks:
                     meta = chunk.metadata
                     res = meta.get("resource_name", "")
                     prop = meta.get("property_name", "") or meta.get("property_path", "")
-                    # Use content hash as fallback key to avoid "" collisions
                     prop_key = f"{res}.{prop}" if prop else f"{res}::content::{hash(chunk.page_content)}"
-                    if prop_key not in seen_resources:
-                        seen_resources.add(prop_key)
-                        property_chunks.append(chunk.page_content)
-                        if res:
-                            identified_resources.add(res)
-                    # Capture property-level text for direct context injection
-                    prop_key = f"{res}.{prop}"
-                    if prop_key not in seen_resources:
-                        seen_resources.add(prop_key)
-                        property_chunks.append(chunk.page_content)
-
+                    if prop_key in seen_resources:
+                        continue
+                    seen_resources.add(prop_key)
+                    property_chunks.append(chunk.page_content)
+                    if res:
+                        identified_resources.add(res)
         except Exception as e:
             print(f"[RAG Tool] Warning: ChromaDB Semantic Search failed. {e}")
-            property_chunks = []
-    else:
-        property_chunks = []
 
-    # ── STAGE 2: Exact Schema Traversal (Neo4j) ────────────────────────────
     if not identified_resources:
-        return "No specific AWS resources identified in template or errors.", retrieval_queries
+        return "No specific AWS resources identified in template or retrieval context."
 
     print(f"[RAG Tool] Stage 2: Querying Neo4j for {len(identified_resources)} resources...")
     final_context_blocks = ["## Official AWS CloudFormation Schema Context\n"]
 
-    # Inject property-level chunks from semantic stage (highest relevance first)
     if property_chunks:
         final_context_blocks.append("### Semantically Matched Properties\n" + "\n---\n".join(property_chunks))
 
     try:
+        from neo4j import GraphDatabase
+
         driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
         seen_neo4j: set[str] = set()
         for resource in sorted(identified_resources):
@@ -392,6 +294,34 @@ def get_cfn_graph_context_for_state(
         driver.close()
     except Exception as e:
         print(f"[RAG Tool] Warning: Neo4j retrieval failed. {e}")
-        return "Failed to connect to Knowledge Graph.", retrieval_queries
+        return "Failed to connect to Knowledge Graph."
 
-    return "\n\n".join(final_context_blocks), retrieval_queries
+    return "\n\n".join(final_context_blocks)
+
+def get_cfn_graph_context_for_state(
+    validation_results: list[dict],
+    deploy_validation_result: dict | None,
+    template_yaml: str | None,
+    smell_report: list[dict] | None = None,
+) -> tuple[str, list[str]]:
+    """
+    Backward-compatible wrapper that returns retrieval context without LLM query generation.
+
+    The dedicated retriever agent now owns HyDE query generation. This wrapper
+    is kept only for non-agent callers that want a pure retrieval context.
+    """
+    print("[RAG Tool] Assembling G-Retrieval Context (pure retrieval mode)...")
+    annotation: TemplateAnnotation | None = None
+    if template_yaml:
+        try:
+            annotation = annotate_template(
+                file_path="<in-memory>",
+                content=template_yaml,
+            )
+            print(f"[RAG Tool] Annotation: {len(annotation.resources)} resources parsed.")
+        except Exception as exc:
+            print(f"[RAG Tool] Annotation failed (non-fatal): {exc}")
+            annotation = None
+
+    context = _execute_hybrid_retrieval([], annotation, template_yaml)
+    return context, []

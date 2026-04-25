@@ -97,6 +97,11 @@ class GraphState(TypedDict):
     planner_history:    list[Message]
     engineer_history:   list[Message]
     remediator_history: list[Message]
+    retriever_history:  list[Message]
+
+    # --- Retriever outputs ---
+    retriever_context: str
+    retriever_queries: list[str]
     
     # --- Final output ---
     final_template: Optional[str]
