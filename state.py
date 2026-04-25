@@ -31,7 +31,7 @@ class RemediationHistory(TypedDict):
     iteration: int
     errors: list[ValidationResult]
     formatted_errors: str       # Human-readable error context
-    suggestion: str     # Remediator's fix suggestion
+    suggestion: str             # Remediator's fix suggestion
     timestamp: str
     cfn_context: str
     retrieval_queries: list[str]
@@ -75,25 +75,29 @@ class GraphState(TypedDict):
     # --- Grounded Objectives Document (shared across all agents) ---
     objectives: list[str]           # Planner output (CGO-style)
     cloudformation_template: str    # Engineer output (latest YAML)
-    
+
     # --- Validation state ---
     validation_results: list[ValidationResult]
     validation_passed: bool
     deploy_validation_result: Optional[DeployValidationResult]
-    
+
+    # --- Static analysis smell report (populated by smell detector, consumed by retriever) ---
+    smell_report: NotRequired[list[dict]]
+
     # --- Remediation history (all iterations) ---
     remediation_history: list[RemediationHistory]
-    
+
     # --- Iteration control ---
     current_iteration: int
     max_iterations: int
-    
+
     # --- Research tracking (all LLM conversations) ---
     llm_call_log: list[LLMCallRecord]
 
-    # --- Per-agent conversation histories (NEW) ---
-    # Each agent returns only the new [user_msg, assistant_msg] pair.
-    # operator.add means LangGraph concatenates the returned pair onto the accumulated history.
+    # --- Per-agent conversation histories ---
+    # Kept for debugging and recording only.
+    # The Remediator and Retriever agents do NOT pass these as LLM context;
+    # structured remediation_history is injected via the prompt instead.
     planner_history:    list[Message]
     engineer_history:   list[Message]
     remediator_history: list[Message]
@@ -102,7 +106,7 @@ class GraphState(TypedDict):
     # --- Retriever outputs ---
     retriever_context: str
     retriever_queries: list[str]
-    
+
     # --- Final output ---
     final_template: Optional[str]
     run_id: str
