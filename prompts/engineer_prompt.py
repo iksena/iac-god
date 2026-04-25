@@ -16,9 +16,14 @@ Output ONLY the raw CloudFormation YAML. No explanation, no markdown fences.
 # Iteration 1: clean generation request — no history context needed
 ENGINEER_USER_INITIAL = "Generate the CloudFormation template that fully satisfies all objectives above."
 
-# Iteration 2+: ONLY the new fix directive — previous template is in history[-1] assistant turn
+# Iteration 2+: full context in prompt — no conversation history passed to LLM
 ENGINEER_USER_REMEDIATION = """\
 Iteration {iteration} — Apply these fixes based on validation errors and remediation suggestions from the Remediator agent:
+
+## Current Template
+```yaml
+{current_template}
+```
 
 ## Validation Errors
 {error_context}
@@ -32,7 +37,10 @@ Use it to produce property-correct, constraint-aware YAML:
 
 {cfn_context}
 
+{remediation_history_context}
+
 The final template must also satisfy Original User Request and Grounded Objectives.
 These fix objectives can override or extend previous fix objectives and Grounded Objectives.
+Do NOT repeat changes that are marked as already applied in the history above.
 Output the complete corrected CloudFormation YAML.
 """

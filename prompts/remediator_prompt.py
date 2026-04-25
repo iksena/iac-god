@@ -22,7 +22,7 @@ Correlate errors across tools. Identify if multiple errors share a single fix.
 Numbered list of concrete engineering actions.
 """
 
-# Per-turn: only NEW information — no objectives, no history dump
+# Per-turn: stateless — full context provided via remediation history block
 REMEDIATOR_USER = """\
 ## Current Template (Iteration {iteration})
 ```yaml
@@ -36,7 +36,9 @@ REMEDIATOR_USER = """\
 
 {cfn_graph_context}
 
+{remediation_history_context}
+
 Provide fix objectives that resolve all current validation errors.
-These objectives can be new or can override previously defined objectives.
-Do not repeat fix objectives already provided in prior turns.
+Do NOT repeat fix objectives that are marked as already applied in the history above.
+If a prior strategy failed, choose a different approach.
 """

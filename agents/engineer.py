@@ -1,7 +1,8 @@
 # agents/engineer.py
 import json
 
-from state import GraphState, Message, compact_message_history, append_and_cap
+from state import GraphState, Message, append_and_cap
+from agents.remediator import _build_remediation_history_context
 from config import DEFAULT_CONFIG, LLMProvider, build_openrouter_provider_preferences
 from prompts.engineer_prompt import (
     ENGINEER_SYSTEM, ENGINEER_USER_INITIAL,
@@ -27,22 +28,27 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         # Iteration 1: simple generation request — no history yet
         user_content = ENGINEER_USER_INITIAL
     else:
-        # Iteration 2+: only carry NEW information — the latest fix directive + error context
-        # The previous template is already in engineer_history[-1] assistant turn
+        # Iteration 2+: full context in prompt — no conversation history passed to LLM.
+        # The current template, latest fix directive, and structured history are all
+        # included here. No prior engineer_history turns are sent.
         latest = state["remediation_history"][-1]
+        remediation_history_context = _build_remediation_history_context(
+            state["remediation_history"][:-1]  # all entries except the latest (already shown above)
+        )
         user_content = ENGINEER_USER_REMEDIATION.format(
             iteration=latest["iteration"],
+            current_template=state["cloudformation_template"],
             error_context=latest["formatted_errors"],
             remediation_suggestion=latest["suggestion"],
             cfn_context=latest.get("cfn_context", ""),
+            remediation_history_context=remediation_history_context,
         )
 
     user_msg: Message = {"role": "user", "content": user_content}
 
-    # Full accumulated history + new user turn (no duplication — history carries prior turns)
-    messages = compact_message_history(state["engineer_history"]) + [user_msg]
-
-    content, usage = _call_llm_with_history(client, model, system, messages)
+    # Single-turn call: no conversation history passed — full context is in the prompt.
+    # engineer_history is kept in state for debugging/recording only.
+    content, usage = _call_llm_with_history(client, model, system, [user_msg])
     template = _strip_yaml_fences(content)
     assistant_msg: Message = {"role": "assistant", "content": content}
 
@@ -59,6 +65,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     return {
         "cloudformation_template": template,
         "llm_call_log": state["llm_call_log"] + [llm_record],
+        # Keep history for recording/debugging — no longer used as LLM conversation context
         "engineer_history": append_and_cap(state["engineer_history"], user_msg, assistant_msg),
     }
 
@@ -110,7 +117,8 @@ def _response_debug_blob(response: object) -> str:
 
 
 def _call_llm_with_history(client, model, system, messages):
-    """Call LLM with full message history (multi-turn)."""
+    """Call LLM with a messages list. In the new stateless design, this is always
+    a single [user_msg] — full context is embedded in the prompt, not in history."""
     if DEFAULT_CONFIG.provider == LLMProvider.OPENROUTER:
         request_kwargs = {
             "model": model,
