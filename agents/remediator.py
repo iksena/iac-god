@@ -275,8 +275,9 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         print("[Remediator] Context injection skipped for non-YAML/cfn-lint/deploy failures.")
 
     # Build structured history context from past RemediationHistory entries.
-    # Replaces passing remediator_history conversation turns to the LLM —
-    # the model gets a compact document instead of a verbatim transcript.
+    # The model receives a compact document rather than a verbatim transcript,
+    # avoiding the exploitative incremental-edit behaviour caused by verbose
+    # conversation history (see AgentCoder / FAIR multi-turn findings).
     remediation_history_context = _build_remediation_history_context(
         state.get("remediation_history", [])
     )
@@ -322,6 +323,6 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         "remediation_history": state["remediation_history"] + [new_history_entry],
         "current_iteration": iteration + 1,
         "llm_call_log": state["llm_call_log"] + [llm_record],
-        # Keep history for recording/debugging — no longer used as LLM conversation context
+        # Keep conversation turns for debugging/recording only — not used as LLM context.
         "remediator_history": append_and_cap(state["remediator_history"], user_msg, assistant_msg),
     }

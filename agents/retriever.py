@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from state import GraphState, Message, RemediationHistory, append_and_cap
+from state import GraphState, RemediationHistory
 from agents.llm_client import _build_client, _call_llm_with_history
-from tools.template_annotator import annotate_template, attach_smells, render_annotated_template
+from tools.template_annotator import annotate_template, attach_smells, render_annotated_template, TemplateAnnotation
 from tools.cfn_hybrid_rag import (
     _extract_errors,
     _parse_query_response,
@@ -40,22 +40,17 @@ def _build_retriever_history_context(remediation_history: list[RemediationHistor
     return "\n".join(lines).strip()
 
 
-def _generate_retrieval_queries(
+def _build_retriever_user_content(
     errors: list[str],
     template_yaml: str | None,
-    annotation,
+    annotation: TemplateAnnotation | None,
     remediation_history: list[RemediationHistory],
-) -> tuple[str, str, str, list[str], dict | None]:
-    """Build the HyDE prompt, call the LLM, and parse retrieval queries.
+) -> str:
+    """Assemble the user-turn content for the retrieval query-generation call.
 
-    Returns:
-        (model, user_content, raw_response, retrieval_queries, usage)
-
-    Uses structured remediation history (not conversation turns) to guide
-    query diversity across iterations.
     Injects an annotated CFN YAML with inline # ERROR comments anchored to
     each resource, replacing the plain annotation summary.
-    The plain summary is kept as a fallback when annotation fails.
+    The plain template snippet is kept as a fallback when annotation fails.
     """
     user_parts = ["## Validation Errors\n" + "\n".join(f"- {e}" for e in errors)]
 
@@ -82,16 +77,37 @@ def _generate_retrieval_queries(
     if history_context:
         user_parts.append(history_context)
 
-    user_content = "\n\n".join(user_parts)
-    user_msg: Message = {"role": "user", "content": user_content}
+    return "\n\n".join(user_parts)
 
-    # Single-turn: no conversation history passed — context is fully in the prompt.
+
+def _generate_retrieval_queries(
+    errors: list[str],
+    template_yaml: str | None,
+    annotation: TemplateAnnotation | None,
+    remediation_history: list[RemediationHistory],
+) -> tuple[str, str, str, list[str], dict | None]:
+    """Build the HyDE prompt, call the LLM, and parse retrieval queries.
+
+    Returns:
+        (model, user_content, raw_response, retrieval_queries, usage)
+
+    Uses structured remediation history (not conversation turns) to guide
+    query diversity across iterations.
+    """
+    user_content = _build_retriever_user_content(
+        errors=errors,
+        template_yaml=template_yaml,
+        annotation=annotation,
+        remediation_history=remediation_history,
+    )
+
     client, model = _build_client()
     raw_response, usage = _call_llm_with_history(
         client,
         model,
         system=QUERY_GEN_SYSTEM,
-        messages=[user_msg],
+        # Single-turn: no conversation history — context is fully in the prompt.
+        messages=[{"role": "user", "content": user_content}],
     )
     retrieval_queries = _parse_query_response(raw_response)
     if not retrieval_queries:
@@ -117,7 +133,7 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         state.get("deploy_validation_result"),
     )
 
-    annotation = None
+    annotation: TemplateAnnotation | None = None
     template_yaml = state.get("cloudformation_template", "")
     if template_yaml:
         try:
@@ -159,15 +175,8 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         f"{len(retrieval_queries)} queries used."
     )
 
-    user_msg: Message = {"role": "user", "content": user_content}
-    assistant_msg: Message = {"role": "assistant", "content": raw_response}
-
     return {
         "retriever_context": cfn_context,
         "retriever_queries": retrieval_queries,
         "llm_call_log": state["llm_call_log"] + [llm_record],
-        # Keep history for recording/debugging — no longer used as LLM conversation context
-        "retriever_history": append_and_cap(
-            state.get("retriever_history", []), user_msg, assistant_msg
-        ),
     }

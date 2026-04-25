@@ -3,12 +3,18 @@ from __future__ import annotations
 import json
 import os
 import re
+from contextlib import contextmanager
 from functools import lru_cache
 
 import chromadb
 from langchain_chroma import Chroma
 from neo4j import GraphDatabase
 
+# TemplateAnnotation is imported only for type hints — no logic depends on
+# the annotator internals, keeping the coupling unidirectional:
+#   retriever -> template_annotator
+#   retriever -> cfn_hybrid_rag
+#   cfn_hybrid_rag does NOT import from retriever
 from tools.template_annotator import TemplateAnnotation
 
 
@@ -248,6 +254,16 @@ def _parse_query_response(raw: str, max_queries: int = 8) -> list[str]:
     return result
 
 
+@contextmanager
+def _neo4j_driver():
+    """Context manager that opens a Neo4j driver and ensures it is closed."""
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+    try:
+        yield driver
+    finally:
+        driver.close()
+
+
 def _execute_hybrid_retrieval(
     retrieval_queries: list[str],
     annotation: TemplateAnnotation | None,
@@ -308,17 +324,16 @@ def _execute_hybrid_retrieval(
         )
 
     try:
-        driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
-        seen_neo4j: set[str] = set()
-        for resource in sorted(identified_resources):
-            if resource in seen_neo4j:
-                print(f"[RAG Tool] Skipping duplicate schema: {resource}")
-                continue
-            seen_neo4j.add(resource)
-            res_data = query_knowledge_graph(driver, resource)
-            if "error" not in res_data:
-                final_context_blocks.append(format_prompt_from_neo4j_result(res_data))
-        driver.close()
+        with _neo4j_driver() as driver:
+            seen_neo4j: set[str] = set()
+            for resource in sorted(identified_resources):
+                if resource in seen_neo4j:
+                    print(f"[RAG Tool] Skipping duplicate schema: {resource}")
+                    continue
+                seen_neo4j.add(resource)
+                res_data = query_knowledge_graph(driver, resource)
+                if "error" not in res_data:
+                    final_context_blocks.append(format_prompt_from_neo4j_result(res_data))
     except Exception as e:
         print(f"[RAG Tool] Warning: Neo4j retrieval failed. {e}")
         return "Failed to connect to Knowledge Graph."
