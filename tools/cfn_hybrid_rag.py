@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+import json
 import os
 import re
-import json
 from functools import lru_cache
 
 import chromadb
 from langchain_chroma import Chroma
 from neo4j import GraphDatabase
 
-from tools.template_annotator import annotate_template, TemplateAnnotation
+from tools.template_annotator import TemplateAnnotation
 
 
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
@@ -217,25 +217,6 @@ def _extract_errors(
     return errors
 
 
-def _build_annotation_summary(annotation: TemplateAnnotation) -> str:
-    """Serialize a TemplateAnnotation into a text block for query generation.
-
-    Includes actual property keys from the template so the LLM can target
-    specific Resource.Property combinations rather than just resource types.
-    """
-    lines = [f"Template: {annotation.file_path} ({annotation.template_type})"]
-    for r in annotation.resources:
-        smell_ids = ", ".join(s.get("rule_id", "?") for s in r.smells) or "none"
-        props = sorted(r.raw.get("Properties", {}).keys()) if r.raw else []
-        props_str = ", ".join(props) if props else "none"
-        lines.append(
-            f"  - [{r.resource_id}] type={r.resource_type} "
-            f"line={r.start_line} smells=[{smell_ids}]\n"
-            f"    properties_present=[{props_str}]"
-        )
-    return "\n".join(lines)
-
-
 def _parse_query_response(raw: str, max_queries: int = 8) -> list[str]:
     """Parse the LLM's query-generation response.
 
@@ -270,20 +251,13 @@ def _parse_query_response(raw: str, max_queries: int = 8) -> list[str]:
 def _execute_hybrid_retrieval(
     retrieval_queries: list[str],
     annotation: TemplateAnnotation | None,
-    template_yaml: str | None,
 ) -> str:
     """Execute retrieval: ChromaDB semantic search followed by Neo4j schema lookup.
 
-    The annotation seeds exact resource identification. If none is provided,
-    a best-effort template parse is attempted locally.
+    The annotation is built upstream in retriever_agent before this call.
+    If annotation is None (parse failure), retrieval proceeds with an empty
+    resource seed — Chroma results may still populate identified_resources.
     """
-    if annotation is None and template_yaml:
-        try:
-            annotation = annotate_template(file_path="<in-memory>", content=template_yaml)
-        except Exception as exc:
-            print(f"[RAG Tool] Annotation failed during retrieval bootstrap: {exc}")
-            annotation = None
-
     identified_resources: set[str] = (
         {r.resource_type for r in annotation.resources if r.resource_type}
         if annotation and annotation.resources

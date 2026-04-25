@@ -5,7 +5,6 @@ from agents.llm_client import _build_client, _call_llm_with_history
 from tools.template_annotator import annotate_template, attach_smells, render_annotated_template
 from tools.cfn_hybrid_rag import (
     _extract_errors,
-    _build_annotation_summary,
     _parse_query_response,
     QUERY_GEN_SYSTEM,
     _execute_hybrid_retrieval,
@@ -153,7 +152,6 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     cfn_context = _execute_hybrid_retrieval(
         retrieval_queries=retrieval_queries,
         annotation=annotation,
-        template_yaml=template_yaml,
     )
 
     print(
