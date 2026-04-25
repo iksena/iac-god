@@ -1,6 +1,7 @@
+from __future__ import annotations
+
 from state import GraphState, Message, RemediationHistory, append_and_cap
-from agents.engineer import _build_client, _call_llm_with_history
-from tracking.recorder import ResearchRecorder
+from agents.llm_client import _build_client, _call_llm_with_history
 from tools.template_annotator import annotate_template, attach_smells, render_annotated_template
 from tools.cfn_hybrid_rag import (
     _extract_errors,
@@ -9,6 +10,7 @@ from tools.cfn_hybrid_rag import (
     QUERY_GEN_SYSTEM,
     _execute_hybrid_retrieval,
 )
+from tracking.recorder import ResearchRecorder
 
 
 def _build_retriever_history_context(remediation_history: list[RemediationHistory]) -> str:
@@ -52,15 +54,13 @@ def _generate_retrieval_queries(
 
     Uses structured remediation history (not conversation turns) to guide
     query diversity across iterations.
-
-    Change 2: Injects an annotated CFN YAML with inline # ERROR comments
-    anchored to each resource, replacing the plain annotation summary.
+    Injects an annotated CFN YAML with inline # ERROR comments anchored to
+    each resource, replacing the plain annotation summary.
     The plain summary is kept as a fallback when annotation fails.
     """
     user_parts = ["## Validation Errors\n" + "\n".join(f"- {e}" for e in errors)]
 
     if annotation and annotation.resources:
-        # Change 2: render inline-commented YAML instead of flat annotation summary
         annotated_yaml = render_annotated_template(
             annotation=annotation,
             errors=errors,
@@ -79,7 +79,6 @@ def _generate_retrieval_queries(
             f"```yaml\n{template_yaml}\n```"
         )
 
-    # Inject structured history to steer away from already-used queries
     history_context = _build_retriever_history_context(remediation_history)
     if history_context:
         user_parts.append(history_context)
@@ -105,11 +104,11 @@ def _generate_retrieval_queries(
 def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     """
     Dedicated retrieval agent that:
-      1. Annotates the current template
+      1. Annotates the current template.
       2. Uses LLM to generate HyDE retrieval queries (recorded as LLM call)
-         — informed by structured remediation_history, NOT conversation turns
-      3. Executes ChromaDB + Neo4j retrieval
-      4. Returns CFN context + retrieval_queries into state
+         — informed by structured remediation_history, NOT conversation turns.
+      3. Executes ChromaDB + Neo4j retrieval.
+      4. Returns CFN context + retrieval_queries into state.
     """
     iteration = state["current_iteration"]
     print(f"\n[Retriever] Building CFN context (iteration {iteration})...")

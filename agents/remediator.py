@@ -1,12 +1,16 @@
-from datetime import datetime, timezone
+from __future__ import annotations
+
 import json
 import re
+from datetime import datetime, timezone
+
 from state import GraphState, RemediationHistory, Message, append_and_cap
+from agents.llm_client import _build_client, _call_llm_with_history
+from agents.history_context import _build_remediation_history_context
 from prompts.remediator_prompt import REMEDIATOR_SYSTEM, REMEDIATOR_USER
-from tracking.recorder import ResearchRecorder
-from agents.engineer import _build_client, _call_llm_with_history
 from tools.checkov_context import get_checkov_policy_context
 from tools.trivy_context import get_trivy_policy_context
+from tracking.recorder import ResearchRecorder
 
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
@@ -52,8 +56,7 @@ def _extract_checkov_findings(validation_results: list[dict]) -> list[dict[str, 
     except json.JSONDecodeError:
         return findings
 
-    failed = data.get("results", {}).get("failed_checks", [])
-    for item in failed:
+    for item in data.get("results", {}).get("failed_checks", []):
         check_id = str(item.get("check_id") or "").strip()
         if check_id:
             findings.append({"check_id": check_id})
@@ -140,8 +143,7 @@ def _build_policy_source_context(validation_results: list[dict]) -> str:
     if not sections:
         return ""
 
-    policy_context = "## Relevant Policy Source Context (Checkov/Trivy)\n\n" + "\n\n".join(sections)
-    return policy_context
+    return "## Relevant Policy Source Context (Checkov/Trivy)\n\n" + "\n\n".join(sections)
 
 
 def _build_validation_errors_text(state: GraphState) -> str:
@@ -175,7 +177,7 @@ def _build_validation_errors_text(state: GraphState) -> str:
         if failed:
             lines.append("**Failed resources:**")
             for fr in failed:
-                name   = fr.get("logical_name") or fr.get("resource") or "unknown"
+                name = fr.get("logical_name") or fr.get("resource") or "unknown"
                 reason = fr.get("status_reason") or fr.get("reason") or "no reason provided"
                 lines.append(f"  - `{name}`: {reason}")
         else:
@@ -184,12 +186,17 @@ def _build_validation_errors_text(state: GraphState) -> str:
 
         completed = deploy_result.get("completed_resources", [])
         if completed:
-            lines.append(f"**Resources that completed successfully:** {', '.join(f'`{r}`' for r in completed)}")
+            lines.append(
+                f"**Resources that completed successfully:** "
+                + ", ".join(f"`{r}`" for r in completed)
+            )
 
         deploy_logs = deploy_result.get("deployment_logs", [])
         actionable_log_lines = [
             line for line in deploy_logs
-            if any(kw in str(line) for kw in ("FAILED", "ERROR", "timed out", "does not exist", "InvalidAMI", "parameter"))
+            if any(kw in str(line) for kw in (
+                "FAILED", "ERROR", "timed out", "does not exist", "InvalidAMI", "parameter"
+            ))
         ]
         if actionable_log_lines:
             lines.append("**Deployment event log (errors only):**")
@@ -243,53 +250,6 @@ def _should_include_policy_source_context(state: GraphState) -> bool:
     return False
 
 
-def _build_remediation_history_context(remediation_history: list[RemediationHistory]) -> str:
-    """Build a structured, read-only history block from past RemediationHistory entries.
-
-    This replaces passing remediator_history conversation turns to the LLM.
-    The history is injected as a compact document so both the Remediator and
-    Engineer agents can avoid repeating failed strategies without the token
-    overhead of verbatim conversation transcripts.
-    """
-    if not remediation_history:
-        return ""
-
-    lines: list[str] = [
-        "## Prior Remediation Attempts",
-        "The following fix strategies were already attempted. Do NOT repeat them.",
-        "Use this history to choose a different approach if a strategy failed or was insufficient.",
-        "",
-    ]
-
-    for entry in remediation_history:
-        iteration = entry["iteration"]
-        lines.append(f"### Attempt {iteration} ({entry['timestamp'][:10]})")
-
-        # Summarise the errors that were present at the time
-        if entry.get("formatted_errors"):
-            # Truncate to avoid bloat — first 800 chars is sufficient for pattern recognition
-            error_summary = entry["formatted_errors"][:800]
-            if len(entry["formatted_errors"]) > 800:
-                error_summary += "\n  ... (truncated)"
-            lines.append(f"**Errors present:**\n{error_summary}")
-
-        # Summarise the fix objectives suggested (first 600 chars)
-        if entry.get("suggestion"):
-            suggestion_summary = entry["suggestion"][:600]
-            if len(entry["suggestion"]) > 600:
-                suggestion_summary += "\n  ... (truncated)"
-            lines.append(f"**Fix objectives suggested:**\n{suggestion_summary}")
-
-        # Note which retrieval queries were used so the retriever can diversify
-        if entry.get("retrieval_queries"):
-            queries_str = ", ".join(f'"{q}"' for q in entry["retrieval_queries"])
-            lines.append(f"**Retrieval queries used:** {queries_str}")
-
-        lines.append("")
-
-    return "\n".join(lines).strip()
-
-
 def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     iteration = state["current_iteration"]
     print(f"\n[Remediator] Analyzing errors (iteration {iteration})...")
@@ -299,10 +259,10 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"]))
     )
 
-    policy_source_context = ""
     cfn_graph_context = state.get("retriever_context", "")
     retrieval_queries = state.get("retriever_queries", [])
 
+    policy_source_context = ""
     if _should_include_policy_source_context(state):
         policy_source_context = _build_policy_source_context(state["validation_results"])
 
@@ -315,16 +275,17 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         print("[Remediator] Context injection skipped for non-YAML/cfn-lint/deploy failures.")
 
     # Build structured history context from past RemediationHistory entries.
-    # This replaces passing remediator_history conversation turns to the LLM —
+    # Replaces passing remediator_history conversation turns to the LLM —
     # the model gets a compact document instead of a verbatim transcript.
     remediation_history_context = _build_remediation_history_context(
         state.get("remediation_history", [])
     )
 
+    formatted_errors = _build_validation_errors_text(state)
     user_content = REMEDIATOR_USER.format(
         iteration=iteration,
         template=state["cloudformation_template"],
-        validation_errors=_build_validation_errors_text(state),
+        validation_errors=formatted_errors,
         policy_source_context=policy_source_context,
         cfn_graph_context=cfn_graph_context,
         remediation_history_context=remediation_history_context,
@@ -338,12 +299,14 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     assistant_msg: Message = {"role": "assistant", "content": content}
 
     llm_record = recorder.record_llm_call(
-        state=state, agent="remediator", model=model,
+        state=state,
+        agent="remediator",
+        model=model,
         prompt=f"SYSTEM:\n{system}\n\nUSER:\n{user_content}",
-        response=content, token_usage=usage,
+        response=content,
+        token_usage=usage,
     )
 
-    formatted_errors = _build_validation_errors_text(state)
     new_history_entry: RemediationHistory = {
         "iteration": iteration,
         "errors": state["validation_results"],

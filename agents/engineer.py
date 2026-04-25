@@ -1,11 +1,12 @@
 # agents/engineer.py
-import json
+from __future__ import annotations
 
 from state import GraphState, Message, append_and_cap
-from agents.remediator import _build_remediation_history_context
-from config import DEFAULT_CONFIG, LLMProvider, build_openrouter_provider_preferences
+from agents.llm_client import _build_client, _call_llm_with_history
+from agents.history_context import _build_remediation_history_context
 from prompts.engineer_prompt import (
-    ENGINEER_SYSTEM, ENGINEER_USER_INITIAL,
+    ENGINEER_SYSTEM,
+    ENGINEER_USER_INITIAL,
     ENGINEER_USER_REMEDIATION,
 )
 from tracking.recorder import ResearchRecorder
@@ -25,7 +26,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     is_remediation = bool(state["remediation_history"])
 
     if not is_remediation:
-        # Iteration 1: simple generation request — no history yet
+        # Iteration 1: simple generation request — no history yet.
         user_content = ENGINEER_USER_INITIAL
     else:
         # Iteration 2+: full context in prompt — no conversation history passed to LLM.
@@ -77,101 +78,3 @@ def _strip_yaml_fences(text: str) -> str:
     if lines and lines[-1].startswith("```"):
         lines = lines[:-1]
     return "\n".join(lines)
-
-
-def _build_client():
-    if DEFAULT_CONFIG.provider == LLMProvider.OPENROUTER:
-        from openai import OpenAI
-        return OpenAI(
-            api_key=DEFAULT_CONFIG.openrouter_api_key,
-            base_url=DEFAULT_CONFIG.openrouter_base_url,
-        ), DEFAULT_CONFIG.model
-    else:
-        import anthropic
-        return anthropic.Anthropic(
-            api_key=DEFAULT_CONFIG.anthropic_api_key
-        ), DEFAULT_CONFIG.model
-
-
-def _to_int(value: object) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 0
-
-
-def _response_debug_blob(response: object) -> str:
-    if response is None:
-        return "response=None"
-
-    try:
-        if hasattr(response, "model_dump_json"):
-            return response.model_dump_json(indent=2)
-    except Exception:
-        pass
-
-    try:
-        return json.dumps(response, default=str, indent=2)
-    except Exception:
-        return repr(response)
-
-
-def _call_llm_with_history(client, model, system, messages):
-    """Call LLM with a messages list. In the new stateless design, this is always
-    a single [user_msg] — full context is embedded in the prompt, not in history."""
-    if DEFAULT_CONFIG.provider == LLMProvider.OPENROUTER:
-        request_kwargs = {
-            "model": model,
-            "messages": [{"role": "system", "content": system}] + messages,
-            "temperature": DEFAULT_CONFIG.temperature,
-            "max_tokens": DEFAULT_CONFIG.max_tokens,
-        }
-        provider_preferences = build_openrouter_provider_preferences(DEFAULT_CONFIG)
-        if provider_preferences:
-            request_kwargs["extra_body"] = {"provider": provider_preferences}
-        if DEFAULT_CONFIG.reasoning_enabled:
-            request_kwargs["extra_body"] = request_kwargs.get("extra_body", {})
-            request_kwargs["extra_body"]["reasoning"] = { "enabled": True }
-
-        r = client.chat.completions.create(**request_kwargs)
-        choices = getattr(r, "choices", None) or []
-        if not choices:
-            raise RuntimeError(
-                "OpenRouter returned no choices in engineer call. "
-                f"model={model} response={_response_debug_blob(r)}"
-            )
-
-        message = getattr(choices[0], "message", None)
-        content = getattr(message, "content", None) if message is not None else None
-
-        if isinstance(content, list):
-            text_parts = [
-                part.get("text", "") if isinstance(part, dict) else ""
-                for part in content
-            ]
-            content = "".join(text_parts).strip()
-
-        if not isinstance(content, str) or not content.strip():
-            raise RuntimeError(
-                "OpenRouter returned empty/non-text content in engineer call. "
-                f"model={model} response={_response_debug_blob(r)}"
-            )
-
-        usage_obj = getattr(r, "usage", None)
-        usage = {
-            "prompt_tokens": _to_int(getattr(usage_obj, "prompt_tokens", 0)),
-            "completion_tokens": _to_int(getattr(usage_obj, "completion_tokens", 0)),
-        }
-        return content, usage
-    else:
-        import anthropic as ant
-        r = client.messages.create(
-            model=model, system=system,
-            messages=messages,
-            temperature=DEFAULT_CONFIG.temperature,
-            max_tokens=DEFAULT_CONFIG.max_tokens,
-        )
-        return r.content[0].text, {
-            "input_tokens": r.usage.input_tokens,
-            "output_tokens": r.usage.output_tokens,
-        }
