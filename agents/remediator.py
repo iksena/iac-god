@@ -9,7 +9,11 @@ from agents.llm_client import _build_client, _call_llm_with_history
 from prompts.remediator_prompt import REMEDIATOR_SYSTEM, REMEDIATOR_USER
 from tools.checkov_context import get_checkov_policy_context
 from tools.trivy_context import get_trivy_policy_context
-from tools.retriever_helpers import get_latest_stage_result
+from tools.retriever_helpers import (
+    get_latest_stage_result,
+    format_cfn_lint_errors,
+    format_deploy_errors,
+)
 from tracking.recorder import ResearchRecorder
 
 
@@ -150,59 +154,16 @@ def _build_policy_source_context(validation_results: list[dict]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Validation error formatter
+# Validation error section builder
 # ---------------------------------------------------------------------------
 
-def _format_cfn_lint_errors(errors: list[str]) -> str:
-    lines: list[str] = []
-    for err in errors:
-        lines.append(f"  - {err.strip()}")
-    return "\n".join(lines)
-
-
-def _format_deploy_errors(deploy_result: dict) -> str:
-    target = deploy_result.get("target", "unknown").upper()
-    lines: list[str] = [f"**Target:** {target}"]
-
-    failed = deploy_result.get("failed_resources", [])
-    if failed:
-        lines.append("**Failed resources:**")
-        for fr in failed:
-            name   = fr.get("logical_name") or fr.get("resource") or "unknown"
-            reason = fr.get("status_reason") or fr.get("reason") or "no reason provided"
-            lines.append(f"  - `{name}`: {reason}")
-    elif deploy_result.get("error_message"):
-        lines.append(f"**Error:** {deploy_result['error_message']}")
-
-    completed = deploy_result.get("completed_resources", [])
-    if completed:
-        lines.append(
-            "**Completed successfully:** "
-            + ", ".join(f"`{r}`" for r in completed)
-        )
-
-    deploy_logs = deploy_result.get("deployment_logs", [])
-    _ERROR_KEYWORDS = ("FAILED", "ERROR", "timed out", "does not exist", "InvalidAMI", "parameter")
-    actionable = [
-        line for line in deploy_logs
-        if any(kw in str(line) for kw in _ERROR_KEYWORDS)
-    ]
-    if actionable:
-        lines.append("**Deployment event log (errors only):**")
-        for log_line in actionable:
-            lines.append(f"  - {log_line}")
-    elif not failed and deploy_logs:
-        lines.append("**Last deployment events:**")
-        for log_line in deploy_logs[-5:]:
-            lines.append(f"  - {log_line}")
-
-    if len(lines) == 1:
-        lines.append("Deployment failed with no structured error details.")
-
-    return "\n".join(lines)
-
-
 def _build_validation_errors_text(state: GraphState) -> str:
+    """Build the full validation error section for the remediator user prompt.
+
+    Uses format_cfn_lint_errors() and format_deploy_errors() from
+    retriever_helpers so both the retriever and remediator prompts render
+    errors with identical structure.
+    """
     error_blocks: list[str] = []
 
     validation_results = state.get("validation_results", [])
@@ -223,7 +184,7 @@ def _build_validation_errors_text(state: GraphState) -> str:
 
         stage = result["stage"]
         if stage == "cfn-lint":
-            errors_text = _format_cfn_lint_errors(deduped)
+            errors_text = format_cfn_lint_errors(deduped)
         else:
             errors_text = "\n".join(f"  - {e}" for e in deduped)
 
@@ -236,7 +197,7 @@ def _build_validation_errors_text(state: GraphState) -> str:
         and deploy_result["target"] != "skipped"
     ):
         error_blocks.append(
-            f"### DEPLOYABILITY Errors\n{_format_deploy_errors(deploy_result)}"
+            f"### DEPLOYABILITY Errors\n{format_deploy_errors(deploy_result)}"
         )
 
     return "\n\n".join(error_blocks) if error_blocks else "No validation errors reported."
@@ -337,8 +298,6 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         client,
         model,
         system,
-        # Pass the full rolling conversation history so the LLM sees all prior
-        # iterations without us duplicating it in the user turn text.
         state.get("remediator_history", []) + [user_msg],
     )
     assistant_msg: Message = {"role": "assistant", "content": content}
