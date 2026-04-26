@@ -3,17 +3,16 @@
 ChromaDB + Neo4j hybrid retrieval for CloudFormation schema context.
 
 Retrieval runs in two sequential stages:
-  Stage 1 — _semantic_search():      ChromaDB similarity search over pre-indexed
-                                      CFN property chunks.  Returns cleaned text
-                                      chunks and any additional resource names
-                                      surfaced by the chunk metadata.
-  Stage 2 — _graph_schema_lookup():  Neo4j Cypher traversal for each identified
-                                      resource.  Returns structured schema blocks
-                                      (required/optional properties, nested types,
-                                      examples).
-  Final   — _assemble_retrieval_context(): merges both sets of results into the
-                                      single context string consumed by the
-                                      remediator prompt.
+  Stage 1 — _semantic_search():        ChromaDB similarity search over pre-indexed
+                                        CFN property chunks. Returns chunks GROUPED
+                                        by resource name and any resource names
+                                        surfaced by chunk metadata.
+  Stage 2 — _graph_schema_lookup():    Neo4j Cypher traversal for each identified
+                                        resource. Returns structured schema blocks
+                                        (required properties, capped optional
+                                        properties, nested types, examples).
+  Final   — _assemble_retrieval_context(): merges both sets into the single context
+                                        string consumed by the remediator prompt.
 
 Dependency direction (strictly unidirectional, no cycles):
   retriever_agent  →  cfn_hybrid_rag       →  template_annotator (type hints only)
@@ -24,6 +23,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections import defaultdict
 from contextlib import contextmanager
 from functools import lru_cache
 
@@ -32,7 +32,10 @@ from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from neo4j import GraphDatabase
 
-from tools.template_annotator import TemplateAnnotation
+# Re-export so existing callers of
+#   from tools.cfn_hybrid_rag import QUERY_GEN_SYSTEM
+# continue to work without modification.
+from prompts.retriever_prompt import QUERY_GEN_SYSTEM  # noqa: F401
 
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 
@@ -43,48 +46,15 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 
-# ---------------------------------------------------------------------------
-# Query-generation system prompt
-# (consumed by retriever_agent; defined here to keep all RAG concerns together)
-# ---------------------------------------------------------------------------
-QUERY_GEN_SYSTEM = """\
-You are an AWS CloudFormation schema expert. You are given:
-1. A list of validation errors from a CFN template.
-2. An annotated CloudFormation template where each resource block has inline
-   # ERROR comments identifying which errors apply to that specific resource.
-3. (Optionally) a structured annotation of the template's resources: their logical IDs,
-   AWS resource types, source line numbers, and the property keys actually present.
-
-Use the inline error comments as the primary signal for which Resource.Property
-pairs need schema retrieval. Errors without a resource annotation are template-level
-and should inform general structural queries. Use the annotation summary as
-supplementary context when the annotated template is not available.
-
-Using this context, generate a list of precise retrieval queries. Each query must target a
-specific Resource.Property combination that is EITHER referenced in an error OR present in
-the template annotation and relevant to the errors.
-
-Output ONLY a JSON object with a single key "queries" whose value is an array of strings.
-Example:
-{
-  "queries": [
-    "What are the required properties for AWS::S3::Bucket BucketEncryption?",
-    "What valid values exist for AWS::RDS::DBInstance DBInstanceClass?"
-  ]
-}
-
-Prioritise resources that appear in the errors. Limit to at most 8 queries.
-"""
+# Maximum number of optional properties shown per resource in the Neo4j block.
+# Keeping this low prevents the context from being dominated by rarely-used
+# optional fields that are irrelevant to the current errors.
+_MAX_OPTIONAL_PROPS = 10
 
 
 @lru_cache(maxsize=1)
 def _get_global_embeddings() -> HuggingFaceEmbeddings:
-    """Lazy-load the embedding model once and cache it for the process lifetime.
-
-    HuggingFaceEmbeddings loads a ~400 MB model on first call; the lru_cache
-    ensures that cost is paid only once per process regardless of how many
-    times _get_global_embeddings() is called.
-    """
+    """Lazy-load the embedding model once and cache it for the process lifetime."""
     return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
         model_kwargs={"device": "cpu"},
@@ -99,11 +69,7 @@ _DESCRIPTION_RE = re.compile(r"(?:^|\n)Description:\s*.+?(?=\n[A-Z]|\Z)", re.DOT
 
 
 def _clean_chroma_chunk(content: str) -> str:
-    """Remove AWS doc links and Description fields from a Chroma property chunk.
-
-    These fields bloat the Semantically Matched Properties section without
-    providing schema information the remediator can act on.
-    """
+    """Remove AWS doc links and Description fields from a Chroma property chunk."""
     content = _DOC_LINK_RE.sub("", content)
     content = _DESCRIPTION_RE.sub("", content)
     return re.sub(r"\n{3,}", "\n\n", content).strip()
@@ -112,8 +78,13 @@ def _clean_chroma_chunk(content: str) -> str:
 # ---------------------------------------------------------------------------
 # Neo4j helpers
 # ---------------------------------------------------------------------------
+
 def format_prompt_from_neo4j_result(resource_data: dict) -> str:
-    """Format Neo4j schema data into a concise single-block prompt section."""
+    """Format Neo4j schema data into a concise single-block prompt section.
+
+    Optional properties are capped at _MAX_OPTIONAL_PROPS (10) to keep the
+    context block focused on the properties most likely to appear in errors.
+    """
     if "error" in resource_data:
         return f"# {resource_data['error']}"
 
@@ -127,12 +98,12 @@ def format_prompt_from_neo4j_result(resource_data: dict) -> str:
             f"{p['name']}({p['type']})" for p in req
         ))
     if opt:
-        shown = opt[:20]
+        shown = opt[:_MAX_OPTIONAL_PROPS]
         lines.append("Optional: " + ", ".join(
             f"{p['name']}({p['type']})" for p in shown
         ))
-        if len(opt) > 20:
-            lines.append(f"  ... and {len(opt) - 20} more optional properties")
+        if len(opt) > _MAX_OPTIONAL_PROPS:
+            lines.append(f"  ... and {len(opt) - _MAX_OPTIONAL_PROPS} more optional properties")
 
     if resource_data.get("nested_types"):
         nt_list = ", ".join(
@@ -158,10 +129,12 @@ def query_knowledge_graph(driver, resource_name: str) -> dict:
 
         OPTIONAL MATCH (r)-[:HAS_PROPERTY]->(opt_prop:Property)
         WHERE opt_prop.required = false
-        WITH r, required_properties, collect(DISTINCT {name: opt_prop.name, type: opt_prop.type}) AS optional_properties
+        WITH r, required_properties,
+             collect(DISTINCT {name: opt_prop.name, type: opt_prop.type}) AS optional_properties
 
         OPTIONAL MATCH (r)-[:HAS_NESTED_TYPE]->(nt:NestedType)
-        WITH r, required_properties, optional_properties, collect(DISTINCT {name: nt.name, type: nt.type, required: nt.required}) AS nested_types
+        WITH r, required_properties, optional_properties,
+             collect(DISTINCT {name: nt.name, type: nt.type, required: nt.required}) AS nested_types
 
         OPTIONAL MATCH (r)-[:HAS_EXAMPLE]->(e:Example)
         WHERE e.index = 0
@@ -198,23 +171,27 @@ def _neo4j_driver():
 
 
 # ---------------------------------------------------------------------------
-# Stage 1 — Semantic search (ChromaDB)
+# Stage 1 — Semantic search (ChromaDB), chunks grouped by resource
 # ---------------------------------------------------------------------------
 
 def _semantic_search(
     retrieval_queries: list[str],
-) -> tuple[list[str], set[str]]:
+) -> tuple[dict[str, list[str]], set[str]]:
     """Run ChromaDB similarity search for all retrieval queries.
 
     Returns:
-        property_chunks:   Cleaned, deduplicated property text chunks.
-        found_resources:   AWS resource type names surfaced from chunk metadata.
+        chunks_by_resource: Dict mapping resource_name → list of cleaned property
+                            text chunks for that resource. Chunks from different
+                            queries that share the same resource are grouped together
+                            so _assemble_retrieval_context can render one sub-section
+                            per resource instead of a flat interleaved list.
+        found_resources:    Set of AWS resource type names surfaced from metadata.
     """
-    property_chunks: list[str] = []
+    chunks_by_resource: dict[str, list[str]] = defaultdict(list)
     found_resources: set[str] = set()
 
     if not retrieval_queries:
-        return property_chunks, found_resources
+        return chunks_by_resource, found_resources
 
     try:
         chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
@@ -228,7 +205,7 @@ def _semantic_search(
         for query in retrieval_queries:
             for chunk in vectorstore.similarity_search(query, k=3):
                 meta = chunk.metadata
-                res  = meta.get("resource_name", "")
+                res  = meta.get("resource_name", "") or "_unknown"
                 prop = meta.get("property_name", "") or meta.get("property_path", "")
                 prop_key = (
                     f"{res}.{prop}" if prop
@@ -239,13 +216,13 @@ def _semantic_search(
                 seen_prop_keys.add(prop_key)
                 cleaned = _clean_chroma_chunk(chunk.page_content)
                 if cleaned:
-                    property_chunks.append(cleaned)
-                if res:
+                    chunks_by_resource[res].append(cleaned)
+                if res and res != "_unknown":
                     found_resources.add(res)
     except Exception as exc:
         print(f"[RAG Tool] Warning: ChromaDB Semantic Search failed. {exc}")
 
-    return property_chunks, found_resources
+    return dict(chunks_by_resource), found_resources
 
 
 # ---------------------------------------------------------------------------
@@ -255,8 +232,8 @@ def _semantic_search(
 def _graph_schema_lookup(resources: set[str]) -> list[str]:
     """Fetch full schema blocks for each resource from Neo4j.
 
-    Returns a list of formatted schema block strings ready for context
-    assembly.  An empty list is returned on connection failure.
+    Returns a list of formatted schema block strings (one per resource).
+    Returns an empty list on connection failure.
     """
     schema_blocks: list[str] = []
 
@@ -269,7 +246,6 @@ def _graph_schema_lookup(resources: set[str]) -> list[str]:
             seen: set[str] = set()
             for resource in sorted(resources):
                 if resource in seen:
-                    print(f"[RAG Tool] Skipping duplicate schema: {resource}")
                     continue
                 seen.add(resource)
                 res_data = query_knowledge_graph(driver, resource)
@@ -286,17 +262,29 @@ def _graph_schema_lookup(resources: set[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _assemble_retrieval_context(
-    property_chunks: list[str],
+    chunks_by_resource: dict[str, list[str]],
     schema_blocks: list[str],
 ) -> str:
-    """Merge semantic search chunks and Neo4j schema blocks into a single
-    context string suitable for injection into the remediator prompt.
+    """Merge grouped Chroma chunks and Neo4j schema blocks into a single
+    context string for the remediator prompt.
+
+    Chroma chunks are rendered one sub-section per resource so the remediator
+    can immediately associate each property snippet with its resource type,
+    rather than scanning an interleaved flat list.
     """
     final_blocks: list[str] = ["## Official AWS CloudFormation Schema Context\n"]
 
-    if property_chunks:
+    if chunks_by_resource:
+        resource_sections: list[str] = []
+        for resource_name, chunks in sorted(chunks_by_resource.items()):
+            header = (
+                f"#### {resource_name}" if resource_name != "_unknown"
+                else "#### (resource type unknown)"
+            )
+            resource_sections.append(header + "\n" + "\n---\n".join(chunks))
         final_blocks.append(
-            "### Semantically Matched Properties\n" + "\n---\n".join(property_chunks)
+            "### Semantically Matched Properties\n"
+            + "\n\n".join(resource_sections)
         )
 
     final_blocks.extend(schema_blocks)
@@ -320,18 +308,17 @@ def execute_hybrid_retrieval(
                            Chroma results may augment this set further.
 
     Returns:
-        A multi-section context string for the remediator, or a short message
-        when no resources could be identified.
+        A multi-section context string for the remediator, or a short fallback
+        message when no resources could be identified.
     """
-    # Semantic search enriches both property chunks and the resource set.
-    property_chunks, chroma_resources = _semantic_search(retrieval_queries)
+    chunks_by_resource, chroma_resources = _semantic_search(retrieval_queries)
     identified_resources = seed_resources | chroma_resources
 
     if not identified_resources:
         return "No specific AWS resources identified in template or retrieval context."
 
     schema_blocks = _graph_schema_lookup(identified_resources)
-    if not schema_blocks and not property_chunks:
+    if not schema_blocks and not chunks_by_resource:
         return "Failed to connect to Knowledge Graph."
 
-    return _assemble_retrieval_context(property_chunks, schema_blocks)
+    return _assemble_retrieval_context(chunks_by_resource, schema_blocks)

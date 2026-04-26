@@ -53,26 +53,8 @@ def _extract_security_findings(
 ) -> list[dict[str, str]]:
     """Extract check-ID findings from a security tool's raw JSON output.
 
-    Replaces the near-identical _extract_checkov_findings and
-    _extract_trivy_findings functions.  The two callers differ only in which
-    JSON keys to traverse to reach the individual finding objects:
-
-        Checkov: results_key="results", items_path=["failed_checks"]
-                 finding id field: "check_id"
-        Trivy:   results_key="Results", items_path=["Misconfigurations"]
-                 finding id field: "ID"
-
-    Args:
-        validation_results: Full list of ValidationResult dicts from state.
-        stage:              Stage name to look up ("checkov" or "trivy").
-        results_key:        Top-level JSON key for the results object.
-        items_path:         List of nested keys to reach the findings list.
-                            Supports one level of nesting (e.g. ["failed_checks"]
-                            inside data[results_key]) or two levels
-                            (e.g. data[results_key][*][items_path[0]]).
-
-    Returns:
-        List of {"check_id": str} dicts, deduplicated by insertion order.
+    Checkov: results_key="results", items_path=["failed_checks"]
+    Trivy:   results_key="Results", items_path=["Misconfigurations"]
     """
     findings: list[dict[str, str]] = []
     result = get_latest_stage_result(validation_results, stage)
@@ -87,14 +69,12 @@ def _extract_security_findings(
 
     top = data.get(results_key, {})
 
-    # Checkov: data["results"]["failed_checks"] — top is a dict
     if isinstance(top, dict):
         for item in top.get(items_path[0], []):
             check_id = str(item.get("check_id") or "").strip()
             if check_id:
                 findings.append({"check_id": check_id})
 
-    # Trivy: data["Results"] is a list; each element has data["Results"][*][items_path[0]]
     elif isinstance(top, list):
         for entry in top:
             for item in entry.get(items_path[0], []):
@@ -178,7 +158,81 @@ def _build_policy_source_context(validation_results: list[dict]) -> str:
 # Validation error formatter
 # ---------------------------------------------------------------------------
 
+def _format_cfn_lint_errors(errors: list[str]) -> str:
+    """Format cfn-lint errors as a structured, readable list.
+
+    cfn-lint errors typically follow the pattern:
+        [RULE_ID] path/to/resource: message (line:col)
+
+    We normalise them to:
+        - [E3001] Resources/MyBucket/Type: Invalid resource type (line 12)
+    """
+    lines: list[str] = []
+    for err in errors:
+        # cfn-lint already includes rule ID, path, and line ref — emit as-is
+        # but ensure consistent bullet style.
+        lines.append(f"  - {err.strip()}")
+    return "\n".join(lines)
+
+
+def _format_deploy_errors(deploy_result: dict) -> str:
+    """Format deployment validation result into an informative error block.
+
+    Renders in order:
+      1. Failed resources with their logical ID + status reason.
+      2. General error message (when no per-resource breakdown is available).
+      3. Successfully completed resources (context for the remediator).
+      4. Actionable deployment event log lines filtered by error keywords.
+    """
+    target = deploy_result.get("target", "unknown").upper()
+    lines: list[str] = [f"**Target:** {target}"]
+
+    failed = deploy_result.get("failed_resources", [])
+    if failed:
+        lines.append("**Failed resources:**")
+        for fr in failed:
+            name   = fr.get("logical_name") or fr.get("resource") or "unknown"
+            reason = fr.get("status_reason") or fr.get("reason") or "no reason provided"
+            lines.append(f"  - `{name}`: {reason}")
+    elif deploy_result.get("error_message"):
+        lines.append(f"**Error:** {deploy_result['error_message']}")
+
+    completed = deploy_result.get("completed_resources", [])
+    if completed:
+        lines.append(
+            "**Completed successfully:** "
+            + ", ".join(f"`{r}`" for r in completed)
+        )
+
+    deploy_logs = deploy_result.get("deployment_logs", [])
+    _ERROR_KEYWORDS = ("FAILED", "ERROR", "timed out", "does not exist", "InvalidAMI", "parameter")
+    actionable = [
+        line for line in deploy_logs
+        if any(kw in str(line) for kw in _ERROR_KEYWORDS)
+    ]
+    if actionable:
+        lines.append("**Deployment event log (errors only):**")
+        for log_line in actionable:
+            lines.append(f"  - {log_line}")
+    elif not failed and deploy_logs:
+        lines.append("**Last deployment events:**")
+        for log_line in deploy_logs[-5:]:
+            lines.append(f"  - {log_line}")
+
+    if len(lines) == 1:  # only the target header
+        lines.append("Deployment failed with no structured error details.")
+
+    return "\n".join(lines)
+
+
 def _build_validation_errors_text(state: GraphState) -> str:
+    """Build the full validation error section for the remediator user prompt.
+
+    cfn-lint and deployment errors are formatted with dedicated helpers so
+    both sections carry the same level of structural detail:
+      - cfn-lint: rule ID, resource path, line reference.
+      - deploy:   logical resource ID, status reason, filtered event log.
+    """
     error_blocks: list[str] = []
 
     validation_results = state.get("validation_results", [])
@@ -191,57 +245,28 @@ def _build_validation_errors_text(state: GraphState) -> str:
     for result in latest_by_stage.values():
         if result["passed"]:
             continue
-        deduped_errors = _dedupe_preserve_order(
+        deduped = _dedupe_preserve_order(
             [str(e) for e in result.get("errors", []) if str(e).strip()]
         )
-        if not deduped_errors:
+        if not deduped:
             continue
-        errors_text = "\n".join(f"  - {e}" for e in deduped_errors)
-        error_blocks.append(f"### {result['stage'].upper()} Errors\n{errors_text}")
+
+        stage = result["stage"]
+        if stage == "cfn-lint":
+            errors_text = _format_cfn_lint_errors(deduped)
+        else:
+            errors_text = "\n".join(f"  - {e}" for e in deduped)
+
+        error_blocks.append(f"### {stage.upper()} Errors\n{errors_text}")
 
     deploy_result = state.get("deploy_validation_result")
-    if deploy_result and not deploy_result["passed"] and deploy_result["target"] != "skipped":
-        target = deploy_result["target"].upper()
-        lines: list[str] = []
-
-        failed = deploy_result.get("failed_resources", [])
-        if failed:
-            lines.append("**Failed resources:**")
-            for fr in failed:
-                name = fr.get("logical_name") or fr.get("resource") or "unknown"
-                reason = fr.get("status_reason") or fr.get("reason") or "no reason provided"
-                lines.append(f"  - `{name}`: {reason}")
-        elif deploy_result.get("error_message"):
-            lines.append(f"**Error:** {deploy_result['error_message']}")
-
-        completed = deploy_result.get("completed_resources", [])
-        if completed:
-            lines.append(
-                "**Resources that completed successfully:** "
-                + ", ".join(f"`{r}`" for r in completed)
-            )
-
-        deploy_logs = deploy_result.get("deployment_logs", [])
-        actionable = [
-            line for line in deploy_logs
-            if any(kw in str(line) for kw in (
-                "FAILED", "ERROR", "timed out", "does not exist", "InvalidAMI", "parameter"
-            ))
-        ]
-        if actionable:
-            lines.append("**Deployment event log (errors only):**")
-            for log_line in actionable:
-                lines.append(f"  - {log_line}")
-        elif not failed and deploy_logs:
-            lines.append("**Last deployment events:**")
-            for log_line in deploy_logs[-5:]:
-                lines.append(f"  - {log_line}")
-
-        if not lines:
-            lines.append("Deployment failed with no structured error details.")
-
+    if (
+        deploy_result
+        and not deploy_result["passed"]
+        and deploy_result["target"] != "skipped"
+    ):
         error_blocks.append(
-            f"### DEPLOYABILITY Errors ({target})\n" + "\n".join(lines)
+            f"### DEPLOYABILITY Errors\n{_format_deploy_errors(deploy_result)}"
         )
 
     return "\n\n".join(error_blocks) if error_blocks else "No validation errors reported."
@@ -252,17 +277,18 @@ def _build_validation_errors_text(state: GraphState) -> str:
 # ---------------------------------------------------------------------------
 
 def should_include_remediation_context(state: GraphState) -> bool:
-    """Return True only for YAML, cfn-lint, or deploy failures.
+    """Return True only when cfn-lint or deployment failures are present.
 
-    CFN schema retrieval context is not useful for pure security policy
-    violations (checkov, trivy) — those require policy source context instead.
+    YAML parse errors are excluded: they indicate malformed YAML syntax, not
+    CloudFormation schema violations, so schema RAG context provides no
+    actionable signal — the LLM just needs to fix the YAML structure.
+
+    Security-only failures (checkov, trivy) are also excluded — they are
+    handled by the policy source context path instead.
     """
     validation_results = state.get("validation_results", [])
-    yaml_result     = get_latest_stage_result(validation_results, "yaml")
     cfn_lint_result = get_latest_stage_result(validation_results, "cfn-lint")
 
-    if yaml_result and not yaml_result.get("passed", True):
-        return True
     if cfn_lint_result and not cfn_lint_result.get("passed", True):
         return True
 
@@ -300,23 +326,20 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"])),
     )
 
-    # Pull retriever outputs from state — written by retriever_agent in the
-    # previous graph node. Keys match exactly what retriever_agent returns.
-    cfn_graph_context  = state.get("retriever_context", "")
-    retrieval_queries  = state.get("retriever_queries", [])
+    cfn_graph_context = state.get("retriever_context", "")
+    retrieval_queries = state.get("retriever_queries", [])
 
-    # Guard: only inject heavy context when it is actionable for the error type.
     include_remediation = should_include_remediation_context(state)
     include_policy      = _should_include_policy_source_context(state)
 
     if include_remediation:
         print(
-            f"[Remediator] CFN schema context from retriever: {len(cfn_graph_context)} chars, "
-            f"{len(retrieval_queries)} retrieval queries used."
+            f"[Remediator] CFN schema context: {len(cfn_graph_context)} chars, "
+            f"{len(retrieval_queries)} retrieval queries."
         )
     else:
         cfn_graph_context = ""
-        print("[Remediator] CFN schema context skipped (non-YAML/cfn-lint/deploy failure).")
+        print("[Remediator] CFN schema context skipped (YAML/security-only failure).")
 
     policy_source_context = (
         _build_policy_source_context(state["validation_results"])
@@ -324,10 +347,6 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         else ""
     )
 
-    # Build structured history context from past RemediationHistory entries.
-    # The model receives a compact document rather than a verbatim transcript,
-    # avoiding the exploitative incremental-edit behaviour documented in
-    # AgentCoder / FAIR multi-turn findings.
     remediation_history_context = _build_remediation_history_context(
         state.get("remediation_history", [])
     )
@@ -343,8 +362,6 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     )
     user_msg: Message = {"role": "user", "content": user_content}
 
-    # Single-turn call: no conversation history passed — full context is in
-    # the prompt. remediator_history is retained in state for debugging only.
     client, model = _build_client()
     content, usage = _call_llm_with_history(client, model, system, [user_msg])
     assistant_msg: Message = {"role": "assistant", "content": content}
@@ -359,12 +376,12 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     )
 
     new_history_entry: RemediationHistory = {
-        "iteration":        iteration,
-        "errors":           state["validation_results"],
-        "formatted_errors": formatted_errors,
-        "suggestion":       content,
-        "timestamp":        datetime.now(timezone.utc).isoformat(),
-        "cfn_context":      cfn_graph_context,
+        "iteration":         iteration,
+        "errors":            state["validation_results"],
+        "formatted_errors":  formatted_errors,
+        "suggestion":        content,
+        "timestamp":         datetime.now(timezone.utc).isoformat(),
+        "cfn_context":       cfn_graph_context,
         "retrieval_queries": retrieval_queries,
     }
 
@@ -373,7 +390,6 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         "remediation_history": state["remediation_history"] + [new_history_entry],
         "current_iteration":   iteration + 1,
         "llm_call_log":        state["llm_call_log"] + [llm_record],
-        # Kept for debugging/recording only — not used as LLM context.
         "remediator_history":  append_and_cap(
             state["remediator_history"], user_msg, assistant_msg
         ),
