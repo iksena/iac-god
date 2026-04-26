@@ -321,6 +321,20 @@ def attach_smells(
     return annotation
 
 
+def extract_resource_types(annotation: TemplateAnnotation | None) -> set[str]:
+    """Return the set of AWS resource type strings present in an annotation.
+
+    Centralises the ``{r.resource_type for r in annotation.resources if r.resource_type}``
+    pattern that previously appeared independently in both the retriever agent
+    and the hybrid-RAG tool, eliminating the duplication.
+
+    Returns an empty set when *annotation* is None or has no resources.
+    """
+    if not annotation or not annotation.resources:
+        return set()
+    return {r.resource_type for r in annotation.resources if r.resource_type}
+
+
 # ---------------------------------------------------------------------------
 # Annotated YAML renderer for retriever prompt
 # ---------------------------------------------------------------------------

@@ -2,9 +2,22 @@
 
 ChromaDB + Neo4j hybrid retrieval for CloudFormation schema context.
 
+Retrieval runs in two sequential stages:
+  Stage 1 — _semantic_search():      ChromaDB similarity search over pre-indexed
+                                      CFN property chunks.  Returns cleaned text
+                                      chunks and any additional resource names
+                                      surfaced by the chunk metadata.
+  Stage 2 — _graph_schema_lookup():  Neo4j Cypher traversal for each identified
+                                      resource.  Returns structured schema blocks
+                                      (required/optional properties, nested types,
+                                      examples).
+  Final   — _assemble_retrieval_context(): merges both sets of results into the
+                                      single context string consumed by the
+                                      remediator prompt.
+
 Dependency direction (strictly unidirectional, no cycles):
-  retriever_agent  →  cfn_hybrid_rag  →  template_annotator (type hints only)
-  retriever_agent  →  retriever_helpers  (no DB deps)
+  retriever_agent  →  cfn_hybrid_rag       →  template_annotator (type hints only)
+  retriever_agent  →  retriever_helpers    (no DB deps)
   cfn_hybrid_rag   does NOT import from agents/
 """
 from __future__ import annotations
@@ -22,8 +35,8 @@ from tools.template_annotator import TemplateAnnotation
 
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_URI      = os.getenv("NEO4J_URI",      "bolt://localhost:7687")
+NEO4J_USER     = os.getenv("NEO4J_USER",     "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
@@ -81,7 +94,7 @@ def _get_global_embeddings():
 # ---------------------------------------------------------------------------
 # Chroma chunk cleaner
 # ---------------------------------------------------------------------------
-_DOC_LINK_RE = re.compile(r"https?://docs\.aws\.amazon\.com\S*", re.IGNORECASE)
+_DOC_LINK_RE    = re.compile(r"https?://docs\.aws\.amazon\.com\S*", re.IGNORECASE)
 _DESCRIPTION_RE = re.compile(r"(?:^|\n)Description:\s*.+?(?=\n[A-Z]|\Z)", re.DOTALL)
 
 
@@ -165,12 +178,12 @@ def query_knowledge_graph(driver, resource_name: str) -> dict:
         if not result:
             return {"error": f"Resource '{resource_name}' not found in Knowledge Graph."}
         return {
-            "name": result["resource_name"],
-            "description": result["resource_description"],
+            "name":                result["resource_name"],
+            "description":        result["resource_description"],
             "required_properties": result["required_properties"],
             "optional_properties": result["optional_properties"],
-            "nested_types": result["nested_types"],
-            "example": result["example"],
+            "nested_types":        result["nested_types"],
+            "example":             result["example"],
         }
 
 
@@ -185,79 +198,140 @@ def _neo4j_driver():
 
 
 # ---------------------------------------------------------------------------
+# Stage 1 — Semantic search (ChromaDB)
+# ---------------------------------------------------------------------------
+
+def _semantic_search(
+    retrieval_queries: list[str],
+) -> tuple[list[str], set[str]]:
+    """Run ChromaDB similarity search for all retrieval queries.
+
+    Returns:
+        property_chunks:   Cleaned, deduplicated property text chunks.
+        found_resources:   AWS resource type names surfaced from chunk metadata.
+    """
+    property_chunks: list[str] = []
+    found_resources: set[str] = set()
+
+    if not retrieval_queries:
+        return property_chunks, found_resources
+
+    try:
+        chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+        vectorstore = Chroma(
+            client=chroma_client,
+            collection_name="cfn_schema_properties",
+            embedding_function=_get_global_embeddings(),
+        )
+
+        seen_prop_keys: set[str] = set()
+        for query in retrieval_queries:
+            for chunk in vectorstore.similarity_search(query, k=3):
+                meta = chunk.metadata
+                res  = meta.get("resource_name", "")
+                prop = meta.get("property_name", "") or meta.get("property_path", "")
+                prop_key = (
+                    f"{res}.{prop}" if prop
+                    else f"{res}::content::{hash(chunk.page_content)}"
+                )
+                if prop_key in seen_prop_keys:
+                    continue
+                seen_prop_keys.add(prop_key)
+                cleaned = _clean_chroma_chunk(chunk.page_content)
+                if cleaned:
+                    property_chunks.append(cleaned)
+                if res:
+                    found_resources.add(res)
+    except Exception as exc:
+        print(f"[RAG Tool] Warning: ChromaDB Semantic Search failed. {exc}")
+
+    return property_chunks, found_resources
+
+
+# ---------------------------------------------------------------------------
+# Stage 2 — Knowledge-graph schema lookup (Neo4j)
+# ---------------------------------------------------------------------------
+
+def _graph_schema_lookup(resources: set[str]) -> list[str]:
+    """Fetch full schema blocks for each resource from Neo4j.
+
+    Returns a list of formatted schema block strings ready for context
+    assembly.  An empty list is returned on connection failure.
+    """
+    schema_blocks: list[str] = []
+
+    if not resources:
+        return schema_blocks
+
+    print(f"[RAG Tool] Stage 2: Querying Neo4j for {len(resources)} resources...")
+    try:
+        with _neo4j_driver() as driver:
+            seen: set[str] = set()
+            for resource in sorted(resources):
+                if resource in seen:
+                    print(f"[RAG Tool] Skipping duplicate schema: {resource}")
+                    continue
+                seen.add(resource)
+                res_data = query_knowledge_graph(driver, resource)
+                if "error" not in res_data:
+                    schema_blocks.append(format_prompt_from_neo4j_result(res_data))
+    except Exception as exc:
+        print(f"[RAG Tool] Warning: Neo4j retrieval failed. {exc}")
+
+    return schema_blocks
+
+
+# ---------------------------------------------------------------------------
+# Final — Context assembly
+# ---------------------------------------------------------------------------
+
+def _assemble_retrieval_context(
+    property_chunks: list[str],
+    schema_blocks: list[str],
+) -> str:
+    """Merge semantic search chunks and Neo4j schema blocks into a single
+    context string suitable for injection into the remediator prompt.
+    """
+    final_blocks: list[str] = ["## Official AWS CloudFormation Schema Context\n"]
+
+    if property_chunks:
+        final_blocks.append(
+            "### Semantically Matched Properties\n" + "\n---\n".join(property_chunks)
+        )
+
+    final_blocks.extend(schema_blocks)
+    return "\n\n".join(final_blocks)
+
+
+# ---------------------------------------------------------------------------
 # Public retrieval entry point
 # ---------------------------------------------------------------------------
+
 def _execute_hybrid_retrieval(
     retrieval_queries: list[str],
-    annotation: TemplateAnnotation | None,
+    seed_resources: set[str],
 ) -> str:
-    """Execute retrieval: ChromaDB semantic search followed by Neo4j schema lookup.
+    """Execute full hybrid retrieval: ChromaDB semantic search → Neo4j schema lookup.
 
-    The annotation is built upstream in retriever_agent before this call.
-    If annotation is None (parse failure), retrieval proceeds with an empty
-    resource seed — Chroma results may still populate identified_resources.
+    Args:
+        retrieval_queries: HyDE queries generated upstream by the retriever agent.
+        seed_resources:    AWS resource type names pre-extracted from the template
+                           annotation by the caller (via extract_resource_types()).
+                           Chroma results may augment this set further.
+
+    Returns:
+        A multi-section context string for the remediator, or a short message
+        when no resources could be identified.
     """
-    identified_resources: set[str] = (
-        {r.resource_type for r in annotation.resources if r.resource_type}
-        if annotation and annotation.resources
-        else set()
-    )
-
-    property_chunks: list[str] = []
-    if retrieval_queries:
-        try:
-            chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
-            vectorstore = Chroma(
-                client=chroma_client,
-                collection_name="cfn_schema_properties",
-                embedding_function=_get_global_embeddings(),
-            )
-
-            seen_resources: set[str] = set()
-            for query in retrieval_queries:
-                for chunk in vectorstore.similarity_search(query, k=3):
-                    meta = chunk.metadata
-                    res = meta.get("resource_name", "")
-                    prop = meta.get("property_name", "") or meta.get("property_path", "")
-                    prop_key = (
-                        f"{res}.{prop}" if prop
-                        else f"{res}::content::{hash(chunk.page_content)}"
-                    )
-                    if prop_key in seen_resources:
-                        continue
-                    seen_resources.add(prop_key)
-                    cleaned = _clean_chroma_chunk(chunk.page_content)
-                    if cleaned:
-                        property_chunks.append(cleaned)
-                    if res:
-                        identified_resources.add(res)
-        except Exception as e:
-            print(f"[RAG Tool] Warning: ChromaDB Semantic Search failed. {e}")
+    # Semantic search enriches both property chunks and the resource set.
+    property_chunks, chroma_resources = _semantic_search(retrieval_queries)
+    identified_resources = seed_resources | chroma_resources
 
     if not identified_resources:
         return "No specific AWS resources identified in template or retrieval context."
 
-    print(f"[RAG Tool] Stage 2: Querying Neo4j for {len(identified_resources)} resources...")
-    final_context_blocks: list[str] = ["## Official AWS CloudFormation Schema Context\n"]
-
-    if property_chunks:
-        final_context_blocks.append(
-            "### Semantically Matched Properties\n" + "\n---\n".join(property_chunks)
-        )
-
-    try:
-        with _neo4j_driver() as driver:
-            seen_neo4j: set[str] = set()
-            for resource in sorted(identified_resources):
-                if resource in seen_neo4j:
-                    print(f"[RAG Tool] Skipping duplicate schema: {resource}")
-                    continue
-                seen_neo4j.add(resource)
-                res_data = query_knowledge_graph(driver, resource)
-                if "error" not in res_data:
-                    final_context_blocks.append(format_prompt_from_neo4j_result(res_data))
-    except Exception as e:
-        print(f"[RAG Tool] Warning: Neo4j retrieval failed. {e}")
+    schema_blocks = _graph_schema_lookup(identified_resources)
+    if not schema_blocks and not property_chunks:
         return "Failed to connect to Knowledge Graph."
 
-    return "\n\n".join(final_context_blocks)
+    return _assemble_retrieval_context(property_chunks, schema_blocks)

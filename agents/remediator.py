@@ -46,9 +46,37 @@ def _get_latest_stage_result(validation_results: list[dict], stage: str) -> dict
 # Policy source context builders (Checkov / Trivy)
 # ---------------------------------------------------------------------------
 
-def _extract_checkov_findings(validation_results: list[dict]) -> list[dict[str, str]]:
+def _extract_security_findings(
+    validation_results: list[dict],
+    stage: str,
+    results_key: str,
+    items_path: list[str],
+) -> list[dict[str, str]]:
+    """Extract check-ID findings from a security tool's raw JSON output.
+
+    Replaces the near-identical _extract_checkov_findings and
+    _extract_trivy_findings functions.  The two callers differ only in which
+    JSON keys to traverse to reach the individual finding objects:
+
+        Checkov: results_key="results", items_path=["failed_checks"]
+                 finding id field: "check_id"
+        Trivy:   results_key="Results", items_path=["Misconfigurations"]
+                 finding id field: "ID"
+
+    Args:
+        validation_results: Full list of ValidationResult dicts from state.
+        stage:              Stage name to look up ("checkov" or "trivy").
+        results_key:        Top-level JSON key for the results object.
+        items_path:         List of nested keys to reach the findings list.
+                            Supports one level of nesting (e.g. ["failed_checks"]
+                            inside data[results_key]) or two levels
+                            (e.g. data[results_key][*][items_path[0]]).
+
+    Returns:
+        List of {"check_id": str} dicts, deduplicated by insertion order.
+    """
     findings: list[dict[str, str]] = []
-    result = _get_latest_stage_result(validation_results, "checkov")
+    result = _get_latest_stage_result(validation_results, stage)
     if not result:
         return findings
 
@@ -58,30 +86,23 @@ def _extract_checkov_findings(validation_results: list[dict]) -> list[dict[str, 
     except json.JSONDecodeError:
         return findings
 
-    for item in data.get("results", {}).get("failed_checks", []):
-        check_id = str(item.get("check_id") or "").strip()
-        if check_id:
-            findings.append({"check_id": check_id})
-    return findings
+    top = data.get(results_key, {})
 
-
-def _extract_trivy_findings(validation_results: list[dict]) -> list[dict[str, str]]:
-    findings: list[dict[str, str]] = []
-    result = _get_latest_stage_result(validation_results, "trivy")
-    if not result:
-        return findings
-
-    raw = result.get("raw_output", "")
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return findings
-
-    for r in data.get("Results", []):
-        for misconfig in r.get("Misconfigurations", []):
-            check_id = str(misconfig.get("ID") or "").strip()
+    # Checkov: data["results"]["failed_checks"] — top is a dict
+    if isinstance(top, dict):
+        for item in top.get(items_path[0], []):
+            check_id = str(item.get("check_id") or "").strip()
             if check_id:
                 findings.append({"check_id": check_id})
+
+    # Trivy: data["Results"] is a list; each element has data["Results"][*][items_path[0]]
+    elif isinstance(top, list):
+        for entry in top:
+            for item in entry.get(items_path[0], []):
+                check_id = str(item.get("ID") or "").strip()
+                if check_id:
+                    findings.append({"check_id": check_id})
+
     return findings
 
 
@@ -123,17 +144,24 @@ def _build_policy_source_context(validation_results: list[dict]) -> str:
     if not allowed_check_ids:
         return ""
 
+    checkov_findings = _extract_security_findings(
+        validation_results,
+        stage="checkov",
+        results_key="results",
+        items_path=["failed_checks"],
+    )
+    trivy_findings = _extract_security_findings(
+        validation_results,
+        stage="trivy",
+        results_key="Results",
+        items_path=["Misconfigurations"],
+    )
+
     checkov_context = get_checkov_policy_context(
-        _filter_findings_by_check_ids(
-            _extract_checkov_findings(validation_results),
-            allowed_check_ids,
-        )
+        _filter_findings_by_check_ids(checkov_findings, allowed_check_ids)
     )
     trivy_context = get_trivy_policy_context(
-        _filter_findings_by_check_ids(
-            _extract_trivy_findings(validation_results),
-            allowed_check_ids,
-        )
+        _filter_findings_by_check_ids(trivy_findings, allowed_check_ids)
     )
 
     sections: list[str] = []
@@ -231,7 +259,7 @@ def _should_include_remediation_context(state: GraphState) -> bool:
     violations (checkov, trivy) — those require policy source context instead.
     """
     validation_results = state.get("validation_results", [])
-    yaml_result = _get_latest_stage_result(validation_results, "yaml")
+    yaml_result     = _get_latest_stage_result(validation_results, "yaml")
     cfn_lint_result = _get_latest_stage_result(validation_results, "cfn-lint")
 
     if yaml_result and not yaml_result.get("passed", True):
@@ -275,12 +303,12 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
 
     # Pull retriever outputs from state — written by retriever_agent in the
     # previous graph node. Keys match exactly what retriever_agent returns.
-    cfn_graph_context = state.get("retriever_context", "")
-    retrieval_queries = state.get("retriever_queries", [])
+    cfn_graph_context  = state.get("retriever_context", "")
+    retrieval_queries  = state.get("retriever_queries", [])
 
     # Guard: only inject heavy context when it is actionable for the error type.
     include_remediation = _should_include_remediation_context(state)
-    include_policy = _should_include_policy_source_context(state)
+    include_policy      = _should_include_policy_source_context(state)
 
     if include_remediation:
         print(
@@ -332,22 +360,22 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     )
 
     new_history_entry: RemediationHistory = {
-        "iteration": iteration,
-        "errors": state["validation_results"],
+        "iteration":        iteration,
+        "errors":           state["validation_results"],
         "formatted_errors": formatted_errors,
-        "suggestion": content,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "cfn_context": cfn_graph_context,
+        "suggestion":       content,
+        "timestamp":        datetime.now(timezone.utc).isoformat(),
+        "cfn_context":      cfn_graph_context,
         "retrieval_queries": retrieval_queries,
     }
 
     print("[Remediator] Suggestions generated. Routing back to Engineer.")
     return {
         "remediation_history": state["remediation_history"] + [new_history_entry],
-        "current_iteration": iteration + 1,
-        "llm_call_log": state["llm_call_log"] + [llm_record],
+        "current_iteration":   iteration + 1,
+        "llm_call_log":        state["llm_call_log"] + [llm_record],
         # Kept for debugging/recording only — not used as LLM context.
-        "remediator_history": append_and_cap(
+        "remediator_history":  append_and_cap(
             state["remediator_history"], user_msg, assistant_msg
         ),
     }
