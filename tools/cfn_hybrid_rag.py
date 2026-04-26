@@ -29,6 +29,7 @@ from functools import lru_cache
 
 import chromadb
 from langchain_chroma import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
 from neo4j import GraphDatabase
 
 from tools.template_annotator import TemplateAnnotation
@@ -77,14 +78,13 @@ Prioritise resources that appear in the errors. Limit to at most 8 queries.
 
 
 @lru_cache(maxsize=1)
-def _get_global_embeddings():
+def _get_global_embeddings() -> HuggingFaceEmbeddings:
     """Lazy-load the embedding model once and cache it for the process lifetime.
 
-    Deferred import intentional: HuggingFaceEmbeddings loads a ~400 MB model
-    on first call. Importing at module level would slow startup even when
-    embeddings are not needed (e.g. unit tests, dry-run mode).
+    HuggingFaceEmbeddings loads a ~400 MB model on first call; the lru_cache
+    ensures that cost is paid only once per process regardless of how many
+    times _get_global_embeddings() is called.
     """
-    from langchain_huggingface import HuggingFaceEmbeddings
     return HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
         model_kwargs={"device": "cpu"},
@@ -307,7 +307,7 @@ def _assemble_retrieval_context(
 # Public retrieval entry point
 # ---------------------------------------------------------------------------
 
-def _execute_hybrid_retrieval(
+def execute_hybrid_retrieval(
     retrieval_queries: list[str],
     seed_resources: set[str],
 ) -> str:

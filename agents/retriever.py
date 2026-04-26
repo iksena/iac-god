@@ -11,9 +11,9 @@ from tools.template_annotator import (
 )
 from tools.cfn_hybrid_rag import (
     QUERY_GEN_SYSTEM,
-    _execute_hybrid_retrieval,
+    execute_hybrid_retrieval,
 )
-from tools.retriever_helpers import _extract_errors, _parse_query_response
+from tools.retriever_helpers import extract_errors, parse_query_response
 from tracking.recorder import ResearchRecorder
 
 
@@ -115,11 +115,10 @@ def build_retrieval_prompt(
 def _call_query_generator(
     user_content: str,
 ) -> tuple[str, str, str, dict | None]:
-    """Send the retrieval prompt to the LLM and parse the query list.
+    """Send the retrieval prompt to the LLM and return the raw response.
 
-    This is a thin wrapper: prompt construction lives in build_retrieval_prompt;
-    parsing lives in _parse_query_response.  This function only owns the
-    LLM call itself.
+    Prompt construction lives in build_retrieval_prompt; response parsing
+    lives in parse_query_response. This function owns only the LLM call.
 
     Returns:
         (model, raw_response, user_content, usage)
@@ -156,7 +155,7 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     iteration = state["current_iteration"]
     print(f"\n[Retriever] Building CFN context (iteration {iteration})...")
 
-    errors = _extract_errors(
+    errors = extract_errors(
         state.get("validation_results", []),
         state.get("deploy_validation_result"),
     )
@@ -177,7 +176,7 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
 
     # Step 3 — Call LLM
     model, raw_response, _, usage = _call_query_generator(user_content)
-    retrieval_queries = _parse_query_response(raw_response) or errors[:8]
+    retrieval_queries = parse_query_response(raw_response) or errors[:8]
 
     llm_record = recorder.record_llm_call(
         state=state,
@@ -190,9 +189,9 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
 
     # Step 4 — Hybrid retrieval
     # extract_resource_types() centralises the annotation → resource-type-set
-    # conversion that previously appeared here AND inside _execute_hybrid_retrieval.
+    # conversion that previously appeared here AND inside execute_hybrid_retrieval.
     seed_resources = extract_resource_types(annotation)
-    cfn_context = _execute_hybrid_retrieval(
+    cfn_context = execute_hybrid_retrieval(
         retrieval_queries=retrieval_queries,
         seed_resources=seed_resources,
     )

@@ -9,7 +9,7 @@ from agents.engineer import engineer_agent
 from agents.validator import validator_agent
 from agents.retriever import retriever_agent
 from agents.remediator import remediator_agent
-from agents.remediator import _should_include_remediation_context
+from agents.remediator import should_include_remediation_context
 from tracking.recorder import ResearchRecorder
 
 def route_after_validator(state: GraphState) -> str:
@@ -22,7 +22,7 @@ def route_after_validator(state: GraphState) -> str:
     if state["current_iteration"] >= state["max_iterations"]:
         print(f"\n⚠️  Max iterations ({state['max_iterations']}) reached. Stopping.")
         return "end"
-    if _should_include_remediation_context(state):
+    if should_include_remediation_context(state):
         return "retriever"
     return "remediator"
 

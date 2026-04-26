@@ -10,6 +10,7 @@ from agents.history_context import _build_remediation_history_context
 from prompts.remediator_prompt import REMEDIATOR_SYSTEM, REMEDIATOR_USER
 from tools.checkov_context import get_checkov_policy_context
 from tools.trivy_context import get_trivy_policy_context
+from tools.retriever_helpers import get_latest_stage_result
 from tracking.recorder import ResearchRecorder
 
 
@@ -19,7 +20,12 @@ from tracking.recorder import ResearchRecorder
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
     seen: set[str] = set()
-    return [seen.add(x) or x for x in items if x not in seen]  # type: ignore[func-returns-value]
+    result: list[str] = []
+    for x in items:
+        if x not in seen:
+            seen.add(x)
+            result.append(x)
+    return result
 
 
 def _extract_check_ids_from_errors(errors: list[object]) -> set[str]:
@@ -33,13 +39,6 @@ def _extract_check_ids_from_errors(errors: list[object]) -> set[str]:
         for match in re.findall(r"\bCKV2?_[A-Z0-9_]+\b", text, flags=re.IGNORECASE):
             check_ids.add(match.strip().upper())
     return check_ids
-
-
-def _get_latest_stage_result(validation_results: list[dict], stage: str) -> dict | None:
-    for result in reversed(validation_results):
-        if result.get("stage") == stage:
-            return result
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +75,7 @@ def _extract_security_findings(
         List of {"check_id": str} dicts, deduplicated by insertion order.
     """
     findings: list[dict[str, str]] = []
-    result = _get_latest_stage_result(validation_results, stage)
+    result = get_latest_stage_result(validation_results, stage)
     if not result:
         return findings
 
@@ -252,15 +251,15 @@ def _build_validation_errors_text(state: GraphState) -> str:
 # Context inclusion guards
 # ---------------------------------------------------------------------------
 
-def _should_include_remediation_context(state: GraphState) -> bool:
+def should_include_remediation_context(state: GraphState) -> bool:
     """Return True only for YAML, cfn-lint, or deploy failures.
 
     CFN schema retrieval context is not useful for pure security policy
     violations (checkov, trivy) — those require policy source context instead.
     """
     validation_results = state.get("validation_results", [])
-    yaml_result     = _get_latest_stage_result(validation_results, "yaml")
-    cfn_lint_result = _get_latest_stage_result(validation_results, "cfn-lint")
+    yaml_result     = get_latest_stage_result(validation_results, "yaml")
+    cfn_lint_result = get_latest_stage_result(validation_results, "cfn-lint")
 
     if yaml_result and not yaml_result.get("passed", True):
         return True
@@ -282,7 +281,7 @@ def _should_include_policy_source_context(state: GraphState) -> bool:
     """Return True for Trivy/Checkov failures."""
     validation_results = state.get("validation_results", [])
     for stage in ("trivy", "checkov"):
-        result = _get_latest_stage_result(validation_results, stage)
+        result = get_latest_stage_result(validation_results, stage)
         if result and not result.get("passed", True):
             return True
     return False
@@ -307,7 +306,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     retrieval_queries  = state.get("retriever_queries", [])
 
     # Guard: only inject heavy context when it is actionable for the error type.
-    include_remediation = _should_include_remediation_context(state)
+    include_remediation = should_include_remediation_context(state)
     include_policy      = _should_include_policy_source_context(state)
 
     if include_remediation:

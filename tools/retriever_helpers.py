@@ -20,7 +20,19 @@ import re
 SECURITY_STAGES = {"checkov", "trivy"}
 
 
-def _extract_errors(
+def get_latest_stage_result(validation_results: list[dict], stage: str) -> dict | None:
+    """Return the most recent ValidationResult for *stage*, or None if absent.
+
+    Pure state-shape accessor with no module-specific logic — reusable by any
+    module that needs to inspect validation stage results.
+    """
+    for result in reversed(validation_results):
+        if result.get("stage") == stage:
+            return result
+    return None
+
+
+def extract_errors(
     validation_results: list[dict],
     deploy_validation_result: dict | None,
 ) -> list[str]:
@@ -52,7 +64,7 @@ def _extract_errors(
     return errors
 
 
-def _parse_query_response(raw: str, max_queries: int = 8) -> list[str]:
+def parse_query_response(raw: str, max_queries: int = 8) -> list[str]:
     """Parse the LLM's query-generation response.
 
     Accepts both {"queries": [...]} object form and bare [...] array form.
