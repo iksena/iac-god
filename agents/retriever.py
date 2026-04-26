@@ -61,13 +61,11 @@ def build_retrieval_prompt(
     """Assemble the single user-turn message for the query-generation LLM call.
 
     Sections (in order):
-      1. Validation errors (cfn-lint + deployment; security stages already filtered
-         by extract_errors()).
-      2. Annotated CloudFormation template — ONLY included when errors carry line
-         numbers (cfn-lint), because annotation anchors errors to specific lines.
-         Falls back to a plain template snippet when no line numbers are present.
-      3. Prior retrieval-query history so the LLM generates diverse queries across
-         iterations and avoids redundant Resource.Property lookups.
+      1. Validation errors.
+      2. Annotated template (only when errors have cfn-lint line numbers) or
+         plain template fallback.
+      3. Prior retrieval-query history from remediation_history, so the LLM
+         avoids repeating Resource.Property lookups already covered.
 
     Pure function — no I/O, no LLM calls, fully unit-testable.
     """
@@ -75,7 +73,6 @@ def build_retrieval_prompt(
         "## Validation Errors\n" + "\n".join(f"- {e}" for e in errors)
     ]
 
-    # Template block: annotated view only when errors have line numbers.
     if annotation and annotation.resources and _errors_have_line_numbers(errors):
         annotated_yaml = render_annotated_template(
             annotation=annotation,
@@ -97,7 +94,6 @@ def build_retrieval_prompt(
             f"```yaml\n{template_yaml}\n```"
         )
 
-    # Prior retrieval history block.
     history_lines: list[str] = []
     for entry in remediation_history:
         if not entry.get("retrieval_queries"):
@@ -138,12 +134,12 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
 
     Orchestration steps:
       1. Extract cfn-lint + deploy errors (security stages excluded by extract_errors).
-      2. Annotate the template ONLY when errors carry line numbers — cfn-lint
-         embeds line:col refs; deploy/YAML errors do not.
+      2. Annotate the template ONLY when errors carry line numbers.
       3. Build the single-turn retrieval prompt (pure, no I/O).
       4. Call the LLM to generate targeted schema queries.
       5. Execute ChromaDB (semantic) + Neo4j (graph) hybrid retrieval.
-      6. Return retriever_context and retriever_queries into state.
+      6. Append this invocation to retriever_history.txt via the recorder.
+      7. Return retriever_context and retriever_queries into state.
     """
     iteration = state["current_iteration"]
     print(f"\n[Retriever] Building CFN context (iteration {iteration})...")
@@ -153,18 +149,16 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         state.get("deploy_validation_result"),
     )
 
-    # Step 2 — Annotate only when at least one error carries a line number.
     if _errors_have_line_numbers(errors):
         annotation = _annotate_safely(
             template_yaml=state.get("cloudformation_template", ""),
             smell_report=state.get("smell_report"),
         )
-        print("[Retriever] Line numbers detected — annotated template will be included in prompt.")
+        print("[Retriever] Line numbers detected — annotated template included in prompt.")
     else:
         annotation = None
-        print("[Retriever] No line numbers in errors — skipping annotation; plain template used.")
+        print("[Retriever] No line numbers in errors — plain template used.")
 
-    # Step 3 — Build prompt
     user_content = build_retrieval_prompt(
         errors=errors,
         template_yaml=state.get("cloudformation_template"),
@@ -172,7 +166,6 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         remediation_history=state.get("remediation_history", []),
     )
 
-    # Step 4 — Call LLM
     model, raw_response, _, usage = _call_query_generator(user_content)
     retrieval_queries = parse_query_response(raw_response) or errors[:8]
 
@@ -185,11 +178,21 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         token_usage=usage,
     )
 
-    # Step 5 — Hybrid retrieval
     seed_resources = extract_resource_types(annotation)
     cfn_context = execute_hybrid_retrieval(
         retrieval_queries=retrieval_queries,
         seed_resources=seed_resources,
+    )
+
+    # Append this invocation to retriever_history.txt. The retriever has no
+    # rolling conversation history, so the recorder appends a fresh dated block
+    # for every call instead of overwriting the file.
+    recorder.append_retriever_history_entry(
+        iteration=iteration,
+        prompt=f"SYSTEM:\n{QUERY_GEN_SYSTEM}\n\nUSER:\n{user_content}",
+        response=raw_response,
+        retrieval_queries=retrieval_queries,
+        context_chars=len(cfn_context),
     )
 
     print(

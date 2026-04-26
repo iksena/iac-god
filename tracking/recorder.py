@@ -1,4 +1,3 @@
-# tracking/recorder.py
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -41,6 +40,7 @@ def _extract_policy_metrics(validation_results: list[dict]) -> dict:
         "filtered_compliance_rate": scenario_fcr,
     }
 
+
 class ResearchRecorder:
     def __init__(self, run_id: str, output_dir: str = "./runs"):
         self.run_id = run_id
@@ -65,7 +65,6 @@ class ResearchRecorder:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "token_usage": token_usage,
         }
-        # Append to JSONL file for streaming access
         with open(self.output_dir / "llm_calls.jsonl", "a") as f:
             f.write(json.dumps(record) + "\n")
         return record
@@ -87,7 +86,6 @@ class ResearchRecorder:
             "outputs": outputs or {},
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
-        # Append to JSONL file for streaming access
         with open(self.output_dir / "tool_calls.jsonl", "a") as f:
             f.write(json.dumps(record) + "\n")
         return record
@@ -109,10 +107,62 @@ class ResearchRecorder:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         snapshot_path.write_text(json.dumps(snapshot, indent=2))
-        self._write_agent_history("planner", state["planner_history"])
-        self._write_agent_history("engineer", state["engineer_history"])
-        self._write_agent_history("remediator", state["remediator_history"])
-        self._write_agent_history("retriever", state.get("retriever_history", []))
+
+        # Conversation-history agents: overwrite with the latest full history
+        # on every snapshot (the history list IS the source of truth).
+        for agent in ("planner", "engineer", "remediator"):
+            self._write_agent_history(agent, state.get(f"{agent}_history", []))
+
+        # Retriever has no rolling conversation history — each invocation is a
+        # fresh single-turn call. Its history is appended live by
+        # append_retriever_history_entry(); nothing to do here.
+
+    def append_retriever_history_entry(
+        self,
+        iteration: int,
+        prompt: str,
+        response: str,
+        retrieval_queries: list[str],
+        context_chars: int,
+    ) -> None:
+        """Append one retriever invocation to retriever_history.txt.
+
+        Unlike conversation-history agents (planner, engineer, remediator)
+        whose history files are rewritten wholesale on every snapshot, the
+        retriever's history file is append-only. Each call to this method
+        writes a single dated block so no prior invocation is lost.
+
+        Args:
+            iteration:         Graph iteration number at time of call.
+            prompt:            Full prompt sent to the query-generation LLM.
+            response:          Raw LLM response (JSON with retrieval_queries).
+            retrieval_queries: Parsed query list actually used for retrieval.
+            context_chars:     Character count of the assembled CFN context.
+        """
+        history_path = self.output_dir / "retriever_history.txt"
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        queries_str = (
+            "\n".join(f"  {i+1}. {q}" for i, q in enumerate(retrieval_queries))
+            if retrieval_queries
+            else "  (none — fell back to raw error strings)"
+        )
+
+        block = (
+            f"{'=' * 72}\n"
+            f"Iteration : {iteration}\n"
+            f"Timestamp : {timestamp}\n"
+            f"Run ID    : {self.run_id}\n"
+            f"Context   : {context_chars} chars assembled\n"
+            f"Queries   :\n{queries_str}\n"
+            f"{'- ' * 36}\n"
+            f"[prompt]\n{prompt}\n"
+            f"{'- ' * 36}\n"
+            f"[response]\n{response}\n"
+        )
+
+        with open(history_path, "a", encoding="utf-8") as fh:
+            fh.write(block)
 
     def save_final_report(self, state: GraphState):
         """Save complete research report at end of run."""
@@ -130,7 +180,6 @@ class ResearchRecorder:
             "validation_results": state["validation_results"],
             "policy_metrics": policy_metrics,
             "deploy_validation_result": state.get("deploy_validation_result"),
-            "retriever_history": state.get("retriever_history", []),
         }
         (self.output_dir / "final_report.json").write_text(
             json.dumps(report, indent=2)
@@ -138,6 +187,12 @@ class ResearchRecorder:
         print(f"\n[Recorder] Run complete. Report saved to: {self.output_dir}/final_report.json")
 
     def _write_agent_history(self, agent: str, history: list[dict]) -> None:
+        """Overwrite <agent>_history.txt with the full formatted conversation.
+
+        Correct for agents with a rolling conversation list (planner, engineer,
+        remediator) because the list itself accumulates all turns.
+        NOT used for the retriever — use append_retriever_history_entry() instead.
+        """
         history_path = self.output_dir / f"{agent}_history.txt"
         history_path.write_text(
             self._format_history(agent, history),

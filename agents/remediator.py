@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 
 from state import GraphState, RemediationHistory, Message, append_and_cap
 from agents.llm_client import _build_client, _call_llm_with_history
-from agents.history_context import _build_remediation_history_context
 from prompts.remediator_prompt import REMEDIATOR_SYSTEM, REMEDIATOR_USER
 from tools.checkov_context import get_checkov_policy_context
 from tools.trivy_context import get_trivy_policy_context
@@ -51,11 +50,7 @@ def _extract_security_findings(
     results_key: str,
     items_path: list[str],
 ) -> list[dict[str, str]]:
-    """Extract check-ID findings from a security tool's raw JSON output.
-
-    Checkov: results_key="results", items_path=["failed_checks"]
-    Trivy:   results_key="Results", items_path=["Misconfigurations"]
-    """
+    """Extract check-ID findings from a security tool's raw JSON output."""
     findings: list[dict[str, str]] = []
     result = get_latest_stage_result(validation_results, stage)
     if not result:
@@ -159,31 +154,13 @@ def _build_policy_source_context(validation_results: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 def _format_cfn_lint_errors(errors: list[str]) -> str:
-    """Format cfn-lint errors as a structured, readable list.
-
-    cfn-lint errors typically follow the pattern:
-        [RULE_ID] path/to/resource: message (line:col)
-
-    We normalise them to:
-        - [E3001] Resources/MyBucket/Type: Invalid resource type (line 12)
-    """
     lines: list[str] = []
     for err in errors:
-        # cfn-lint already includes rule ID, path, and line ref — emit as-is
-        # but ensure consistent bullet style.
         lines.append(f"  - {err.strip()}")
     return "\n".join(lines)
 
 
 def _format_deploy_errors(deploy_result: dict) -> str:
-    """Format deployment validation result into an informative error block.
-
-    Renders in order:
-      1. Failed resources with their logical ID + status reason.
-      2. General error message (when no per-resource breakdown is available).
-      3. Successfully completed resources (context for the remediator).
-      4. Actionable deployment event log lines filtered by error keywords.
-    """
     target = deploy_result.get("target", "unknown").upper()
     lines: list[str] = [f"**Target:** {target}"]
 
@@ -219,20 +196,13 @@ def _format_deploy_errors(deploy_result: dict) -> str:
         for log_line in deploy_logs[-5:]:
             lines.append(f"  - {log_line}")
 
-    if len(lines) == 1:  # only the target header
+    if len(lines) == 1:
         lines.append("Deployment failed with no structured error details.")
 
     return "\n".join(lines)
 
 
 def _build_validation_errors_text(state: GraphState) -> str:
-    """Build the full validation error section for the remediator user prompt.
-
-    cfn-lint and deployment errors are formatted with dedicated helpers so
-    both sections carry the same level of structural detail:
-      - cfn-lint: rule ID, resource path, line reference.
-      - deploy:   logical resource ID, status reason, filtered event log.
-    """
     error_blocks: list[str] = []
 
     validation_results = state.get("validation_results", [])
@@ -304,7 +274,6 @@ def should_include_remediation_context(state: GraphState) -> bool:
 
 
 def _should_include_policy_source_context(state: GraphState) -> bool:
-    """Return True for Trivy/Checkov failures."""
     validation_results = state.get("validation_results", [])
     for stage in ("trivy", "checkov"):
         result = get_latest_stage_result(validation_results, stage)
@@ -347,23 +316,31 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         else ""
     )
 
-    remediation_history_context = _build_remediation_history_context(
-        state.get("remediation_history", [])
-    )
-
     formatted_errors = _build_validation_errors_text(state)
+
+    # NOTE: remediation_history_context is intentionally NOT passed here.
+    # The remediator maintains a rolling conversation history (remediator_history)
+    # that is fed directly to the LLM via _call_llm_with_history(). Injecting a
+    # separately-formatted history text block into the user prompt would
+    # double-count prior iterations and waste tokens.
     user_content = REMEDIATOR_USER.format(
         iteration=iteration,
         template=state["cloudformation_template"],
         validation_errors=formatted_errors,
         policy_source_context=policy_source_context,
         cfn_graph_context=cfn_graph_context,
-        remediation_history_context=remediation_history_context,
     )
     user_msg: Message = {"role": "user", "content": user_content}
 
     client, model = _build_client()
-    content, usage = _call_llm_with_history(client, model, system, [user_msg])
+    content, usage = _call_llm_with_history(
+        client,
+        model,
+        system,
+        # Pass the full rolling conversation history so the LLM sees all prior
+        # iterations without us duplicating it in the user turn text.
+        state.get("remediator_history", []) + [user_msg],
+    )
     assistant_msg: Message = {"role": "assistant", "content": content}
 
     llm_record = recorder.record_llm_call(

@@ -4,9 +4,12 @@ ChromaDB + Neo4j hybrid retrieval for CloudFormation schema context.
 
 Retrieval runs in two sequential stages:
   Stage 1 — _semantic_search():        ChromaDB similarity search over pre-indexed
-                                        CFN property chunks. Returns chunks GROUPED
-                                        by resource name and any resource names
-                                        surfaced by chunk metadata.
+                                        CFN property chunks. Only chunks whose
+                                        cosine similarity score meets or exceeds
+                                        CHROMA_SIMILARITY_THRESHOLD are kept,
+                                        preventing loosely-related properties from
+                                        polluting the remediator context.
+                                        Results are grouped by resource name.
   Stage 2 — _graph_schema_lookup():    Neo4j Cypher traversal for each identified
                                         resource. Returns structured schema blocks
                                         (required properties, capped optional
@@ -32,7 +35,7 @@ from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from neo4j import GraphDatabase
 
-# Re-export so existing callers of
+# Re-export for back-compat: existing callers of
 #   from tools.cfn_hybrid_rag import QUERY_GEN_SYSTEM
 # continue to work without modification.
 from prompts.retriever_prompt import QUERY_GEN_SYSTEM  # noqa: F401
@@ -46,9 +49,28 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 
+# ---------------------------------------------------------------------------
+# Tuneable constants
+# ---------------------------------------------------------------------------
+
+# Cosine similarity floor for Chroma property chunks.
+# Chunks with a relevance score below this threshold are considered too
+# loosely related to the retrieval query and are dropped before they reach
+# the remediator context.
+#
+# Rationale for 0.45:
+#   - all-mpnet-base-v2 cosine similarities for CloudFormation property text
+#     cluster around 0.3–0.5 for related-but-not-exact matches and 0.5–0.8
+#     for directly relevant schema fragments.
+#   - 0.45 sits just above the "topically similar but wrong resource" band,
+#     keeping concise, high-signal chunks and discarding peripheral ones.
+#   - Tune upward (e.g. 0.55) if the remediator context is still noisy;
+#     tune downward (e.g. 0.35) if recall feels too low on uncommon resources.
+CHROMA_SIMILARITY_THRESHOLD: float = float(
+    os.getenv("CHROMA_SIMILARITY_THRESHOLD", "0.45")
+)
+
 # Maximum number of optional properties shown per resource in the Neo4j block.
-# Keeping this low prevents the context from being dominated by rarely-used
-# optional fields that are irrelevant to the current errors.
 _MAX_OPTIONAL_PROPS = 10
 
 
@@ -80,11 +102,7 @@ def _clean_chroma_chunk(content: str) -> str:
 # ---------------------------------------------------------------------------
 
 def format_prompt_from_neo4j_result(resource_data: dict) -> str:
-    """Format Neo4j schema data into a concise single-block prompt section.
-
-    Optional properties are capped at _MAX_OPTIONAL_PROPS (10) to keep the
-    context block focused on the properties most likely to appear in errors.
-    """
+    """Format Neo4j schema data into a concise single-block prompt section."""
     if "error" in resource_data:
         return f"# {resource_data['error']}"
 
@@ -179,13 +197,15 @@ def _semantic_search(
 ) -> tuple[dict[str, list[str]], set[str]]:
     """Run ChromaDB similarity search for all retrieval queries.
 
+    Uses similarity_search_with_relevance_scores() instead of
+    similarity_search() so each chunk comes paired with its cosine similarity
+    score. Chunks whose score is below CHROMA_SIMILARITY_THRESHOLD are
+    discarded before they reach the remediator context.
+
     Returns:
-        chunks_by_resource: Dict mapping resource_name → list of cleaned property
-                            text chunks for that resource. Chunks from different
-                            queries that share the same resource are grouped together
-                            so _assemble_retrieval_context can render one sub-section
-                            per resource instead of a flat interleaved list.
-        found_resources:    Set of AWS resource type names surfaced from metadata.
+        chunks_by_resource: Dict mapping resource_name → list of cleaned
+                            property text chunks that passed the threshold.
+        found_resources:    Set of AWS resource type names from passing chunks.
     """
     chunks_by_resource: dict[str, list[str]] = defaultdict(list)
     found_resources: set[str] = set()
@@ -202,8 +222,17 @@ def _semantic_search(
         )
 
         seen_prop_keys: set[str] = set()
+        dropped = 0
+
         for query in retrieval_queries:
-            for chunk in vectorstore.similarity_search(query, k=3):
+            scored_chunks = vectorstore.similarity_search_with_relevance_scores(
+                query, k=3
+            )
+            for chunk, score in scored_chunks:
+                if score < CHROMA_SIMILARITY_THRESHOLD:
+                    dropped += 1
+                    continue
+
                 meta = chunk.metadata
                 res  = meta.get("resource_name", "") or "_unknown"
                 prop = meta.get("property_name", "") or meta.get("property_path", "")
@@ -214,11 +243,20 @@ def _semantic_search(
                 if prop_key in seen_prop_keys:
                     continue
                 seen_prop_keys.add(prop_key)
+
                 cleaned = _clean_chroma_chunk(chunk.page_content)
                 if cleaned:
                     chunks_by_resource[res].append(cleaned)
                 if res and res != "_unknown":
                     found_resources.add(res)
+
+        total = sum(len(v) for v in chunks_by_resource.values()) + dropped
+        print(
+            f"[RAG Tool] Stage 1: {total} chunks retrieved, "
+            f"{dropped} dropped (score < {CHROMA_SIMILARITY_THRESHOLD}), "
+            f"{sum(len(v) for v in chunks_by_resource.values())} kept."
+        )
+
     except Exception as exc:
         print(f"[RAG Tool] Warning: ChromaDB Semantic Search failed. {exc}")
 
@@ -230,11 +268,7 @@ def _semantic_search(
 # ---------------------------------------------------------------------------
 
 def _graph_schema_lookup(resources: set[str]) -> list[str]:
-    """Fetch full schema blocks for each resource from Neo4j.
-
-    Returns a list of formatted schema block strings (one per resource).
-    Returns an empty list on connection failure.
-    """
+    """Fetch full schema blocks for each resource from Neo4j."""
     schema_blocks: list[str] = []
 
     if not resources:
@@ -267,10 +301,6 @@ def _assemble_retrieval_context(
 ) -> str:
     """Merge grouped Chroma chunks and Neo4j schema blocks into a single
     context string for the remediator prompt.
-
-    Chroma chunks are rendered one sub-section per resource so the remediator
-    can immediately associate each property snippet with its resource type,
-    rather than scanning an interleaved flat list.
     """
     final_blocks: list[str] = ["## Official AWS CloudFormation Schema Context\n"]
 
