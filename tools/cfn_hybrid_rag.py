@@ -5,10 +5,10 @@ ChromaDB + Neo4j hybrid retrieval for CloudFormation schema context.
 Retrieval runs in two sequential stages:
   Stage 1 — _semantic_search():        ChromaDB similarity search over pre-indexed
                                         CFN property chunks. Only chunks whose
-                                        cosine similarity score meets or exceeds
-                                        CHROMA_SIMILARITY_THRESHOLD are kept,
-                                        preventing loosely-related properties from
-                                        polluting the remediator context.
+                                        raw distance score is AT OR BELOW
+                                        CHROMA_DISTANCE_THRESHOLD are kept.
+                                        Lower score = more similar (raw cosine/L2
+                                        distance space — no LangChain normalisation).
                                         Results are grouped by resource name.
   Stage 2 — _graph_schema_lookup():    Neo4j Cypher traversal for each identified
                                         resource. Returns structured schema blocks
@@ -53,21 +53,30 @@ CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 # Tuneable constants
 # ---------------------------------------------------------------------------
 
-# Cosine similarity floor for Chroma property chunks.
-# Chunks with a relevance score below this threshold are considered too
-# loosely related to the retrieval query and are dropped before they reach
-# the remediator context.
+# Raw distance floor for Chroma property chunks.
 #
-# Rationale for 0.45:
-#   - all-mpnet-base-v2 cosine similarities for CloudFormation property text
-#     cluster around 0.3–0.5 for related-but-not-exact matches and 0.5–0.8
-#     for directly relevant schema fragments.
-#   - 0.45 sits just above the "topically similar but wrong resource" band,
-#     keeping concise, high-signal chunks and discarding peripheral ones.
-#   - Tune upward (e.g. 0.55) if the remediator context is still noisy;
-#     tune downward (e.g. 0.35) if recall feels too low on uncommon resources.
-CHROMA_SIMILARITY_THRESHOLD: float = float(
-    os.getenv("CHROMA_SIMILARITY_THRESHOLD", "0.45")
+# similarity_search_with_score() returns the raw underlying distance (cosine
+# or L2 depending on the collection's distance function), NOT a normalised
+# relevance score. The relationship is: LOWER score = MORE similar.
+#
+# Using raw distance avoids the LangChain UserWarning:
+#   "Relevance scores must be between 0 and 1, got [...]"
+# which fires when similarity_search_with_relevance_scores() normalises values
+# outside [0, 1] for certain distance configurations.
+#
+# Rationale for 0.55 (cosine distance space):
+#   - all-mpnet-base-v2 cosine distances for CloudFormation property text:
+#       0.0–0.3  → near-exact match (same resource, same property)
+#       0.3–0.55 → topically related (correct resource, adjacent property)
+#       0.55–0.8 → loosely related  (same service area, different resource)
+#       0.8+     → unrelated
+#   - 0.55 keeps the top two bands and discards peripheral chunks.
+#   - Tune DOWNWARD (e.g. 0.40) for higher precision (fewer, more exact chunks).
+#   - Tune UPWARD   (e.g. 0.70) for higher recall   (more chunks, more noise).
+#
+# Override at runtime: CHROMA_DISTANCE_THRESHOLD=0.50 python main.py
+CHROMA_DISTANCE_THRESHOLD: float = float(
+    os.getenv("CHROMA_DISTANCE_THRESHOLD", "0.55")
 )
 
 # Maximum number of optional properties shown per resource in the Neo4j block.
@@ -197,10 +206,13 @@ def _semantic_search(
 ) -> tuple[dict[str, list[str]], set[str]]:
     """Run ChromaDB similarity search for all retrieval queries.
 
-    Uses similarity_search_with_relevance_scores() instead of
-    similarity_search() so each chunk comes paired with its cosine similarity
-    score. Chunks whose score is below CHROMA_SIMILARITY_THRESHOLD are
-    discarded before they reach the remediator context.
+    Uses similarity_search_with_score() which returns the raw underlying
+    distance (cosine or L2) without LangChain normalisation. This avoids the
+    UserWarning fired by similarity_search_with_relevance_scores() when the
+    collection's distance metric produces values outside [0, 1].
+
+    Chunks are KEPT when their score is AT OR BELOW CHROMA_DISTANCE_THRESHOLD
+    (lower score = more similar in distance space).
 
     Returns:
         chunks_by_resource: Dict mapping resource_name → list of cleaned
@@ -222,14 +234,15 @@ def _semantic_search(
         )
 
         seen_prop_keys: set[str] = set()
+        kept = 0
         dropped = 0
 
         for query in retrieval_queries:
-            scored_chunks = vectorstore.similarity_search_with_relevance_scores(
-                query, k=3
-            )
+            # similarity_search_with_score returns (Document, raw_distance).
+            # Lower raw_distance → closer match. Keep chunks <= threshold.
+            scored_chunks = vectorstore.similarity_search_with_score(query, k=3)
             for chunk, score in scored_chunks:
-                if score < CHROMA_SIMILARITY_THRESHOLD:
+                if score > CHROMA_DISTANCE_THRESHOLD:
                     dropped += 1
                     continue
 
@@ -247,14 +260,14 @@ def _semantic_search(
                 cleaned = _clean_chroma_chunk(chunk.page_content)
                 if cleaned:
                     chunks_by_resource[res].append(cleaned)
+                    kept += 1
                 if res and res != "_unknown":
                     found_resources.add(res)
 
-        total = sum(len(v) for v in chunks_by_resource.values()) + dropped
         print(
-            f"[RAG Tool] Stage 1: {total} chunks retrieved, "
-            f"{dropped} dropped (score < {CHROMA_SIMILARITY_THRESHOLD}), "
-            f"{sum(len(v) for v in chunks_by_resource.values())} kept."
+            f"[RAG Tool] Stage 1: {kept + dropped} chunks retrieved, "
+            f"{dropped} dropped (distance > {CHROMA_DISTANCE_THRESHOLD}), "
+            f"{kept} kept."
         )
 
     except Exception as exc:

@@ -16,18 +16,34 @@ from tools.cfn_hybrid_rag import execute_hybrid_retrieval
 from tools.retriever_helpers import extract_errors, parse_query_response
 from tracking.recorder import ResearchRecorder
 
-# Matches cfn-lint line references such as ":12" or ":12:3" embedded in error strings.
-_LINE_REF_RE = re.compile(r":\d+(:\d+)?")
+# ---------------------------------------------------------------------------
+# Line-number detection
+# ---------------------------------------------------------------------------
+
+# Pattern 1: colon-separated line references emitted by some validators
+#   e.g. "Resources/Bucket/Type:12:3" or "template.yaml:45"
+_COLON_LINE_RE = re.compile(r":\d+(:\d+)?")
+
+# Pattern 2: cfn-lint dict-repr location embedded in the error string
+#   e.g. "{'ColumnNumber': 7, 'LineNumber': 115}"
+#   cfn-lint serialises its Location namedtuple via str(), producing this format.
+_DICT_LINE_RE = re.compile(r"'LineNumber'\s*:\s*\d+")
 
 
 def _errors_have_line_numbers(errors: list[str]) -> bool:
-    """Return True if at least one error string contains a line:col reference.
+    """Return True if at least one error string contains a line number reference.
 
-    cfn-lint errors embed line numbers (e.g. 'Resources/Bucket/Type:12:3').
-    Deployment and YAML errors do not — annotation against line numbers adds
-    no signal when those are the only failures present.
+    Handles two formats emitted by different validators:
+      - Colon-separated: 'Resources/Bucket/Type:12:3'  (generic validators)
+      - Dict-repr:       "{'LineNumber': 115, ...}"     (cfn-lint)
+
+    Deployment and YAML parse errors do not carry line numbers, so annotation
+    against line numbers adds no signal when those are the only failures present.
     """
-    return any(_LINE_REF_RE.search(e) for e in errors)
+    for e in errors:
+        if _COLON_LINE_RE.search(e) or _DICT_LINE_RE.search(e):
+            return True
+    return False
 
 
 def _annotate_safely(
