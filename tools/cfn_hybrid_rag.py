@@ -1,6 +1,14 @@
+"""tools/cfn_hybrid_rag.py
+
+ChromaDB + Neo4j hybrid retrieval for CloudFormation schema context.
+
+Dependency direction (strictly unidirectional, no cycles):
+  retriever_agent  →  cfn_hybrid_rag  →  template_annotator (type hints only)
+  retriever_agent  →  retriever_helpers  (no DB deps)
+  cfn_hybrid_rag   does NOT import from agents/
+"""
 from __future__ import annotations
 
-import json
 import os
 import re
 from contextlib import contextmanager
@@ -10,19 +18,10 @@ import chromadb
 from langchain_chroma import Chroma
 from neo4j import GraphDatabase
 
-# TemplateAnnotation is imported only for type hints — no logic depends on
-# the annotator internals, keeping the coupling unidirectional:
-#   retriever -> template_annotator
-#   retriever -> cfn_hybrid_rag
-#   cfn_hybrid_rag does NOT import from retriever
 from tools.template_annotator import TemplateAnnotation
-
 
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 
-# ---------------------------------------------------------------------------
-# Environment Variables
-# ---------------------------------------------------------------------------
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
@@ -31,15 +30,8 @@ CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 
 # ---------------------------------------------------------------------------
-# Security stage filter constant
-# ---------------------------------------------------------------------------
-# Validation stages that emit security policy violations (checkov, trivy).
-# These do not benefit from CFN schema retrieval — the remediator already knows
-# the fix (e.g. enable encryption) without needing property-level schema context.
-SECURITY_STAGES = {"checkov", "trivy"}
-
-# ---------------------------------------------------------------------------
 # Query-generation system prompt
+# (consumed by retriever_agent; defined here to keep all RAG concerns together)
 # ---------------------------------------------------------------------------
 QUERY_GEN_SYSTEM = """\
 You are an AWS CloudFormation schema expert. You are given:
@@ -75,9 +67,9 @@ Prioritise resources that appear in the errors. Limit to at most 8 queries.
 def _get_global_embeddings():
     """Lazy-load the embedding model once and cache it for the process lifetime.
 
-    Kept as a deferred import intentionally: HuggingFaceEmbeddings loads a
-    ~400 MB model on first call. Importing at module level would slow startup
-    even when the embeddings are not needed (e.g. unit tests, dry-run mode).
+    Deferred import intentional: HuggingFaceEmbeddings loads a ~400 MB model
+    on first call. Importing at module level would slow startup even when
+    embeddings are not needed (e.g. unit tests, dry-run mode).
     """
     from langchain_huggingface import HuggingFaceEmbeddings
     return HuggingFaceEmbeddings(
@@ -101,20 +93,14 @@ def _clean_chroma_chunk(content: str) -> str:
     """
     content = _DOC_LINK_RE.sub("", content)
     content = _DESCRIPTION_RE.sub("", content)
-    content = re.sub(r"\n{3,}", "\n\n", content).strip()
-    return content
+    return re.sub(r"\n{3,}", "\n\n", content).strip()
 
 
 # ---------------------------------------------------------------------------
-# Neo4j formatter
+# Neo4j helpers
 # ---------------------------------------------------------------------------
 def format_prompt_from_neo4j_result(resource_data: dict) -> str:
-    """Format Neo4j schema data into a concise single-block prompt section.
-
-    - Resource description omitted (not actionable for the remediator)
-    - Required and optional properties rendered as single comma-separated lines
-    - Optional properties capped at 20 to keep token budget lean
-    """
+    """Format Neo4j schema data into a concise single-block prompt section."""
     if "error" in resource_data:
         return f"# {resource_data['error']}"
 
@@ -188,72 +174,6 @@ def query_knowledge_graph(driver, resource_name: str) -> dict:
         }
 
 
-# ---------------------------------------------------------------------------
-# Helper methods
-# ---------------------------------------------------------------------------
-def _extract_errors(
-    validation_results: list[dict],
-    deploy_validation_result: dict | None,
-) -> list[str]:
-    """Extract a flat list of error strings from the validation state.
-
-    Security stages (checkov, trivy) are excluded — their findings are policy
-    violations, not schema errors, and do not require CFN schema retrieval.
-    """
-    errors: list[str] = []
-
-    for result in validation_results:
-        stage = str(result.get("stage") or "").strip().lower()
-        if stage in SECURITY_STAGES:
-            continue
-        if not result.get("passed"):
-            for err in result.get("errors", []):
-                if str(err).strip():
-                    errors.append(str(err))
-
-    if deploy_validation_result and not deploy_validation_result.get("passed"):
-        if deploy_validation_result.get("error_message"):
-            errors.append(deploy_validation_result["error_message"])
-        for fr in deploy_validation_result.get("failed_resources", []):
-            name = fr.get("logical_name") or fr.get("resource") or ""
-            reason = fr.get("status_reason") or fr.get("reason") or ""
-            if name or reason:
-                errors.append(f"{name} {reason}")
-
-    return errors
-
-
-def _parse_query_response(raw: str, max_queries: int = 8) -> list[str]:
-    """Parse the LLM's query-generation response.
-
-    Accepts both {"queries": [...]} object form and bare [...] array form.
-    Strips markdown fences before parsing.
-    """
-    cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().removesuffix("```").strip()
-
-    try:
-        parsed = json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        print(f"[RAG Tool] Query parse error (JSONDecodeError): {e}. Raw: {cleaned[:200]}")
-        return []
-
-    if isinstance(parsed, dict):
-        queries = parsed.get("queries") or parsed.get("query") or []
-    elif isinstance(parsed, list):
-        queries = parsed
-    else:
-        print(f"[RAG Tool] Unexpected query response type: {type(parsed)}")
-        return []
-
-    if not isinstance(queries, list):
-        print(f"[RAG Tool] 'queries' field is not a list: {queries}")
-        return []
-
-    result = [str(q).strip() for q in queries if str(q).strip()][:max_queries]
-    print(f"[RAG Tool] Parsed {len(result)} retrieval queries from LLM response.")
-    return result
-
-
 @contextmanager
 def _neo4j_driver():
     """Context manager that opens a Neo4j driver and ensures it is closed."""
@@ -264,6 +184,9 @@ def _neo4j_driver():
         driver.close()
 
 
+# ---------------------------------------------------------------------------
+# Public retrieval entry point
+# ---------------------------------------------------------------------------
 def _execute_hybrid_retrieval(
     retrieval_queries: list[str],
     annotation: TemplateAnnotation | None,
@@ -292,8 +215,7 @@ def _execute_hybrid_retrieval(
 
             seen_resources: set[str] = set()
             for query in retrieval_queries:
-                chunks = vectorstore.similarity_search(query, k=3)
-                for chunk in chunks:
+                for chunk in vectorstore.similarity_search(query, k=3):
                     meta = chunk.metadata
                     res = meta.get("resource_name", "")
                     prop = meta.get("property_name", "") or meta.get("property_path", "")

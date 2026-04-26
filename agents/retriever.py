@@ -2,22 +2,27 @@ from __future__ import annotations
 
 from state import GraphState, RemediationHistory
 from agents.llm_client import _build_client, _call_llm_with_history
-from tools.template_annotator import annotate_template, attach_smells, render_annotated_template, TemplateAnnotation
+from tools.template_annotator import (
+    TemplateAnnotation,
+    annotate_template,
+    attach_smells,
+    render_annotated_template,
+)
 from tools.cfn_hybrid_rag import (
-    _extract_errors,
-    _parse_query_response,
     QUERY_GEN_SYSTEM,
     _execute_hybrid_retrieval,
 )
+from tools.retriever_helpers import _extract_errors, _parse_query_response
 from tracking.recorder import ResearchRecorder
 
 
 def _build_retriever_history_context(remediation_history: list[RemediationHistory]) -> str:
-    """Build a compact history block for the Retriever to diversify its queries.
+    """Build a compact history block so the retriever diversifies its queries.
 
-    Surfaces which retrieval queries were used in prior iterations so the LLM
-    can avoid redundant queries and explore different Resource.Property facets.
-    This replaces passing retriever_history conversation turns to the LLM.
+    Surfaces which retrieval queries were used in prior iterations, allowing
+    the LLM to avoid redundant queries and explore different
+    Resource.Property facets. This replaces passing retriever_history
+    conversation turns to the LLM.
     """
     if not remediation_history:
         return ""
@@ -30,11 +35,10 @@ def _build_retriever_history_context(remediation_history: list[RemediationHistor
     ]
 
     for entry in remediation_history:
-        iteration = entry["iteration"]
         if not entry.get("retrieval_queries"):
             continue
         queries_str = "\n".join(f"  - {q}" for q in entry["retrieval_queries"])
-        lines.append(f"### Iteration {iteration} queries used:\n{queries_str}")
+        lines.append(f"### Iteration {entry['iteration']} queries used:\n{queries_str}")
         lines.append("")
 
     return "\n".join(lines).strip()
@@ -50,7 +54,7 @@ def _build_retriever_user_content(
 
     Injects an annotated CFN YAML with inline # ERROR comments anchored to
     each resource, replacing the plain annotation summary.
-    The plain template snippet is kept as a fallback when annotation fails.
+    Falls back to the plain template snippet when annotation fails.
     """
     user_parts = ["## Validation Errors\n" + "\n".join(f"- {e}" for e in errors)]
 
@@ -106,7 +110,7 @@ def _generate_retrieval_queries(
         client,
         model,
         system=QUERY_GEN_SYSTEM,
-        # Single-turn: no conversation history — context is fully in the prompt.
+        # Single-turn: no conversation history — full context is in the prompt.
         messages=[{"role": "user", "content": user_content}],
     )
     retrieval_queries = _parse_query_response(raw_response)
@@ -117,13 +121,13 @@ def _generate_retrieval_queries(
 
 
 def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
-    """
-    Dedicated retrieval agent that:
-      1. Annotates the current template.
-      2. Uses LLM to generate HyDE retrieval queries (recorded as LLM call)
-         — informed by structured remediation_history, NOT conversation turns.
-      3. Executes ChromaDB + Neo4j retrieval.
-      4. Returns CFN context + retrieval_queries into state.
+    """Dedicated retrieval agent.
+
+    1. Annotates the current template.
+    2. Uses LLM to generate HyDE retrieval queries (recorded as an LLM call)
+       — informed by structured remediation_history, NOT conversation turns.
+    3. Executes ChromaDB + Neo4j retrieval.
+    4. Returns cfn_context and retrieval_queries into state.
     """
     iteration = state["current_iteration"]
     print(f"\n[Retriever] Building CFN context (iteration {iteration})...")
