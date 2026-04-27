@@ -36,8 +36,6 @@ REMEDIATOR_USER = """\
 
 {cfn_graph_context}
 
-{remediation_history_context}
-
 Provide fix objectives that resolve all current validation errors.
 Do NOT repeat fix objectives that are marked as already applied in the history above.
 If a prior strategy failed, choose a different approach.
