@@ -281,9 +281,8 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
 
     formatted_errors = _build_validation_errors_text(state)
 
-    # Build annotated template: inject # ERROR: comments at exact reported lines.
-    # extract_errors() returns the same flat error list the retriever uses,
-    # excluding security-stage findings so only structural/deploy errors are annotated.
+    # Compute flat error list once here; stored in history so the engineer
+    # can use it directly without re-deriving from raw ValidationResult snapshots.
     flat_errors = extract_errors(
         state.get("validation_results", []),
         state.get("deploy_validation_result"),
@@ -329,6 +328,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     new_history_entry: RemediationHistory = {
         "iteration":         iteration,
         "errors":            state["validation_results"],
+        "flat_errors":       flat_errors,
         "formatted_errors":  formatted_errors,
         "suggestion":        content,
         "timestamp":         datetime.now(timezone.utc).isoformat(),
