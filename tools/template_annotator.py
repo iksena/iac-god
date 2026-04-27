@@ -295,26 +295,38 @@ def extract_resource_types(annotation: TemplateAnnotation | None) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Annotated YAML renderer for retriever prompt
+# Annotated YAML renderer for retriever / remediator / engineer prompts
 # ---------------------------------------------------------------------------
 
-# Matches cfn-lint dict-repr location: {'LineNumber': 115, 'ColumnNumber': 7}
+# Priority 1 — cfn-lint dict-repr:  {'LineNumber': 115, 'ColumnNumber': 7}
 _DICT_LINENO_RE = re.compile(r"'LineNumber'\s*:\s*(\d+)")
-# Matches colon-separated line ref: :115 or :115:7
+
+# Priority 2 — deploy colon-ref:    :115  or  :115:7
 _COLON_LINENO_RE = re.compile(r":(\d+)(?::\d+)?")
+
+# Priority 3 — YAML parser prose:   line 24  or  line 24, column 21
+#   Matches "line <N>" that is NOT preceded by another digit or word char so
+#   we don't accidentally match things like "baseline 24" or "outline 24".
+_PROSE_LINENO_RE = re.compile(r"(?<!\w)line\s+(\d+)", re.IGNORECASE)
 
 
 def _extract_line_number(error: str) -> int | None:
-    """Return the line number embedded in a cfn-lint or validator error string.
+    """Return the line number embedded in an error string.
 
-    Tries the cfn-lint dict-repr format first ('LineNumber': N), then the
-    generic colon-separated format (:N or :N:M).
-    Returns None when no line reference is found.
+    Tries three formats in priority order:
+      1. cfn-lint dict-repr  — {'LineNumber': N}
+      2. colon-separated     — :N  or  :N:M
+      3. YAML parser prose   — "line N"  or  "line N, column M"
+
+    Returns None when no line reference is found (error goes to header block).
     """
     m = _DICT_LINENO_RE.search(error)
     if m:
         return int(m.group(1))
     m = _COLON_LINENO_RE.search(error)
+    if m:
+        return int(m.group(1))
+    m = _PROSE_LINENO_RE.search(error)
     if m:
         return int(m.group(1))
     return None
@@ -331,8 +343,14 @@ def render_annotated_template(
     The template itself is never re-serialised, so all nested properties,
     intrinsic tags (!Ref, !Sub, ...) and formatting are preserved exactly.
 
-    Errors without a detectable line number (e.g. deploy failures, YAML parse
-    errors) are collected into a header comment block above the template.
+    Errors without a detectable line number (e.g. deploy failures that only
+    report a resource name) are collected into a header comment block above
+    the template.
+
+    Line number extraction handles three formats:
+      - cfn-lint dict-repr:  {'LineNumber': N}
+      - deploy colon-ref:    :N  or  :N:M
+      - YAML parser prose:   "line N"  or  "line N, column M"
 
     Args:
         template_yaml: Raw CloudFormation template string.
@@ -354,9 +372,9 @@ def render_annotated_template(
     source_lines = template_yaml.splitlines()
     output: list[str] = []
 
-    # Header block for errors with no line number.
+    # Header block for errors with no detectable line number.
     if errors_by_line.get(0):
-        output.append("# --- Errors without line numbers (deploy / YAML parse) ---")
+        output.append("# --- Errors without line numbers (deploy failures) ---")
         for err in errors_by_line[0]:
             output.append(f"# ERROR: {err}")
         output.append("")
