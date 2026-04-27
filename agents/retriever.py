@@ -20,25 +20,18 @@ from tracking.recorder import ResearchRecorder
 # Line-number detection
 # ---------------------------------------------------------------------------
 
-# Pattern 1: colon-separated line references emitted by some validators
-#   e.g. "Resources/Bucket/Type:12:3" or "template.yaml:45"
+# Pattern 1: colon-separated line references: ":115" or ":115:7"
 _COLON_LINE_RE = re.compile(r":\d+(:\d+)?")
-
-# Pattern 2: cfn-lint dict-repr location embedded in the error string
-#   e.g. "{'ColumnNumber': 7, 'LineNumber': 115}"
-#   cfn-lint serialises its Location namedtuple via str(), producing this format.
-_DICT_LINE_RE = re.compile(r"'LineNumber'\s*:\s*\d+")
+# Pattern 2: cfn-lint dict-repr location: "{'LineNumber': 115, ...}"
+_DICT_LINE_RE  = re.compile(r"'LineNumber'\s*:\s*\d+")
 
 
 def _errors_have_line_numbers(errors: list[str]) -> bool:
     """Return True if at least one error string contains a line number reference.
 
-    Handles two formats emitted by different validators:
-      - Colon-separated: 'Resources/Bucket/Type:12:3'  (generic validators)
-      - Dict-repr:       "{'LineNumber': 115, ...}"     (cfn-lint)
-
-    Deployment and YAML parse errors do not carry line numbers, so annotation
-    against line numbers adds no signal when those are the only failures present.
+    Handles two formats:
+      - Colon-separated:  'Resources/Bucket/Type:12:3'  (generic validators)
+      - Dict-repr:        "{'LineNumber': 115, ...}"     (cfn-lint)
     """
     for e in errors:
         if _COLON_LINE_RE.search(e) or _DICT_LINE_RE.search(e):
@@ -50,10 +43,11 @@ def _annotate_safely(
     template_yaml: str,
     smell_report: list[dict] | None,
 ) -> TemplateAnnotation | None:
-    """Parse and annotate the template, attaching any smell report.
+    """Parse and annotate the template for resource-type seeding.
 
-    Returns None on parse failure so callers degrade gracefully rather than
-    propagating exceptions through the graph.
+    Returns None on parse failure so callers degrade gracefully.
+    Only used to extract resource types for Neo4j seeding — rendering
+    is now done directly against the raw template string.
     """
     if not template_yaml:
         return None
@@ -78,10 +72,9 @@ def build_retrieval_prompt(
 
     Sections (in order):
       1. Validation errors.
-      2. Annotated template (only when errors have cfn-lint line numbers) or
-         plain template fallback.
-      3. Prior retrieval-query history from remediation_history, so the LLM
-         avoids repeating Resource.Property lookups already covered.
+      2. Full template with inline ERROR comments at the exact reported lines
+         (when errors carry line numbers), or plain template fallback.
+      3. Prior retrieval-query history to avoid duplicate lookups.
 
     Pure function — no I/O, no LLM calls, fully unit-testable.
     """
@@ -89,24 +82,23 @@ def build_retrieval_prompt(
         "## Validation Errors\n" + "\n".join(f"- {e}" for e in errors)
     ]
 
-    if annotation and annotation.resources and _errors_have_line_numbers(errors):
-        annotated_yaml = render_annotated_template(
-            annotation=annotation,
+    if template_yaml and _errors_have_line_numbers(errors):
+        annotated = render_annotated_template(
+            template_yaml=template_yaml,
             errors=errors,
-            include_security_smells=False,
         )
         parts.append(
-            "## Annotated CloudFormation Template\n"
-            "Each resource block carries inline `# ERROR:` comments anchored to\n"
-            "the exact line where cfn-lint found a violation. Use these as the\n"
-            "primary signal for which Resource.Property pairs need schema retrieval.\n"
-            f"```yaml\n{annotated_yaml}\n```"
+            "## CloudFormation Template (errors annotated at reported lines)\n"
+            "Lines prefixed with `# ERROR:` mark the exact location cfn-lint\n"
+            "reported a violation. Use them as the primary signal for which\n"
+            "Resource.Property pairs need schema retrieval.\n"
+            f"```yaml\n{annotated}\n```"
         )
     elif template_yaml:
         parts.append(
-            "## CloudFormation Template (no line-number annotations available)\n"
-            "Use the error messages above to identify which resource types and\n"
-            "properties need schema retrieval.\n"
+            "## CloudFormation Template\n"
+            "No line-number annotations available — use the error messages\n"
+            "above to identify which resource types and properties need schema retrieval.\n"
             f"```yaml\n{template_yaml}\n```"
         )
 
@@ -131,10 +123,7 @@ def build_retrieval_prompt(
 def _call_query_generator(
     user_content: str,
 ) -> tuple[str, str, str, dict | None]:
-    """Send the retrieval prompt to the LLM and return the raw response.
-
-    Returns: (model, raw_response, user_content, usage)
-    """
+    """Send the retrieval prompt to the LLM and return the raw response."""
     client, model = _build_client()
     raw_response, usage = _call_llm_with_history(
         client,
@@ -149,8 +138,8 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     """Dedicated retrieval agent.
 
     Orchestration steps:
-      1. Extract cfn-lint + deploy errors (security stages excluded by extract_errors).
-      2. Annotate the template ONLY when errors carry line numbers.
+      1. Extract cfn-lint + deploy errors (security stages excluded).
+      2. Annotate the template to seed resource types for Neo4j.
       3. Build the single-turn retrieval prompt (pure, no I/O).
       4. Call the LLM to generate targeted schema queries.
       5. Execute ChromaDB (semantic) + Neo4j (graph) hybrid retrieval.
@@ -165,19 +154,23 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         state.get("deploy_validation_result"),
     )
 
-    if _errors_have_line_numbers(errors):
-        annotation = _annotate_safely(
-            template_yaml=state.get("cloudformation_template", ""),
-            smell_report=state.get("smell_report"),
-        )
-        print("[Retriever] Line numbers detected — annotated template included in prompt.")
-    else:
-        annotation = None
-        print("[Retriever] No line numbers in errors — plain template used.")
+    # Always annotate so extract_resource_types() can seed Neo4j,
+    # regardless of whether errors carry line numbers.
+    template_yaml = state.get("cloudformation_template", "")
+    annotation = _annotate_safely(
+        template_yaml=template_yaml,
+        smell_report=state.get("smell_report"),
+    )
+
+    has_line_numbers = _errors_have_line_numbers(errors)
+    print(
+        f"[Retriever] {'Line numbers detected — annotated template' : <45} "
+        f"{'included' if has_line_numbers else 'NOT included (plain template used)'}."
+    )
 
     user_content = build_retrieval_prompt(
         errors=errors,
-        template_yaml=state.get("cloudformation_template"),
+        template_yaml=template_yaml,
         annotation=annotation,
         remediation_history=state.get("remediation_history", []),
     )
@@ -200,9 +193,6 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         seed_resources=seed_resources,
     )
 
-    # Append this invocation to retriever_history.txt. The retriever has no
-    # rolling conversation history, so the recorder appends a fresh dated block
-    # for every call instead of overwriting the file.
     recorder.append_retriever_history_entry(
         iteration=iteration,
         prompt=f"SYSTEM:\n{QUERY_GEN_SYSTEM}\n\nUSER:\n{user_content}",

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import logging
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -58,9 +59,6 @@ def _build_cfn_loader() -> type[yaml.Loader]:
     """
     Returns a YAML Loader subclass that safely handles all CloudFormation
     intrinsic function tags without raising ConstructorError.
-
-    Uses yaml.add_multi_constructor so any unknown !Tag is caught — future
-    CFN tags won't break the parser.
     """
     class CFNLoader(yaml.SafeLoader):
         pass
@@ -83,11 +81,8 @@ CFN_LOADER = _build_cfn_loader()
 
 
 def load_cfn_yaml(content: str) -> dict:
-    """Parse a CloudFormation YAML template safely.
-
-    All !Ref / !GetAtt / etc. are preserved as _CFNTag objects.
-    """
-    return yaml.load(content, Loader=CFN_LOADER)  # noqa: S506 — custom loader, not bare load
+    """Parse a CloudFormation YAML template, preserving intrinsic tags."""
+    return yaml.load(content, Loader=CFN_LOADER)  # noqa: S506
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +115,7 @@ class TemplateAnnotation:
 # ---------------------------------------------------------------------------
 
 def _yaml_with_line_numbers(content: str) -> dict[str, int]:
-    """Return a map of {resource_logical_id: start_line} by scanning raw YAML text."""
+    """Return {resource_logical_id: start_line} by scanning raw YAML text."""
     line_map: dict[str, int] = {}
     in_resources = False
     resource_indent: int | None = None
@@ -191,10 +186,7 @@ def _parse_cloudformation(content: str, file_path: str) -> TemplateAnnotation:
 
 
 def _parse_terraform(content: str, file_path: str) -> TemplateAnnotation:
-    """Minimal Terraform HCL parser using regex for resource block detection.
-
-    For production use, swap with python-hcl2 or pyhcl.
-    """
+    """Minimal Terraform HCL parser using regex for resource block detection."""
     resources: list[ResourceAnnotation] = []
 
     try:
@@ -240,10 +232,8 @@ def _detect_template_type(content: str, file_path: str) -> str:
     """Heuristically detect whether a file is CloudFormation or Terraform."""
     if Path(file_path).suffix.lower() in (".tf",):
         return "terraform"
-
     if any(marker in content for marker in _CFN_MARKERS):
         return "cloudformation"
-
     if Path(file_path).suffix.lower() in (".json",):
         try:
             doc = json.loads(content)
@@ -251,7 +241,6 @@ def _detect_template_type(content: str, file_path: str) -> str:
                 return "cloudformation"
         except json.JSONDecodeError:
             pass
-
     return "unknown"
 
 
@@ -260,17 +249,7 @@ def _detect_template_type(content: str, file_path: str) -> str:
 # ---------------------------------------------------------------------------
 
 def annotate_template(file_path: str, content: str | None = None) -> TemplateAnnotation:
-    """Parse and annotate an IaC template file.
-
-    Args:
-        file_path: Absolute or relative path to the template file.
-        content:   Raw file content. If None, the file is read from disk.
-
-    Returns:
-        TemplateAnnotation with resource-level metadata and line numbers.
-        Smell detection is NOT performed here — call attach_smells() after
-        running your static analysis tool (Checkov, cfn-lint, tfsec, etc.).
-    """
+    """Parse and annotate an IaC template file."""
     if content is None:
         content = Path(file_path).read_text(encoding="utf-8")
 
@@ -294,19 +273,8 @@ def attach_smells(
     annotation: TemplateAnnotation,
     smell_report: list[dict],
 ) -> TemplateAnnotation:
-    """Attach static-analysis smell findings to the relevant ResourceAnnotation.
-
-    Args:
-        annotation:   Output of annotate_template().
-        smell_report: List of smell dicts, each containing at minimum:
-                      {"resource_id": str, "rule_id": str, "severity": str,
-                       "description": str, "line": int}
-
-    Returns:
-        The same TemplateAnnotation with smells attached to resources.
-    """
+    """Attach static-analysis smell findings to the relevant ResourceAnnotation."""
     resource_index = {r.resource_id: r for r in annotation.resources}
-
     for smell in smell_report:
         rid = smell.get("resource_id", "")
         if rid in resource_index:
@@ -314,22 +282,13 @@ def attach_smells(
         else:
             logger.debug(
                 "Smell %s could not be mapped to a resource (resource_id=%r)",
-                smell.get("rule_id"),
-                rid,
+                smell.get("rule_id"), rid,
             )
-
     return annotation
 
 
 def extract_resource_types(annotation: TemplateAnnotation | None) -> set[str]:
-    """Return the set of AWS resource type strings present in an annotation.
-
-    Centralises the ``{r.resource_type for r in annotation.resources if r.resource_type}``
-    pattern that previously appeared independently in both the retriever agent
-    and the hybrid-RAG tool, eliminating the duplication.
-
-    Returns an empty set when *annotation* is None or has no resources.
-    """
+    """Return the set of AWS resource type strings present in an annotation."""
     if not annotation or not annotation.resources:
         return set()
     return {r.resource_type for r in annotation.resources if r.resource_type}
@@ -339,95 +298,76 @@ def extract_resource_types(annotation: TemplateAnnotation | None) -> set[str]:
 # Annotated YAML renderer for retriever prompt
 # ---------------------------------------------------------------------------
 
+# Matches cfn-lint dict-repr location: {'LineNumber': 115, 'ColumnNumber': 7}
+_DICT_LINENO_RE = re.compile(r"'LineNumber'\s*:\s*(\d+)")
+# Matches colon-separated line ref: :115 or :115:7
+_COLON_LINENO_RE = re.compile(r":(\d+)(?::\d+)?")
+
+
+def _extract_line_number(error: str) -> int | None:
+    """Return the line number embedded in a cfn-lint or validator error string.
+
+    Tries the cfn-lint dict-repr format first ('LineNumber': N), then the
+    generic colon-separated format (:N or :N:M).
+    Returns None when no line reference is found.
+    """
+    m = _DICT_LINENO_RE.search(error)
+    if m:
+        return int(m.group(1))
+    m = _COLON_LINENO_RE.search(error)
+    if m:
+        return int(m.group(1))
+    return None
+
+
 def render_annotated_template(
-    annotation: TemplateAnnotation,
+    template_yaml: str,
     errors: list[str],
-    include_security_smells: bool = False,
 ) -> str:
-    """Re-serialise the CFN template as YAML with inline comments anchoring
-    each validation/deployment error to the resource block it belongs to.
+    """Inject error comments into the raw template at the reported line numbers.
 
-    Produces output like:
+    For each error that carries a LineNumber, a '# ERROR: ...' comment is
+    inserted immediately BEFORE that line in the original template text.
+    The template itself is never re-serialised, so all nested properties,
+    intrinsic tags (!Ref, !Sub, ...) and formatting are preserved exactly.
 
-        Resources:
-          MyBucket:  # AWS::S3::Bucket | line 12
-            # ERROR: cfn-lint: E3001 Invalid resource type
-            # ERROR: deploy: CREATE_FAILED - BucketName must be globally unique
-            Type: AWS::S3::Bucket
-            Properties:
-              ...
+    Errors without a detectable line number (e.g. deploy failures, YAML parse
+    errors) are collected into a header comment block above the template.
 
     Args:
-        annotation:              Output of annotate_template() + attach_smells().
-        errors:                  Flat list of error strings from _extract_errors().
-                                 Must already have security stages filtered out.
-        include_security_smells: When True, append # SMELL: comments for each
-                                 smell attached to the resource. Default False so
-                                 the retriever stays focused on structural errors.
+        template_yaml: Raw CloudFormation template string.
+        errors:        Flat list of error strings (security stages excluded).
 
     Returns:
-        A YAML string of the Resources section with inline error comments.
-        Falls back to a plain error list when the annotation has no resources.
+        The full template string with inline # ERROR: comment annotations.
     """
-    if not annotation or not annotation.resources:
-        if errors:
-            return "# No parseable template — errors:\n" + "\n".join(
-                f"# ERROR: {e}" for e in errors
-            )
-        return "# No template or errors available."
+    if not template_yaml:
+        return "# No template available.\n" + "\n".join(f"# ERROR: {e}" for e in errors)
 
-    resource_errors: dict[str, list[str]] = {r.resource_id: [] for r in annotation.resources}
-    template_level_errors: list[str] = []
-
+    # Group errors by their target line number.
+    # Errors with no line number go into the header (line 0).
+    errors_by_line: dict[int, list[str]] = defaultdict(list)
     for err in errors:
-        matched = False
-        for r in annotation.resources:
-            if r.resource_id in err or (r.resource_type and r.resource_type in err):
-                resource_errors[r.resource_id].append(err)
-                matched = True
-                break
-        if not matched:
-            template_level_errors.append(err)
+        lineno = _extract_line_number(err)
+        errors_by_line[lineno if lineno is not None else 0].append(err)
 
-    lines: list[str] = []
+    source_lines = template_yaml.splitlines()
+    output: list[str] = []
 
-    if template_level_errors:
-        lines.append("# --- Template-level errors ---")
-        for err in template_level_errors:
-            lines.append(f"# ERROR: {err}")
-        lines.append("")
+    # Header block for errors with no line number.
+    if errors_by_line.get(0):
+        output.append("# --- Errors without line numbers (deploy / YAML parse) ---")
+        for err in errors_by_line[0]:
+            output.append(f"# ERROR: {err}")
+        output.append("")
 
-    lines.append("Resources:")
+    # Walk source lines, injecting error comments before the target line.
+    for lineno, line in enumerate(source_lines, start=1):
+        for err in errors_by_line.get(lineno, []):
+            # Preserve the indentation of the target line so the comment
+            # sits flush with the YAML key it annotates.
+            indent = len(line) - len(line.lstrip())
+            output.append(" " * indent + f"# ERROR: {err}")
+        output.append(line)
 
-    for r in annotation.resources:
-        line_hint = f" | line {r.start_line}" if r.start_line else ""
-        lines.append(f"  {r.resource_id}:  # {r.resource_type}{line_hint}")
-
-        for err in resource_errors.get(r.resource_id, []):
-            lines.append(f"    # ERROR: {err}")
-
-        if include_security_smells:
-            for smell in r.smells:
-                rule_id = smell.get("rule_id", "?")
-                desc = smell.get("description", "")
-                lines.append(f"    # SMELL: {rule_id} — {desc}")
-
-        rtype = r.resource_type or "Unknown"
-        lines.append(f"    Type: {rtype}")
-
-        props = r.raw.get("Properties", {}) if r.raw else {}
-        if props:
-            lines.append("    Properties:")
-            for key in sorted(props.keys()):
-                val = props[key]
-                if isinstance(val, (str, int, float, bool)) or val is None:
-                    lines.append(f"      {key}: {val}")
-                elif isinstance(val, dict):
-                    lines.append(f"      {key}: {{...}}  # {len(val)} keys")
-                elif isinstance(val, list):
-                    lines.append(f"      {key}: [...]  # {len(val)} items")
-                else:
-                    lines.append(f"      {key}: <{type(val).__name__}>")
-        lines.append("")
-
-    return "\n".join(lines).rstrip()
+    return "\n".join(output)
