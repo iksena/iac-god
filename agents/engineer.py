@@ -9,6 +9,8 @@ from prompts.engineer_prompt import (
     ENGINEER_USER_INITIAL,
     ENGINEER_USER_REMEDIATION,
 )
+from tools.template_annotator import render_annotated_template
+from tools.retriever_helpers import extract_errors
 from tracking.recorder import ResearchRecorder
 
 
@@ -36,9 +38,22 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         remediation_history_context = _build_remediation_history_context(
             state["remediation_history"][:-1]  # all entries except the latest (already shown above)
         )
+
+        # Build annotated template using the flat error list from the latest
+        # remediation history entry. extract_errors() re-derives the same flat
+        # list the retriever used so line-number injection is consistent.
+        flat_errors = extract_errors(
+            latest.get("errors", []),
+            None,  # deploy_validation_result not stored per-iteration; errors already included
+        )
+        annotated_template = render_annotated_template(
+            template_yaml=state.get("cloudformation_template", ""),
+            errors=flat_errors,
+        )
+
         user_content = ENGINEER_USER_REMEDIATION.format(
             iteration=latest["iteration"],
-            current_template=state["cloudformation_template"],
+            annotated_template=annotated_template,
             error_context=latest["formatted_errors"],
             remediation_suggestion=latest["suggestion"],
             cfn_context=latest.get("cfn_context", ""),
