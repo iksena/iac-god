@@ -21,8 +21,11 @@ ENGINEER_USER_REMEDIATION = """\
 Iteration {iteration} — Apply these fixes based on validation errors and remediation suggestions from the Remediator agent:
 
 ## Current Template
+The template below has `# ERROR:` comments injected at the exact line numbers
+reported by cfn-lint and the deployment validator. Apply fixes precisely at the
+marked locations.
 ```yaml
-{current_template}
+{annotated_template}
 ```
 
 ## Validation Errors

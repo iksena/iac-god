@@ -25,8 +25,11 @@ Numbered list of concrete engineering actions.
 # Per-turn: stateless — full context provided via remediation history block
 REMEDIATOR_USER = """\
 ## Current Template (Iteration {iteration})
+The template below has `# ERROR:` comments injected at the exact line numbers
+reported by cfn-lint and the deployment validator. Use these inline anchors as
+the primary signal for which properties need fixing.
 ```yaml
-{template}
+{annotated_template}
 ```
 
 ## Current Validation Errors

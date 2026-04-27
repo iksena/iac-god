@@ -13,7 +13,9 @@ from tools.retriever_helpers import (
     get_latest_stage_result,
     format_cfn_lint_errors,
     format_deploy_errors,
+    extract_errors,
 )
+from tools.template_annotator import render_annotated_template
 from tracking.recorder import ResearchRecorder
 
 
@@ -279,6 +281,18 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
 
     formatted_errors = _build_validation_errors_text(state)
 
+    # Build annotated template: inject # ERROR: comments at exact reported lines.
+    # extract_errors() returns the same flat error list the retriever uses,
+    # excluding security-stage findings so only structural/deploy errors are annotated.
+    flat_errors = extract_errors(
+        state.get("validation_results", []),
+        state.get("deploy_validation_result"),
+    )
+    annotated_template = render_annotated_template(
+        template_yaml=state.get("cloudformation_template", ""),
+        errors=flat_errors,
+    )
+
     # NOTE: remediation_history_context is intentionally NOT passed here.
     # The remediator maintains a rolling conversation history (remediator_history)
     # that is fed directly to the LLM via _call_llm_with_history(). Injecting a
@@ -286,10 +300,11 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     # double-count prior iterations and waste tokens.
     user_content = REMEDIATOR_USER.format(
         iteration=iteration,
-        template=state["cloudformation_template"],
+        annotated_template=annotated_template,
         validation_errors=formatted_errors,
         policy_source_context=policy_source_context,
         cfn_graph_context=cfn_graph_context,
+        remediation_history_context="",
     )
     user_msg: Message = {"role": "user", "content": user_content}
 
