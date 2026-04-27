@@ -29,9 +29,10 @@ class DeployValidationResult(TypedDict):
 
 class RemediationHistory(TypedDict):
     iteration: int
-    errors: list[ValidationResult]
-    formatted_errors: str       # Human-readable error context
-    suggestion: str             # Remediator's fix suggestion
+    errors: list[ValidationResult]  # Raw validation snapshots (for audit / re-processing)
+    flat_errors: list[str]          # Flat error strings used by render_annotated_template()
+    formatted_errors: str           # Human-readable error context for LLM prompt
+    suggestion: str                 # Remediator's fix suggestion
     timestamp: str
     cfn_context: str
     retrieval_queries: list[str]

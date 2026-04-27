@@ -10,7 +10,6 @@ from prompts.engineer_prompt import (
     ENGINEER_USER_REMEDIATION,
 )
 from tools.template_annotator import render_annotated_template
-from tools.retriever_helpers import extract_errors
 from tracking.recorder import ResearchRecorder
 
 
@@ -32,23 +31,16 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         user_content = ENGINEER_USER_INITIAL
     else:
         # Iteration 2+: full context in prompt — no conversation history passed to LLM.
-        # The current template, latest fix directive, and structured history are all
-        # included here. No prior engineer_history turns are sent.
         latest = state["remediation_history"][-1]
         remediation_history_context = _build_remediation_history_context(
-            state["remediation_history"][:-1]  # all entries except the latest (already shown above)
+            state["remediation_history"][:-1]
         )
 
-        # Build annotated template using the flat error list from the latest
-        # remediation history entry. extract_errors() re-derives the same flat
-        # list the retriever used so line-number injection is consistent.
-        flat_errors = extract_errors(
-            latest.get("errors", []),
-            None,  # deploy_validation_result not stored per-iteration; errors already included
-        )
+        # flat_errors was computed and stored by the remediator in the same
+        # history entry — no need to re-derive it here.
         annotated_template = render_annotated_template(
             template_yaml=state.get("cloudformation_template", ""),
-            errors=flat_errors,
+            errors=latest.get("flat_errors", []),
         )
 
         user_content = ENGINEER_USER_REMEDIATION.format(
