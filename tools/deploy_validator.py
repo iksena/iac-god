@@ -52,6 +52,53 @@ def _reset_localstack_state(deploy_config: DeployConfig):
     time.sleep(deploy_config.localstack_reset_wait)
 
 
+def _reset_aws_state(deploy_config: DeployConfig):
+    """
+    Best-effort cleanup of prior IaCGOD evaluation stacks in AWS.
+    This provides a greenfield start similar to LocalStack reset behavior.
+    """
+    stack_prefix = "iac-god-eval-"
+    cfn_client = _build_cfn_client(deploy_config)
+
+    try:
+        paginator = cfn_client.get_paginator("list_stacks")
+        stack_ids_to_delete: list[tuple[str, str]] = []
+
+        for page in paginator.paginate():
+            for summary in page.get("StackSummaries", []):
+                stack_name = summary.get("StackName", "")
+                stack_id = summary.get("StackId", "")
+                if stack_name.startswith(stack_prefix) and stack_id:
+                    stack_ids_to_delete.append((stack_id, stack_name))
+
+        if not stack_ids_to_delete:
+            print("[Deploy] AWS state reset: no prior evaluation stacks found")
+            return
+
+        print(f"[Deploy] AWS state reset: deleting {len(stack_ids_to_delete)} prior evaluation stack(s)")
+        for stack_id, stack_name in stack_ids_to_delete:
+            try:
+                cfn_client.delete_stack(StackName=stack_id)
+                _wait_for_stack_deletion(
+                    cfn_client,
+                    stack_id,
+                    stack_name,
+                    deploy_config.stack_deletion_timeout,
+                )
+            except Exception as e:
+                print(f"[Deploy] AWS reset warning for stack '{stack_name}': {e}")
+    except Exception as e:
+        print(f"[Deploy] AWS reset error: {e}")
+
+
+def _reset_target_state(deploy_config: DeployConfig):
+    """Run pre-deployment state reset for the configured target."""
+    if deploy_config.target == DeployTarget.LOCALSTACK:
+        _reset_localstack_state(deploy_config)
+    elif deploy_config.target == DeployTarget.AWS:
+        _reset_aws_state(deploy_config)
+
+
 def _wait_for_stack_deletion(cfn_client, stack_id: str, stack_name: str, timeout: int):
     """
     Block until the stack reaches DELETE_COMPLETE or timeout.
@@ -128,9 +175,8 @@ def validate_deployment(
     target_name = deploy_config.target.value
     deploy_logs: list[str] = []
 
-    # --- Greenfield reset for LocalStack ---
-    if deploy_config.target == DeployTarget.LOCALSTACK:
-        _reset_localstack_state(deploy_config)
+    # --- Greenfield reset for LocalStack/AWS ---
+    _reset_target_state(deploy_config)
 
     cfn_client = _build_cfn_client(deploy_config)
     stack_name = f"iac-god-eval-{uuid.uuid4().hex[:8]}"
