@@ -4,11 +4,15 @@ import re
 import json
 from datetime import datetime, timezone
 
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage, ToolMessage
+from langgraph.prebuilt import ToolNode
+
 from state import GraphState, RemediationHistory, Message, append_and_cap
-from agents.llm_client import _build_client, _call_llm_with_history
+from agents.llm_client import _build_client, _call_llm_with_history, _build_langchain_chat_model
 from prompts.remediator_prompt import REMEDIATOR_SYSTEM, REMEDIATOR_USER
 from tools.checkov_context import get_checkov_policy_context
 from tools.trivy_context import get_trivy_policy_context
+from tools.remediator_tools import build_retrieval_queries
 from tools.retriever_helpers import (
     get_latest_stage_result,
     format_cfn_lint_errors,
@@ -160,12 +164,7 @@ def _build_policy_source_context(validation_results: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 def _build_validation_errors_text(state: GraphState) -> str:
-    """Build the full validation error section for the remediator user prompt.
-
-    Uses format_cfn_lint_errors() and format_deploy_errors() from
-    retriever_helpers so both the retriever and remediator prompts render
-    errors with identical structure.
-    """
+    """Build the full validation error section for the remediator user prompt."""
     error_blocks: list[str] = []
 
     validation_results = state.get("validation_results", [])
@@ -246,6 +245,113 @@ def _should_include_policy_source_context(state: GraphState) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Tool-call result extraction helpers
+# ---------------------------------------------------------------------------
+
+_TOOLS = [build_retrieval_queries]
+_TOOL_NODE = ToolNode(_TOOLS)
+_REMEDIATOR_LLM = None  # lazy-initialised to avoid import-time side effects
+
+
+def _get_bound_llm():
+    """Lazy-init the LangChain model with build_retrieval_queries bound.
+
+    Deferred so that heavy LangChain imports and credential checks only
+    happen when the remediator is actually invoked, not at module import.
+    """
+    global _REMEDIATOR_LLM  # noqa: PLW0603
+    if _REMEDIATOR_LLM is None:
+        _REMEDIATOR_LLM = _build_langchain_chat_model().bind_tools(_TOOLS)
+    return _REMEDIATOR_LLM
+
+
+def _extract_tool_queries(messages: list) -> list[str]:
+    """Pull retrieval queries produced by build_retrieval_queries ToolMessages.
+
+    Parses the JSON content of every ToolMessage whose name matches
+    'build_retrieval_queries' and collects the 'queries' list.
+    """
+    queries: list[str] = []
+    for msg in messages:
+        if not isinstance(msg, ToolMessage):
+            continue
+        if getattr(msg, "name", "") != "build_retrieval_queries":
+            continue
+        try:
+            result = json.loads(msg.content) if isinstance(msg.content, str) else msg.content
+            if isinstance(result, dict):
+                queries.extend(result.get("queries", []))
+        except (json.JSONDecodeError, TypeError):
+            pass
+    return queries
+
+
+def _run_tool_loop(
+    system_msg: SystemMessage,
+    initial_messages: list,
+) -> tuple[str, list, list[str]]:
+    """Run the LLM → ToolNode agentic loop.
+
+    The LLM is invoked up to MAX_TOOL_ROUNDS times. Each round:
+      1. Call the LLM with [system_msg] + accumulated messages.
+      2. If the response contains tool_calls, execute them via ToolNode
+         and append the ToolMessages to the conversation.
+      3. If the response has no tool_calls, break — final answer ready.
+
+    Returns:
+        final_content  : The text of the last AIMessage (the fix objectives).
+        all_messages   : Full message list including tool results (for audit).
+        retrieval_queries: Queries extracted from build_retrieval_queries calls.
+    """
+    MAX_TOOL_ROUNDS = 2
+    llm = _get_bound_llm()
+    messages = list(initial_messages)
+
+    ai_msg: AIMessage | None = None
+    for round_idx in range(MAX_TOOL_ROUNDS):
+        ai_msg = llm.invoke([system_msg] + messages)
+        messages.append(ai_msg)
+
+        tool_calls = getattr(ai_msg, "tool_calls", None) or []
+        if not tool_calls:
+            print(
+                f"[Remediator] Tool loop finished after {round_idx} tool round(s). "
+                "Proceeding to final answer."
+            )
+            break
+
+        tool_names = [tc.get("name", "unknown") for tc in tool_calls]
+        print(f"[Remediator] Tool round {round_idx + 1}: calling {tool_names}")
+
+        tool_result = _TOOL_NODE.invoke({"messages": messages})
+        # ToolNode returns {"messages": [*existing*, *new_tool_msgs*]}
+        # Slice off only the newly appended ToolMessages.
+        new_tool_msgs = tool_result["messages"][len(messages):]
+        messages.extend(new_tool_msgs)
+    else:
+        # Exhausted MAX_TOOL_ROUNDS — do one final call without tools available
+        # so the LLM is forced to produce its text answer.
+        print(
+            f"[Remediator] Reached MAX_TOOL_ROUNDS ({MAX_TOOL_ROUNDS}). "
+            "Forcing final answer call."
+        )
+        final_llm = _build_langchain_chat_model()  # unbound — no tools
+        ai_msg = final_llm.invoke([system_msg] + messages)
+        messages.append(ai_msg)
+
+    final_content = ai_msg.content if ai_msg else ""
+    if isinstance(final_content, list):
+        # Some providers return a list of content blocks
+        final_content = " ".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in final_content
+        ).strip()
+
+    retrieval_queries = _extract_tool_queries(messages)
+    return str(final_content), messages, retrieval_queries
+
+
+# ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
 
@@ -258,20 +364,8 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"])),
     )
 
-    cfn_graph_context = state.get("retriever_context", "")
-    retrieval_queries = state.get("retriever_queries", [])
-
     include_remediation = should_include_remediation_context(state)
     include_policy      = _should_include_policy_source_context(state)
-
-    if include_remediation:
-        print(
-            f"[Remediator] CFN schema context: {len(cfn_graph_context)} chars, "
-            f"{len(retrieval_queries)} retrieval queries."
-        )
-    else:
-        cfn_graph_context = ""
-        print("[Remediator] CFN schema context skipped (YAML/security-only failure).")
 
     policy_source_context = (
         _build_policy_source_context(state["validation_results"])
@@ -279,10 +373,6 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         else ""
     )
 
-    formatted_errors = _build_validation_errors_text(state)
-
-    # Compute flat error list once here; stored in history so the engineer
-    # can use it directly without re-deriving from raw ValidationResult snapshots.
     flat_errors = extract_errors(
         state.get("validation_results", []),
         state.get("deploy_validation_result"),
@@ -291,12 +381,30 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         template_yaml=state.get("cloudformation_template", ""),
         errors=flat_errors,
     )
+    formatted_errors = _build_validation_errors_text(state)
 
-    # NOTE: remediation_history_context is intentionally NOT passed here.
-    # The remediator maintains a rolling conversation history (remediator_history)
-    # that is fed directly to the LLM via _call_llm_with_history(). Injecting a
-    # separately-formatted history text block into the user prompt would
-    # double-count prior iterations and waste tokens.
+    # Prior retrieval queries across all previous iterations — passed to the
+    # tool so it can generate non-duplicate queries.
+    prior_queries: list[str] = []
+    for entry in state.get("remediation_history", []):
+        prior_queries.extend(entry.get("retrieval_queries", []))
+
+    # Build the REMEDIATOR_USER content.
+    # cfn_graph_context is intentionally left blank here: when RAG context
+    # is needed the LLM will obtain it by calling build_retrieval_queries
+    # (and, in a future iteration, hybrid_rag_search) via the ToolNode.
+    # The state's retriever_context from the legacy retriever path is still
+    # forwarded as a fallback for callers that pre-populated it.
+    cfn_graph_context = state.get("retriever_context", "") if include_remediation else ""
+
+    if include_remediation:
+        print(
+            f"[Remediator] RAG tool available. Prior queries: {len(prior_queries)}. "
+            f"Legacy context: {len(cfn_graph_context)} chars."
+        )
+    else:
+        print("[Remediator] CFN schema context skipped (YAML/security-only failure).")
+
     user_content = REMEDIATOR_USER.format(
         iteration=iteration,
         annotated_template=annotated_template,
@@ -305,26 +413,78 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         cfn_graph_context=cfn_graph_context,
         remediation_history_context="",
     )
-    user_msg: Message = {"role": "user", "content": user_content}
 
-    client, model = _build_client()
-    content, usage = _call_llm_with_history(
-        client,
-        model,
-        system,
-        state.get("remediator_history", []) + [user_msg],
+    # -----------------------------------------------------------------------
+    # Build system message with tool-usage policy injected when RAG is useful.
+    # -----------------------------------------------------------------------
+    tool_policy = ""
+    if include_remediation:
+        prior_q_block = (
+            "\n".join(f"  - {q}" for q in prior_queries)
+            if prior_queries
+            else "  (none yet)"
+        )
+        tool_policy = (
+            "\n## Tool Usage Policy\n"
+            "You have access to `build_retrieval_queries`.\n"
+            "Call it when cfn-lint or deployment errors are present to generate "
+            "targeted AWS CloudFormation schema-lookup queries.\n"
+            "Pass the annotated template and the flat list of cfn-lint/deploy "
+            "error strings as arguments.\n"
+            f"Prior retrieval queries (DO NOT repeat these):\n{prior_q_block}\n"
+            "Do NOT call the tool for YAML syntax errors or pure security "
+            "violations (checkov/trivy IDs).\n"
+            "After receiving the tool result, use the queries to ground your "
+            "Root Cause Analysis and Fix Objectives.\n"
+        )
+
+    system_with_policy = system + tool_policy
+    system_msg = SystemMessage(content=system_with_policy)
+
+    # -----------------------------------------------------------------------
+    # Seed the message thread with remediator_history (rolling window) + user.
+    # -----------------------------------------------------------------------
+    # remediator_history stores {"role": ..., "content": ...} dicts;
+    # convert to LangChain message objects for the ToolNode loop.
+    lc_history: list = []
+    for msg in state.get("remediator_history", []):
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        if role == "user":
+            lc_history.append(HumanMessage(content=content))
+        elif role == "assistant":
+            lc_history.append(AIMessage(content=content))
+
+    user_lc_msg = HumanMessage(content=user_content)
+    initial_messages = lc_history + [user_lc_msg]
+
+    # -----------------------------------------------------------------------
+    # Run the ToolNode agentic loop.
+    # -----------------------------------------------------------------------
+    content, all_messages, retrieval_queries_from_tool = _run_tool_loop(
+        system_msg=system_msg,
+        initial_messages=initial_messages,
     )
-    assistant_msg: Message = {"role": "assistant", "content": content}
 
+    # Merge tool-produced queries with any legacy queries from state.
+    retrieval_queries = retrieval_queries_from_tool or state.get("retriever_queries", [])
+
+    # -----------------------------------------------------------------------
+    # Audit logging via recorder.
+    # -----------------------------------------------------------------------
+    model = DEFAULT_CONFIG.model
     llm_record = recorder.record_llm_call(
         state=state,
         agent="remediator",
         model=model,
-        prompt=f"SYSTEM:\n{system}\n\nUSER:\n{user_content}",
+        prompt=f"SYSTEM:\n{system_with_policy}\n\nUSER:\n{user_content}",
         response=content,
-        token_usage=usage,
+        token_usage={},  # LangChain path; token counts available via callbacks if needed
     )
 
+    # -----------------------------------------------------------------------
+    # Persist state.
+    # -----------------------------------------------------------------------
     new_history_entry: RemediationHistory = {
         "iteration":         iteration,
         "errors":            state["validation_results"],
@@ -336,6 +496,11 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         "retrieval_queries": retrieval_queries,
     }
 
+    # Store history as plain dicts (existing Message type) for compatibility
+    # with the rest of the pipeline.
+    user_msg: Message = {"role": "user",      "content": user_content}
+    assistant_msg: Message = {"role": "assistant", "content": content}
+
     print("[Remediator] Suggestions generated. Routing back to Engineer.")
     return {
         "remediation_history": state["remediation_history"] + [new_history_entry],
@@ -344,4 +509,9 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         "remediator_history":  append_and_cap(
             state["remediator_history"], user_msg, assistant_msg
         ),
+        "retriever_queries":   retrieval_queries,
     }
+
+
+# Avoid unused import warning — DEFAULT_CONFIG is used for model name in audit log.
+from config import DEFAULT_CONFIG  # noqa: E402

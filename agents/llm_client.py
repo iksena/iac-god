@@ -2,6 +2,18 @@
 
 Extracted from agents/engineer.py so both engineer and remediator can
 import these utilities without creating a circular dependency.
+
+Provides two client-construction paths:
+
+  _build_client()                — returns a raw OpenAI/Anthropic SDK client
+                                   + model string. Used by engineer, planner,
+                                   retriever, and the remediator's direct
+                                   LLM calls.
+
+  _build_langchain_chat_model()  — returns a LangChain BaseChatModel
+                                   (ChatOpenAI or ChatAnthropic). Required
+                                   whenever .bind_tools() is needed, e.g. the
+                                   Remediator ToolNode loop.
 """
 from __future__ import annotations
 
@@ -22,6 +34,45 @@ def _build_client():
         return anthropic.Anthropic(
             api_key=DEFAULT_CONFIG.anthropic_api_key
         ), DEFAULT_CONFIG.model
+
+
+def _build_langchain_chat_model():
+    """Return a LangChain BaseChatModel configured from DEFAULT_CONFIG.
+
+    Supports both OpenRouter (via ChatOpenAI with a custom base_url) and
+    Anthropic direct (via ChatAnthropic). The returned model can be used
+    with .bind_tools() for ToolNode-based agentic loops.
+
+    OpenRouter extra-body options (provider preferences, reasoning) are
+    applied via model_kwargs so they are forwarded on every invocation.
+    """
+    if DEFAULT_CONFIG.provider == LLMProvider.OPENROUTER:
+        from langchain_openai import ChatOpenAI  # noqa: PLC0415
+
+        extra_body: dict = {}
+        provider_preferences = build_openrouter_provider_preferences(DEFAULT_CONFIG)
+        if provider_preferences:
+            extra_body["provider"] = provider_preferences
+        if DEFAULT_CONFIG.reasoning_enabled:
+            extra_body["reasoning"] = {"enabled": True}
+
+        return ChatOpenAI(
+            model=DEFAULT_CONFIG.model,
+            api_key=DEFAULT_CONFIG.openrouter_api_key,
+            base_url=DEFAULT_CONFIG.openrouter_base_url,
+            temperature=DEFAULT_CONFIG.temperature,
+            max_tokens=DEFAULT_CONFIG.max_tokens,
+            model_kwargs={"extra_body": extra_body} if extra_body else {},
+        )
+    else:
+        from langchain_anthropic import ChatAnthropic  # noqa: PLC0415
+
+        return ChatAnthropic(
+            model_name=DEFAULT_CONFIG.model,
+            api_key=DEFAULT_CONFIG.anthropic_api_key,
+            temperature=DEFAULT_CONFIG.temperature,
+            max_tokens=DEFAULT_CONFIG.max_tokens,
+        )
 
 
 def _to_int(value: object) -> int:
