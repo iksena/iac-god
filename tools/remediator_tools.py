@@ -53,10 +53,12 @@ class BuildRetrievalQueriesInput(BaseModel):
             )
         ),
     ]
+    # Fix: Pydantic v2 raises TypeError when both default_factory and a class-level
+    # default (= []) are specified on the same field.  Use only the class-level
+    # default; Field() carries only the description.
     prior_queries: Annotated[
         list[str],
         Field(
-            default_factory=list,
             description=(
                 "Retrieval queries already used in previous iterations of the "
                 "repair loop. Generated queries must cover different "
