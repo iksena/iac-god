@@ -356,7 +356,7 @@ def _run_tool_loop(
         pre_tool_reasoning = extract_reasoning_block(raw_ai_str)
         tool_args = _extract_tool_call_args(ai_msg)
         queries_for_this_round = tool_args.get("retrieval_queries", [])
-        template_for_this_round = tool_args.get("template_yaml", "")
+        seed_resources_for_this_round = tool_args.get("seed_resources", [])
 
         # Execute the tool via ToolNode.
         tool_result = _TOOL_NODE.invoke({"messages": messages})
@@ -370,7 +370,7 @@ def _run_tool_loop(
             state=state,
             agent="remediator",
             retrieval_queries=queries_for_this_round,
-            template_yaml=template_for_this_round,
+            seed_resources=seed_resources_for_this_round,
             context_returned=context_this_round,
             reasoning_block=pre_tool_reasoning,
             raw_ai_response=raw_ai_str,
@@ -413,7 +413,8 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     Execution flow:
       1. LLM is invoked with system + conversation history + current user message.
       2. If cfn-lint or deployment errors are present, the LLM generates targeted
-         Resource.Property queries and calls retrieve_schema_context.
+         Resource.Property queries and extracts the relevant resource types from
+         the annotated template, then calls retrieve_schema_context.
       3. The ToolNode executes the hybrid RAG pipeline (ChromaDB + Neo4j) and
          returns the official AWS schema context as a ToolMessage.
       4. The LLM is invoked again with the ToolMessage in context and produces
@@ -426,7 +427,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
 
     The <reasoning> block is stripped before storing in remediator_history so
     the Engineer never sees internal deliberation. It is recorded separately for
-    audit in rag_tool_calls.jsonl and remediator_history.txt.
+    audit in rag_tool_calls.jsonl and rag_tool_data_flow.txt.
     """
     iteration = state["current_iteration"]
     print(f"\n[Remediator] Analyzing errors (iteration {iteration})...")
@@ -466,7 +467,9 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
 
     # Tool guidance is appended to the system prompt so the LLM knows:
     # - when to call retrieve_schema_context (cfn-lint / deploy errors)
-    # - what arguments to pass (retrieval_queries + template_yaml)
+    # - what arguments to pass:
+    #     retrieval_queries : Resource.Property strings for ChromaDB
+    #     seed_resources    : AWS resource types (not the full YAML) for Neo4j
     # - which queries were already used (to avoid redundant retrieval)
     # - when NOT to call it (YAML syntax / pure security violations)
     tool_guidance = (
@@ -475,8 +478,9 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         "Call it when cfn-lint or deployment errors are present. Pass:\n"
         "  - `retrieval_queries`: targeted Resource.Property queries you generate "
         "based on the annotated template and errors.\n"
-        "  - `template_yaml`: the full CloudFormation YAML from the Current Template "
-        "section above.\n"
+        "  - `seed_resources`: list of AWS CloudFormation resource type strings "
+        "related to the current errors (e.g. ['AWS::S3::Bucket', 'AWS::IAM::Role']). "
+        "Extract these from the annotated template above - do NOT copy the full YAML.\n"
         "The tool runs hybrid RAG (ChromaDB + Neo4j) and returns official AWS "
         "CloudFormation schema context.\n"
         "Use that context to write accurate, schema-correct Fix Objectives.\n"
