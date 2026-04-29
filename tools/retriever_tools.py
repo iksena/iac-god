@@ -99,9 +99,12 @@ def retrieve_schema_context(
         f"{len(retrieval_queries)} queries and {len(seed_resources)} seed resources..."
     )
 
+    # execute_hybrid_retrieval expects set[str] for seed_resources and uses the
+    # `|` set-union operator internally. Pydantic/LangChain JSON schema does not
+    # support Python sets, so the tool input is list[str]; we cast at the call site.
     context = execute_hybrid_retrieval(
         retrieval_queries=retrieval_queries,
-        seed_resources=seed_resources,
+        seed_resources=set(seed_resources),
     )
 
     print(f"[Tool:retrieve_schema_context] Context: {len(context)} chars returned.")
