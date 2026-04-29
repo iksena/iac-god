@@ -24,6 +24,24 @@ from tracking.recorder import ResearchRecorder
 
 
 # ---------------------------------------------------------------------------
+# Reasoning block helpers
+# ---------------------------------------------------------------------------
+
+_REASONING_RE = re.compile(r"<reasoning>(.*?)</reasoning>", re.DOTALL)
+
+
+def extract_reasoning_block(text: str) -> str:
+    """Return the content inside the first <reasoning>…</reasoning> block, or ''."""
+    match = _REASONING_RE.search(text)
+    return match.group(1).strip() if match else ""
+
+
+def strip_reasoning_block(text: str) -> str:
+    """Remove all <reasoning>…</reasoning> blocks and return the clean text."""
+    return _REASONING_RE.sub("", text).strip()
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers — error extraction
 # ---------------------------------------------------------------------------
 
@@ -244,7 +262,6 @@ def _extract_tool_context(messages: list) -> str:
             continue
         if getattr(msg, "name", "") != "retrieve_schema_context":
             continue
-        # The tool returns the raw context string as its content.
         if isinstance(msg.content, str) and msg.content:
             return msg.content
     return ""
@@ -263,22 +280,44 @@ def _extract_retrieval_queries(messages: list) -> list[str]:
     return queries
 
 
+def _extract_tool_call_args(ai_msg: AIMessage) -> dict:
+    """Return the args dict of the first retrieve_schema_context tool call, or {}."""
+    for tc in getattr(ai_msg, "tool_calls", None) or []:
+        if tc.get("name") == "retrieve_schema_context":
+            return tc.get("args", {})
+    return {}
+
+
+def _ai_content_str(ai_msg: AIMessage) -> str:
+    """Safely coerce AIMessage.content to a plain string."""
+    content = ai_msg.content if ai_msg else ""
+    if isinstance(content, list):
+        return " ".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        ).strip()
+    return str(content)
+
+
 def _run_tool_loop(
     system_msg: SystemMessage,
     initial_messages: list,
-) -> tuple[str, list, str, list[str]]:
+    state: GraphState,
+    recorder: ResearchRecorder,
+) -> tuple[str, str, list, str, list[str]]:
     """Run the Remediator LLM → ToolNode agentic loop.
 
-    The LLM is invoked up to MAX_TOOL_ROUNDS times.  Each round:
-      1. Call the bound LLM (retrieve_schema_context available as a tool).
-      2. If the response calls retrieve_schema_context, execute via ToolNode,
-         append ToolMessages, and continue — the LLM now has schema context
-         in its context window and will produce RCA + Fix Objectives.
-      3. If the response has no tool_calls (or after tool results are returned),
-         the loop ends with the final plain-text answer.
+    Each round:
+      1. Call the bound LLM.
+      2. Extract the <reasoning> block from the AIMessage (for audit).
+      3. If the response calls retrieve_schema_context, record the tool call
+         via recorder.record_rag_tool_call(), execute via ToolNode, append
+         ToolMessages, and continue.
+      4. If no tool_calls, the loop ends with the final answer.
 
     Returns:
-        final_content     : Final AIMessage text (RCA + Fix Objectives).
+        clean_content     : Final AIMessage text with <reasoning> stripped.
+        raw_content       : Final AIMessage text as-is (reasoning included).
         all_messages      : Full message list including tool results (for audit).
         tool_context      : Schema context string returned by the tool (or "").
         retrieval_queries : Queries the LLM passed to the tool.
@@ -303,11 +342,35 @@ def _run_tool_loop(
         tool_names = [tc.get("name", "unknown") for tc in tool_calls]
         print(f"[Remediator] Tool round {round_idx + 1}: calling {tool_names}")
 
+        # --- Extract pre-tool reasoning & tool call args for recording ---
+        raw_ai_str = _ai_content_str(ai_msg)
+        pre_tool_reasoning = extract_reasoning_block(raw_ai_str)
+        tool_args = _extract_tool_call_args(ai_msg)
+        queries_for_this_round = tool_args.get("retrieval_queries", [])
+        template_for_this_round = tool_args.get("template_yaml", "")
+
+        # --- Execute tool ---
         tool_result = _TOOL_NODE.invoke({"messages": messages})
         new_tool_msgs = tool_result["messages"][len(messages):]
         messages.extend(new_tool_msgs)
-        # Tool results are now in context — loop back so LLM can read them
-        # and produce the final RCA + Fix Objectives answer.
+
+        # --- Capture what the tool returned ---
+        context_this_round = _extract_tool_context(new_tool_msgs)
+
+        # --- Record RAG tool call (with reasoning block) ---
+        recorder.record_rag_tool_call(
+            state=state,
+            agent="remediator",
+            retrieval_queries=queries_for_this_round,
+            template_yaml=template_for_this_round,
+            context_returned=context_this_round,
+            reasoning_block=pre_tool_reasoning,
+            raw_ai_response=raw_ai_str,
+            round_idx=round_idx,
+        )
+
+        # Tool results are now in context — loop back so LLM can produce
+        # the final RCA + Fix Objectives answer.
     else:
         # Exhausted MAX_TOOL_ROUNDS — force a final unbound call.
         print(
@@ -318,16 +381,12 @@ def _run_tool_loop(
         ai_msg = final_llm.invoke([system_msg] + messages)
         messages.append(ai_msg)
 
-    final_content = ai_msg.content if ai_msg else ""
-    if isinstance(final_content, list):
-        final_content = " ".join(
-            block.get("text", "") if isinstance(block, dict) else str(block)
-            for block in final_content
-        ).strip()
+    raw_content = _ai_content_str(ai_msg)
+    clean_content = strip_reasoning_block(raw_content)
 
     tool_context = _extract_tool_context(messages)
     retrieval_queries = _extract_retrieval_queries(messages)
-    return str(final_content), messages, tool_context, retrieval_queries
+    return clean_content, raw_content, messages, tool_context, retrieval_queries
 
 
 # ---------------------------------------------------------------------------
@@ -350,6 +409,12 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     - If only YAML syntax or security (checkov/trivy) errors are present, the
       LLM will skip the tool call and produce fix objectives directly from the
       error context alone.
+
+    The <reasoning> block in the LLM response is:
+      - Recorded to rag_tool_calls.jsonl and remediator_history.txt for audit
+      - Stripped before storing in remediator_history (so the Engineer never
+        sees internal deliberation)
+      - Stored separately in RemediationHistory.reasoning for traceability
 
     Always routes to Engineer after completing.
     """
@@ -420,9 +485,11 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     lc_history = _build_lc_history(state)
     user_lc_msg = HumanMessage(content=user_content)
 
-    content, _, tool_context, retrieval_queries = _run_tool_loop(
+    clean_content, raw_content, _, tool_context, retrieval_queries = _run_tool_loop(
         system_msg=system_msg,
         initial_messages=lc_history + [user_lc_msg],
+        state=state,
+        recorder=recorder,
     )
 
     if retrieval_queries:
@@ -437,7 +504,8 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         iteration=iteration,
         system_with_guidance=system_with_guidance,
         user_content=user_content,
-        content=content,
+        clean_content=clean_content,
+        raw_content=raw_content,
         flat_errors=flat_errors,
         formatted_errors=formatted_errors,
         tool_context=tool_context,
@@ -468,7 +536,8 @@ def _build_return_state(
     iteration: int,
     system_with_guidance: str,
     user_content: str,
-    content: str,
+    clean_content: str,
+    raw_content: str,
     flat_errors: list[str],
     formatted_errors: str,
     tool_context: str,
@@ -479,28 +548,35 @@ def _build_return_state(
     from config import DEFAULT_CONFIG  # local import to avoid circular
     model = DEFAULT_CONFIG.model
 
+    # LLM call log stores the raw response (with reasoning) for full audit.
     llm_record = recorder.record_llm_call(
         state=state,
         agent="remediator",
         model=model,
         prompt=f"SYSTEM:\n{system_with_guidance}\n\nUSER:\n{user_content}",
-        response=content,
+        response=raw_content,
         token_usage={},
     )
+
+    reasoning = extract_reasoning_block(raw_content)
 
     new_history_entry: RemediationHistory = {
         "iteration":         iteration,
         "errors":            state["validation_results"],
         "flat_errors":       flat_errors,
         "formatted_errors":  formatted_errors,
-        "suggestion":        content,
+        # suggestion is always clean — no <reasoning> block
+        "suggestion":        clean_content,
+        # reasoning stored separately for traceability; never forwarded to Engineer
+        "reasoning":         reasoning,
         "timestamp":         datetime.now(timezone.utc).isoformat(),
         "cfn_context":       tool_context,
         "retrieval_queries": retrieval_queries,
     }
 
     user_msg: Message      = {"role": "user",      "content": user_content}
-    assistant_msg: Message = {"role": "assistant", "content": content}
+    # assistant message in rolling history is clean — Engineer must not see reasoning
+    assistant_msg: Message = {"role": "assistant", "content": clean_content}
 
     return {
         "remediation_history": state["remediation_history"] + [new_history_entry],

@@ -32,7 +32,8 @@ class RemediationHistory(TypedDict):
     errors: list[ValidationResult]  # Raw validation snapshots (for audit / re-processing)
     flat_errors: list[str]          # Flat error strings used by render_annotated_template()
     formatted_errors: str           # Human-readable error context for LLM prompt
-    suggestion: str                 # Remediator's fix suggestion
+    suggestion: str                 # Remediator's fix suggestion (reasoning stripped)
+    reasoning: NotRequired[str]     # Raw <reasoning> block — audit only, never shown to Engineer
     timestamp: str
     cfn_context: str
     retrieval_queries: list[str]

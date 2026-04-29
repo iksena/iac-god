@@ -8,18 +8,28 @@ that the Engineer can apply in the next iteration.
 ## Grounded Objectives
 {objectives}
 
+## Output Format (MANDATORY)
+You MUST structure your entire response exactly as follows:
+
+<reasoning>
+Your internal root cause analysis: cross-reference errors, resolve ambiguities,
+explore and discard wrong approaches, think through schema constraints.
+This block is for your reasoning only — it will NOT be shown to the Engineer.
+</reasoning>
+
+### Root Cause Analysis
+Concise, final conclusions only. No hedging or "let me think" — only what you
+have already resolved in <reasoning>.
+
+### Fix Objectives
+Numbered list of concrete engineering actions.
+
 ## Output Rules
 1. Do NOT output CloudFormation YAML or code snippets
 2. Return only concise fix objectives with rationale
 3. Do NOT suggest security rule suppression
-4. Cross-reference errors, multiple tools may report the same root cause differently
-
-## Response Structure
-### Root Cause Analysis
-Correlate errors across tools. Identify if multiple errors share a single fix.
-
-### Fix Objectives
-Numbered list of concrete engineering actions.
+4. Cross-reference errors — multiple tools may report the same root cause differently
+5. The <reasoning> block MUST appear first, before ### Root Cause Analysis
 """
 
 # Per-turn: stateless — full context provided via remediation history block

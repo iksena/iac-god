@@ -90,6 +90,67 @@ class ResearchRecorder:
             f.write(json.dumps(record) + "\n")
         return record
 
+    def record_rag_tool_call(
+        self,
+        state: GraphState,
+        agent: str,
+        retrieval_queries: list[str],
+        template_yaml: str,
+        context_returned: str,
+        reasoning_block: str,
+        raw_ai_response: str,
+        round_idx: int,
+    ) -> dict:
+        """Record a retrieve_schema_context tool invocation in full detail.
+
+        Captures:
+        - The <reasoning> block the LLM produced before deciding to call the tool
+        - The exact queries passed to the tool
+        - The template_yaml passed as seed input
+        - The full schema context string returned by the tool
+        - The raw AIMessage content (reasoning + tool_call decision, pre-result)
+        - Round index within the tool loop
+
+        Written to two sinks:
+          1. rag_tool_calls.jsonl  — machine-readable, one JSON line per call
+          2. remediator_history.txt — human-readable block appended inline
+             alongside the conversation turns so the full reasoning chain is
+             visible in a single file
+        """
+        iteration = state["current_iteration"]
+        timestamp = datetime.now(timezone.utc).isoformat()
+
+        record = {
+            "agent": agent,
+            "iteration": iteration,
+            "tool_name": "retrieve_schema_context",
+            "round_idx": round_idx,
+            "retrieval_queries": retrieval_queries,
+            "template_yaml_chars": len(template_yaml),
+            "context_returned_chars": len(context_returned),
+            "reasoning_block": reasoning_block,
+            "raw_ai_response": raw_ai_response,
+            "timestamp": timestamp,
+        }
+
+        # Machine-readable sink
+        with open(self.output_dir / "rag_tool_calls.jsonl", "a") as f:
+            f.write(json.dumps(record) + "\n")
+
+        # Human-readable sink — append to remediator_history.txt inline
+        self._append_rag_tool_block(
+            iteration=iteration,
+            round_idx=round_idx,
+            retrieval_queries=retrieval_queries,
+            template_yaml_chars=len(template_yaml),
+            context_returned_chars=len(context_returned),
+            reasoning_block=reasoning_block,
+            raw_ai_response=raw_ai_response,
+            timestamp=timestamp,
+        )
+
+        return record
+
     def save_iteration_snapshot(self, state: GraphState):
         """Save full state snapshot at each iteration boundary."""
         iteration = state["current_iteration"]
@@ -224,3 +285,51 @@ class ResearchRecorder:
             turn += 1
 
         return "\n".join(lines).rstrip() + "\n"
+
+    def _append_rag_tool_block(
+        self,
+        iteration: int,
+        round_idx: int,
+        retrieval_queries: list[str],
+        template_yaml_chars: int,
+        context_returned_chars: int,
+        reasoning_block: str,
+        raw_ai_response: str,
+        timestamp: str,
+    ) -> None:
+        """Append a RAG tool call block to remediator_history.txt.
+
+        Written inline so a reader of remediator_history.txt can see the full
+        reasoning chain: [reasoning] → [tool call] → [tool result] → [final answer].
+        """
+        history_path = self.output_dir / "remediator_history.txt"
+
+        queries_str = (
+            "\n".join(f"    {i+1}. {q}" for i, q in enumerate(retrieval_queries))
+            if retrieval_queries
+            else "    (none)"
+        )
+
+        reasoning_section = (
+            reasoning_block.strip()
+            if reasoning_block.strip()
+            else "(no <reasoning> block extracted)"
+        )
+
+        block = (
+            f"\n{'~ ' * 36}\n"
+            f"[RAG Tool Call — Iteration {iteration}, Round {round_idx + 1}]\n"
+            f"Timestamp       : {timestamp}\n"
+            f"Run ID          : {self.run_id}\n"
+            f"Template input  : {template_yaml_chars} chars\n"
+            f"Context returned: {context_returned_chars} chars\n"
+            f"Queries ({len(retrieval_queries)}):\n{queries_str}\n"
+            f"{'- ' * 36}\n"
+            f"[pre-tool reasoning]\n{reasoning_section}\n"
+            f"{'- ' * 36}\n"
+            f"[raw AI response (with tool_call)]\n{raw_ai_response}\n"
+            f"{'~ ' * 36}\n"
+        )
+
+        with open(history_path, "a", encoding="utf-8") as fh:
+            fh.write(block)
