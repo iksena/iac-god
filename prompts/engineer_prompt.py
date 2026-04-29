@@ -1,4 +1,3 @@
-# prompts/engineer_prompt.py
 
 ENGINEER_SYSTEM = """You are an expert AWS CloudFormation engineer.
 You generate syntactically correct, secure, deployable, and production-ready CloudFormation YAML templates. 
@@ -33,12 +32,6 @@ marked locations.
 
 ## Remediation Suggestion
 {remediation_suggestion}
-
-## Retrieved CloudFormation Schema Context
-The following schema context was retrieved specifically for the errors above.
-Use it to produce property-correct, constraint-aware YAML:
-
-{cfn_context}
 
 {remediation_history_context}
 
