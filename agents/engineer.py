@@ -1,4 +1,3 @@
-# agents/engineer.py
 from __future__ import annotations
 
 from state import GraphState, Message, append_and_cap
@@ -43,12 +42,15 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
             errors=latest.get("flat_errors", []),
         )
 
+        # NOTE: cfn_context (RAG schema output) is intentionally NOT passed here.
+        # It is internal to the Remediator tool loop and already distilled into
+        # `latest["suggestion"]`. Forwarding raw schema chunks to the Engineer
+        # adds noise and token cost without improving template quality.
         user_content = ENGINEER_USER_REMEDIATION.format(
             iteration=latest["iteration"],
             annotated_template=annotated_template,
             error_context=latest["formatted_errors"],
             remediation_suggestion=latest["suggestion"],
-            cfn_context=latest.get("cfn_context", ""),
             remediation_history_context=remediation_history_context,
         )
 
