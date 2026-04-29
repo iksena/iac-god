@@ -31,18 +31,18 @@ _REASONING_RE = re.compile(r"<reasoning>(.*?)</reasoning>", re.DOTALL)
 
 
 def extract_reasoning_block(text: str) -> str:
-    """Return the content inside the first <reasoning>…</reasoning> block, or ''."""
+    """Return the content inside the first <reasoning>...</reasoning> block, or ''."""
     match = _REASONING_RE.search(text)
     return match.group(1).strip() if match else ""
 
 
 def strip_reasoning_block(text: str) -> str:
-    """Remove all <reasoning>…</reasoning> blocks and return the clean text."""
+    """Remove all <reasoning>...</reasoning> blocks and return the clean text."""
     return _REASONING_RE.sub("", text).strip()
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers — error extraction
+# Internal helpers - error extraction
 # ---------------------------------------------------------------------------
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
@@ -240,8 +240,6 @@ def _should_include_policy_source_context(state: GraphState) -> bool:
 # ---------------------------------------------------------------------------
 
 # retrieve_schema_context is the only tool bound to the Remediator LLM.
-# build_retrieval_queries is intentionally NOT included — it is kept as a
-# plain function in tools/remediator_tools.py but never called by any agent.
 _TOOLS = [retrieve_schema_context]
 _TOOL_NODE = ToolNode(_TOOLS)
 _REMEDIATOR_LLM = None  # lazy-initialised
@@ -305,22 +303,31 @@ def _run_tool_loop(
     state: GraphState,
     recorder: ResearchRecorder,
 ) -> tuple[str, str, list, str, list[str]]:
-    """Run the Remediator LLM → ToolNode agentic loop.
+    """Run the Remediator LLM -> ToolNode agentic loop.
 
-    Each round:
-      1. Call the bound LLM.
-      2. Extract the <reasoning> block from the AIMessage (for audit).
-      3. If the response calls retrieve_schema_context, record the tool call
-         via recorder.record_rag_tool_call(), execute via ToolNode, append
-         ToolMessages, and continue.
-      4. If no tool_calls, the loop ends with the final answer.
+    Flow per round:
+      1. Call the bound LLM with [system] + accumulated messages.
+      2. If the AIMessage contains tool_calls for retrieve_schema_context:
+         a. Extract pre-tool <reasoning> and call args for audit recording.
+         b. Execute via ToolNode; append resulting ToolMessages to the list.
+         c. Record the full tool call via recorder.record_rag_tool_call().
+         d. Loop back - LLM now sees the ToolMessage result and produces
+            the final RCA + Fix Objectives on the next round.
+      3. If no tool_calls in the AIMessage, the loop ends with the final answer.
+
+    The local `messages` list accumulates ALL turns including ToolMessages.
+    It is intentionally NOT persisted to remediator_history - only the clean
+    final user/assistant pair is stored there, ensuring _build_lc_history
+    never replays tool-call AIMessages into a future LLM call (which would
+    break LangChain message validation requiring alternating ToolCall/ToolResult
+    pairs).
 
     Returns:
-        clean_content     : Final AIMessage text with <reasoning> stripped.
-        raw_content       : Final AIMessage text as-is (reasoning included).
-        all_messages      : Full message list including tool results (for audit).
-        tool_context      : Schema context string returned by the tool (or "").
-        retrieval_queries : Queries the LLM passed to the tool.
+        clean_content     : Final answer with <reasoning> stripped (for Engineer).
+        raw_content       : Final answer as-is, reasoning included (for audit).
+        all_messages      : Full accumulated message list (for audit only).
+        tool_context      : Schema context string from the ToolMessage, or ''.
+        retrieval_queries : All queries the LLM passed to the tool.
     """
     MAX_TOOL_ROUNDS = 3
     llm = _get_bound_llm()
@@ -333,31 +340,32 @@ def _run_tool_loop(
 
         tool_calls = getattr(ai_msg, "tool_calls", None) or []
         if not tool_calls:
+            # No tool call: LLM produced its final answer (either directly or
+            # after receiving ToolMessage context from a prior round).
             print(
                 f"[Remediator] Tool loop finished after {round_idx} tool round(s). "
-                "No retrieval needed — generating RCA & Fix Objectives directly."
+                "Generating RCA & Fix Objectives."
             )
             break
 
         tool_names = [tc.get("name", "unknown") for tc in tool_calls]
         print(f"[Remediator] Tool round {round_idx + 1}: calling {tool_names}")
 
-        # --- Extract pre-tool reasoning & tool call args for recording ---
+        # Extract pre-tool reasoning and call args for recording.
         raw_ai_str = _ai_content_str(ai_msg)
         pre_tool_reasoning = extract_reasoning_block(raw_ai_str)
         tool_args = _extract_tool_call_args(ai_msg)
         queries_for_this_round = tool_args.get("retrieval_queries", [])
         template_for_this_round = tool_args.get("template_yaml", "")
 
-        # --- Execute tool ---
+        # Execute the tool via ToolNode.
         tool_result = _TOOL_NODE.invoke({"messages": messages})
         new_tool_msgs = tool_result["messages"][len(messages):]
         messages.extend(new_tool_msgs)
 
-        # --- Capture what the tool returned ---
         context_this_round = _extract_tool_context(new_tool_msgs)
 
-        # --- Record RAG tool call (with reasoning block) ---
+        # Record the full RAG tool call for audit.
         recorder.record_rag_tool_call(
             state=state,
             agent="remediator",
@@ -369,15 +377,17 @@ def _run_tool_loop(
             round_idx=round_idx,
         )
 
-        # Tool results are now in context — loop back so LLM can produce
-        # the final RCA + Fix Objectives answer.
+        # ToolMessages are now appended; loop back so the LLM sees the schema
+        # context and can produce its final RCA + Fix Objectives.
+
     else:
-        # Exhausted MAX_TOOL_ROUNDS — force a final unbound call.
+        # Exhausted MAX_TOOL_ROUNDS without a clean answer - force a final call
+        # on an unbound model so no further tool calls are possible.
         print(
             f"[Remediator] Reached MAX_TOOL_ROUNDS ({MAX_TOOL_ROUNDS}). "
-            "Forcing final answer."
+            "Forcing final answer with unbound model."
         )
-        final_llm = _build_langchain_chat_model()  # unbound — no tools
+        final_llm = _build_langchain_chat_model()  # unbound - no tools
         ai_msg = final_llm.invoke([system_msg] + messages)
         messages.append(ai_msg)
 
@@ -395,28 +405,28 @@ def _run_tool_loop(
 
 def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     """
-    Single-pass Remediator agent.
+    Remediator agent with inline RAG tool calling.
 
-    The LLM receives the annotated template, validation errors, and policy
-    context.  It has `retrieve_schema_context` available as a tool.
+    The LLM receives the annotated template and validation errors via the user
+    prompt. It has `retrieve_schema_context` bound as a tool.
 
-    - If cfn-lint or deployment errors are present, the LLM will typically
-      call `retrieve_schema_context` with its own generated queries.  The tool
-      executes the hybrid RAG pipeline and returns the schema context string
-      into the LLM's context window.  The LLM then produces RCA + Fix
-      Objectives with that context included.
+    Execution flow:
+      1. LLM is invoked with system + conversation history + current user message.
+      2. If cfn-lint or deployment errors are present, the LLM generates targeted
+         Resource.Property queries and calls retrieve_schema_context.
+      3. The ToolNode executes the hybrid RAG pipeline (ChromaDB + Neo4j) and
+         returns the official AWS schema context as a ToolMessage.
+      4. The LLM is invoked again with the ToolMessage in context and produces
+         the final RCA + Fix Objectives.
+      5. If only YAML syntax or security-only errors are present, the LLM skips
+         the tool call and produces fix objectives directly.
 
-    - If only YAML syntax or security (checkov/trivy) errors are present, the
-      LLM will skip the tool call and produce fix objectives directly from the
-      error context alone.
+    Schema context never appears in the Engineer's prompt - it is distilled into
+    the remediation suggestion the Engineer receives.
 
-    The <reasoning> block in the LLM response is:
-      - Recorded to rag_tool_calls.jsonl and remediator_history.txt for audit
-      - Stripped before storing in remediator_history (so the Engineer never
-        sees internal deliberation)
-      - Stored separately in RemediationHistory.reasoning for traceability
-
-    Always routes to Engineer after completing.
+    The <reasoning> block is stripped before storing in remediator_history so
+    the Engineer never sees internal deliberation. It is recorded separately for
+    audit in rag_tool_calls.jsonl and remediator_history.txt.
     """
     iteration = state["current_iteration"]
     print(f"\n[Remediator] Analyzing errors (iteration {iteration})...")
@@ -443,8 +453,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     )
     formatted_errors = _build_validation_errors_text(state)
 
-    # Collect prior retrieval queries across all previous iterations so the
-    # system prompt can advise the LLM not to repeat them.
+    # Collect prior retrieval queries so the LLM is told not to repeat them.
     prior_queries: list[str] = []
     for entry in state.get("remediation_history", []):
         prior_queries.extend(entry.get("retrieval_queries", []))
@@ -455,33 +464,47 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         else "  (none yet)"
     )
 
+    # Tool guidance is appended to the system prompt so the LLM knows:
+    # - when to call retrieve_schema_context (cfn-lint / deploy errors)
+    # - what arguments to pass (retrieval_queries + template_yaml)
+    # - which queries were already used (to avoid redundant retrieval)
+    # - when NOT to call it (YAML syntax / pure security violations)
     tool_guidance = (
         "\n## Tool Usage\n"
         "You have access to `retrieve_schema_context`.\n"
-        "Call it when cfn-lint or deployment errors are present.  Pass:\n"
-        "  - `retrieval_queries`: a list of targeted `Resource.Property` queries "
-        "you generate based on the annotated template and errors.\n"
-        "  - `template_yaml`: the current CloudFormation YAML (copy from the "
-        "Current Template section above).\n"
-        "The tool will return the official AWS CloudFormation schema context.\n"
-        "Use that context to write accurate Fix Objectives.\n"
-        f"Prior retrieval queries (DO NOT repeat these):\n{prior_q_block}\n"
+        "Call it when cfn-lint or deployment errors are present. Pass:\n"
+        "  - `retrieval_queries`: targeted Resource.Property queries you generate "
+        "based on the annotated template and errors.\n"
+        "  - `template_yaml`: the full CloudFormation YAML from the Current Template "
+        "section above.\n"
+        "The tool runs hybrid RAG (ChromaDB + Neo4j) and returns official AWS "
+        "CloudFormation schema context.\n"
+        "Use that context to write accurate, schema-correct Fix Objectives.\n"
+        f"Prior retrieval queries already used (DO NOT repeat these):\n{prior_q_block}\n"
         "Do NOT call the tool for YAML syntax errors or pure security violations "
-        "(checkov/trivy IDs only) — those do not benefit from schema context.\n"
-        "After the tool returns, use its output to produce the final RCA & Fix Objectives.\n"
+        "(checkov/trivy IDs only) - those do not benefit from schema context.\n"
+        "After the tool returns its context, produce the final RCA & Fix Objectives "
+        "using that context.\n"
     )
 
     system_with_guidance = system + tool_guidance
     system_msg = SystemMessage(content=system_with_guidance)
 
+    # Build the user message for this iteration.
+    # NOTE: cfn_graph_context is intentionally absent - schema context arrives
+    # via ToolMessage in the LLM context window, not injected into the prompt.
     user_content = REMEDIATOR_USER.format(
         iteration=iteration,
         annotated_template=annotated_template,
         validation_errors=formatted_errors,
         policy_source_context=policy_source_context,
-        cfn_graph_context="",
     )
 
+    # Replay prior clean user/assistant pairs as conversation history.
+    # Tool-call AIMessages from prior iterations are NOT replayed here -
+    # they were local to each iteration's tool loop and were never persisted
+    # to remediator_history. This avoids LangChain validation errors caused
+    # by orphaned ToolCall messages without matching ToolResult pairs.
     lc_history = _build_lc_history(state)
     user_lc_msg = HumanMessage(content=user_content)
 
@@ -495,7 +518,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     if retrieval_queries:
         print(
             f"[Remediator] retrieve_schema_context called with "
-            f"{len(retrieval_queries)} queries. Context: {len(tool_context)} chars."
+            f"{len(retrieval_queries)} quer(ies). Context: {len(tool_context)} chars."
         )
     print("[Remediator] Suggestions generated. Routing to Engineer.")
 
@@ -519,7 +542,14 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
 # ---------------------------------------------------------------------------
 
 def _build_lc_history(state: GraphState) -> list:
-    """Convert remediator_history dicts to LangChain message objects."""
+    """Convert remediator_history dicts to LangChain message objects.
+
+    Only clean user/assistant summary pairs are replayed. Tool-call AIMessages
+    from prior iterations are never stored in remediator_history (they stay
+    local to each _run_tool_loop call), so this function will never encounter
+    them and will never accidentally inject orphaned ToolCall messages that
+    would break LangChain's message validation.
+    """
     lc_history: list = []
     for msg in state.get("remediator_history", []):
         role = msg.get("role", "")
@@ -565,7 +595,7 @@ def _build_return_state(
         "errors":            state["validation_results"],
         "flat_errors":       flat_errors,
         "formatted_errors":  formatted_errors,
-        # suggestion is always clean — no <reasoning> block
+        # suggestion is always clean - no <reasoning> block
         "suggestion":        clean_content,
         # reasoning stored separately for traceability; never forwarded to Engineer
         "reasoning":         reasoning,
@@ -575,7 +605,7 @@ def _build_return_state(
     }
 
     user_msg: Message      = {"role": "user",      "content": user_content}
-    # assistant message in rolling history is clean — Engineer must not see reasoning
+    # assistant message stored clean - Engineer must not see <reasoning> block
     assistant_msg: Message = {"role": "assistant", "content": clean_content}
 
     return {
