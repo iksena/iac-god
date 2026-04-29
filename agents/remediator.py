@@ -290,18 +290,22 @@ def _run_tool_loop(
     system_msg: SystemMessage,
     initial_messages: list,
 ) -> tuple[str, list, list[str]]:
-    """Run the LLM → ToolNode agentic loop.
+    """Run the LLM → ToolNode agentic loop (query-generation phase only).
 
-    The LLM is invoked up to MAX_TOOL_ROUNDS times. Each round:
+    The LLM is invoked up to MAX_TOOL_ROUNDS times.  Each round:
       1. Call the LLM with [system_msg] + accumulated messages.
       2. If the response contains tool_calls, execute them via ToolNode
          and append the ToolMessages to the conversation.
-      3. If the response has no tool_calls, break — final answer ready.
+      3. If the response has no tool_calls, break.
+
+    The loop returns as soon as the LLM stops calling tools.  The caller
+    inspects retrieval_queries: if non-empty, graph.py routes to the
+    Retriever before re-entering the Remediator for synthesis.
 
     Returns:
-        final_content  : The text of the last AIMessage (the fix objectives).
-        all_messages   : Full message list including tool results (for audit).
-        retrieval_queries: Queries extracted from build_retrieval_queries calls.
+        final_content     : Last AIMessage text (may be empty in query phase).
+        all_messages      : Full message list including tool results (for audit).
+        retrieval_queries : Queries from build_retrieval_queries tool calls.
     """
     MAX_TOOL_ROUNDS = 2
     llm = _get_bound_llm()
@@ -316,7 +320,7 @@ def _run_tool_loop(
         if not tool_calls:
             print(
                 f"[Remediator] Tool loop finished after {round_idx} tool round(s). "
-                "Proceeding to final answer."
+                "No queries generated — proceeding directly to synthesis."
             )
             break
 
@@ -329,8 +333,8 @@ def _run_tool_loop(
         new_tool_msgs = tool_result["messages"][len(messages):]
         messages.extend(new_tool_msgs)
     else:
-        # Exhausted MAX_TOOL_ROUNDS — do one final call without tools available
-        # so the LLM is forced to produce its text answer.
+        # Exhausted MAX_TOOL_ROUNDS — force a final call without tools available
+        # so the LLM is forced to produce its text answer (synthesis).
         print(
             f"[Remediator] Reached MAX_TOOL_ROUNDS ({MAX_TOOL_ROUNDS}). "
             "Forcing final answer call."
@@ -341,7 +345,6 @@ def _run_tool_loop(
 
     final_content = ai_msg.content if ai_msg else ""
     if isinstance(final_content, list):
-        # Some providers return a list of content blocks
         final_content = " ".join(
             block.get("text", "") if isinstance(block, dict) else str(block)
             for block in final_content
@@ -351,13 +354,55 @@ def _run_tool_loop(
     return str(final_content), messages, retrieval_queries
 
 
+def _run_synthesis(
+    system_msg: SystemMessage,
+    initial_messages: list,
+) -> tuple[str, list]:
+    """Single LLM call for the synthesis pass (after Retriever has run).
+
+    No tools are bound — the model must produce a plain-text fix suggestion.
+    """
+    llm = _build_langchain_chat_model()  # unbound
+    messages = list(initial_messages)
+    ai_msg = llm.invoke([system_msg] + messages)
+    messages.append(ai_msg)
+
+    content = ai_msg.content if ai_msg else ""
+    if isinstance(content, list):
+        content = " ".join(
+            block.get("text", "") if isinstance(block, dict) else str(block)
+            for block in content
+        ).strip()
+    return str(content), messages
+
+
 # ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
 
 def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
+    """
+    Two-pass agent:
+
+    Pass A — Query generation (awaiting_retriever is False on entry):
+      The Remediator is called fresh after the Validator.  If cfn-lint /
+      deploy errors are present, it runs the tool loop so the LLM can call
+      build_retrieval_queries.  If the tool produced queries, the agent sets
+      awaiting_retriever=True and returns — graph.py will route to Retriever
+      next and then come back here for Pass B.
+      If no queries were produced (YAML / security-only errors), the agent
+      falls through directly to synthesis and sets awaiting_retriever=False.
+
+    Pass B — Synthesis (awaiting_retriever is True on entry):
+      The Retriever has just written fresh schema context into
+      state["retriever_context"].  The Remediator performs a single unbound
+      LLM call with that context injected and produces the fix suggestion.
+      Sets awaiting_retriever=False so graph.py routes to Engineer.
+    """
     iteration = state["current_iteration"]
-    print(f"\n[Remediator] Analyzing errors (iteration {iteration})...")
+    awaiting = state.get("awaiting_retriever", False)
+    pass_label = "B (synthesis)" if awaiting else "A (query-gen)"
+    print(f"\n[Remediator] Analyzing errors (iteration {iteration}, pass {pass_label})...")
 
     system = REMEDIATOR_SYSTEM.format(
         user_request=state["user_request"],
@@ -389,35 +434,52 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     for entry in state.get("remediation_history", []):
         prior_queries.extend(entry.get("retrieval_queries", []))
 
-    # Build the REMEDIATOR_USER content.
-    # cfn_graph_context is intentionally left blank here: when RAG context
-    # is needed the LLM will obtain it by calling build_retrieval_queries
-    # (and, in a future iteration, hybrid_rag_search) via the ToolNode.
-    # The state's retriever_context from the legacy retriever path is still
-    # forwarded as a fallback for callers that pre-populated it.
-    cfn_graph_context = state.get("retriever_context", "") if include_remediation else ""
-
-    if include_remediation:
+    # -----------------------------------------------------------------------
+    # PASS B — Synthesis: Retriever has already populated retriever_context.
+    # -----------------------------------------------------------------------
+    if awaiting:
+        cfn_graph_context = state.get("retriever_context", "")
         print(
-            f"[Remediator] RAG tool available. Prior queries: {len(prior_queries)}. "
-            f"Legacy context: {len(cfn_graph_context)} chars."
+            f"[Remediator] Pass B: using {len(cfn_graph_context)} chars of retriever context."
         )
-    else:
-        print("[Remediator] CFN schema context skipped (YAML/security-only failure).")
 
-    user_content = REMEDIATOR_USER.format(
-        iteration=iteration,
-        annotated_template=annotated_template,
-        validation_errors=formatted_errors,
-        policy_source_context=policy_source_context,
-        cfn_graph_context=cfn_graph_context,
-        remediation_history_context="",
-    )
+        user_content = REMEDIATOR_USER.format(
+            iteration=iteration,
+            annotated_template=annotated_template,
+            validation_errors=formatted_errors,
+            policy_source_context=policy_source_context,
+            cfn_graph_context=cfn_graph_context,
+            remediation_history_context="",
+        )
+
+        system_msg = SystemMessage(content=system)
+
+        lc_history = _build_lc_history(state)
+        user_lc_msg = HumanMessage(content=user_content)
+        content, _ = _run_synthesis(
+            system_msg=system_msg,
+            initial_messages=lc_history + [user_lc_msg],
+        )
+
+        retrieval_queries = state.get("retriever_queries", [])
+        print("[Remediator] Pass B complete. Routing to Engineer.")
+        return _build_return_state(
+            state=state,
+            iteration=iteration,
+            system_with_policy=system,
+            user_content=user_content,
+            content=content,
+            flat_errors=flat_errors,
+            formatted_errors=formatted_errors,
+            cfn_graph_context=cfn_graph_context,
+            retrieval_queries=retrieval_queries,
+            awaiting_retriever=False,
+            recorder=recorder,
+        )
 
     # -----------------------------------------------------------------------
-    # Build system message with tool-usage policy injected when RAG is useful.
+    # PASS A — Query generation: call tool loop, then decide routing.
     # -----------------------------------------------------------------------
-    tool_policy = ""
     if include_remediation:
         prior_q_block = (
             "\n".join(f"  - {q}" for q in prior_queries)
@@ -434,18 +496,84 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
             f"Prior retrieval queries (DO NOT repeat these):\n{prior_q_block}\n"
             "Do NOT call the tool for YAML syntax errors or pure security "
             "violations (checkov/trivy IDs).\n"
-            "After receiving the tool result, use the queries to ground your "
-            "Root Cause Analysis and Fix Objectives.\n"
+            "After the tool returns, your response for this pass should be a "
+            "brief acknowledgement only — the actual fix suggestions will be "
+            "generated in a second pass once schema context is retrieved.\n"
         )
+        print(
+            f"[Remediator] Pass A: RAG tool available. Prior queries: {len(prior_queries)}."
+        )
+    else:
+        tool_policy = ""
+        print("[Remediator] Pass A: CFN schema context skipped (YAML/security-only failure).")
+
+    # cfn_graph_context is intentionally empty for Pass A — context will be
+    # injected in Pass B after Retriever runs.
+    cfn_graph_context = ""
+
+    user_content = REMEDIATOR_USER.format(
+        iteration=iteration,
+        annotated_template=annotated_template,
+        validation_errors=formatted_errors,
+        policy_source_context=policy_source_context,
+        cfn_graph_context=cfn_graph_context,
+        remediation_history_context="",
+    )
 
     system_with_policy = system + tool_policy
     system_msg = SystemMessage(content=system_with_policy)
 
-    # -----------------------------------------------------------------------
-    # Seed the message thread with remediator_history (rolling window) + user.
-    # -----------------------------------------------------------------------
-    # remediator_history stores {"role": ..., "content": ...} dicts;
-    # convert to LangChain message objects for the ToolNode loop.
+    lc_history = _build_lc_history(state)
+    user_lc_msg = HumanMessage(content=user_content)
+
+    content, _, retrieval_queries_from_tool = _run_tool_loop(
+        system_msg=system_msg,
+        initial_messages=lc_history + [user_lc_msg],
+    )
+
+    if include_remediation and retrieval_queries_from_tool:
+        # Queries produced — hand off to Retriever before synthesis.
+        print(
+            f"[Remediator] Pass A: {len(retrieval_queries_from_tool)} queries produced. "
+            "Routing to Retriever."
+        )
+        return _build_return_state(
+            state=state,
+            iteration=iteration,
+            system_with_policy=system_with_policy,
+            user_content=user_content,
+            content=content,
+            flat_errors=flat_errors,
+            formatted_errors=formatted_errors,
+            cfn_graph_context="",
+            retrieval_queries=retrieval_queries_from_tool,
+            awaiting_retriever=True,
+            recorder=recorder,
+        )
+
+    # No queries (YAML / security-only) — synthesise immediately.
+    print("[Remediator] Pass A: no queries — synthesising fix directly.")
+    return _build_return_state(
+        state=state,
+        iteration=iteration,
+        system_with_policy=system_with_policy,
+        user_content=user_content,
+        content=content,
+        flat_errors=flat_errors,
+        formatted_errors=formatted_errors,
+        cfn_graph_context="",
+        retrieval_queries=[],
+        awaiting_retriever=False,
+        recorder=recorder,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+def _build_lc_history(state: GraphState) -> list:
+    """Convert remediator_history dicts to LangChain message objects."""
     lc_history: list = []
     for msg in state.get("remediator_history", []):
         role = msg.get("role", "")
@@ -454,37 +582,35 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
             lc_history.append(HumanMessage(content=content))
         elif role == "assistant":
             lc_history.append(AIMessage(content=content))
+    return lc_history
 
-    user_lc_msg = HumanMessage(content=user_content)
-    initial_messages = lc_history + [user_lc_msg]
 
-    # -----------------------------------------------------------------------
-    # Run the ToolNode agentic loop.
-    # -----------------------------------------------------------------------
-    content, all_messages, retrieval_queries_from_tool = _run_tool_loop(
-        system_msg=system_msg,
-        initial_messages=initial_messages,
-    )
-
-    # Merge tool-produced queries with any legacy queries from state.
-    retrieval_queries = retrieval_queries_from_tool or state.get("retriever_queries", [])
-
-    # -----------------------------------------------------------------------
-    # Audit logging via recorder.
-    # -----------------------------------------------------------------------
+def _build_return_state(
+    state: GraphState,
+    iteration: int,
+    system_with_policy: str,
+    user_content: str,
+    content: str,
+    flat_errors: list[str],
+    formatted_errors: str,
+    cfn_graph_context: str,
+    retrieval_queries: list[str],
+    awaiting_retriever: bool,
+    recorder: ResearchRecorder,
+) -> GraphState:
+    """Assemble the state update dict returned by both remediator passes."""
+    from config import DEFAULT_CONFIG  # local import to avoid circular
     model = DEFAULT_CONFIG.model
+
     llm_record = recorder.record_llm_call(
         state=state,
         agent="remediator",
         model=model,
         prompt=f"SYSTEM:\n{system_with_policy}\n\nUSER:\n{user_content}",
         response=content,
-        token_usage={},  # LangChain path; token counts available via callbacks if needed
+        token_usage={},
     )
 
-    # -----------------------------------------------------------------------
-    # Persist state.
-    # -----------------------------------------------------------------------
     new_history_entry: RemediationHistory = {
         "iteration":         iteration,
         "errors":            state["validation_results"],
@@ -496,22 +622,20 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         "retrieval_queries": retrieval_queries,
     }
 
-    # Store history as plain dicts (existing Message type) for compatibility
-    # with the rest of the pipeline.
-    user_msg: Message = {"role": "user",      "content": user_content}
+    user_msg: Message    = {"role": "user",      "content": user_content}
     assistant_msg: Message = {"role": "assistant", "content": content}
 
-    print("[Remediator] Suggestions generated. Routing back to Engineer.")
+    # Only advance the iteration counter on the synthesis pass (Pass B or
+    # direct synthesis) so the Engineer sees the correct iteration number.
+    next_iteration = iteration + 1 if not awaiting_retriever else iteration
+
     return {
         "remediation_history": state["remediation_history"] + [new_history_entry],
-        "current_iteration":   iteration + 1,
+        "current_iteration":   next_iteration,
         "llm_call_log":        state["llm_call_log"] + [llm_record],
         "remediator_history":  append_and_cap(
             state["remediator_history"], user_msg, assistant_msg
         ),
         "retriever_queries":   retrieval_queries,
+        "awaiting_retriever":  awaiting_retriever,
     }
-
-
-# Avoid unused import warning — DEFAULT_CONFIG is used for model name in audit log.
-from config import DEFAULT_CONFIG  # noqa: E402

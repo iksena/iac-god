@@ -108,6 +108,12 @@ class GraphState(TypedDict):
     retriever_context: str
     retriever_queries: list[str]
 
+    # --- Remediator routing flag ---
+    # Set to True by the Remediator's first pass (tool-call phase) to signal
+    # graph.py that the Retriever should run next.  Cleared (False) by the
+    # Remediator's second pass (synthesis phase) once context has been consumed.
+    awaiting_retriever: bool
+
     # --- Final output ---
     final_template: Optional[str]
     run_id: str
