@@ -20,3 +20,6 @@ neo4j
 chromadb
 langchain-chroma
 langchain-huggingface
+langchain-openai>=0.3
+langchain-anthropic>=0.3
+langgraph>=0.2

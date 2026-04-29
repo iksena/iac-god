@@ -14,12 +14,11 @@ You MUST structure your entire response exactly as follows:
 <reasoning>
 Your internal root cause analysis: cross-reference errors, resolve ambiguities,
 explore and discard wrong approaches, think through schema constraints.
-This block is for your reasoning only - it will NOT be shown to the Engineer.
+This block is for your reasoning only. It will NOT be shown to the Engineer.
 </reasoning>
 
 ### Root Cause Analysis
-Concise, final conclusions only. No hedging or "let me think" - only what you
-have already resolved in <reasoning>.
+Correlate errors across tools. Identify if multiple errors share a single fix.
 
 ### Fix Objectives
 Numbered list of concrete engineering actions.
@@ -32,9 +31,7 @@ Numbered list of concrete engineering actions.
 5. The <reasoning> block MUST appear first, before ### Root Cause Analysis
 """
 
-# Per-turn: stateless - full context provided via remediation history block.
-# Schema context is NOT injected here - the LLM calls retrieve_schema_context
-# as a tool and receives it via ToolMessage in the LLM context window.
+
 REMEDIATOR_USER = """\
 ## Current Template (Iteration {iteration})
 The template below has `# ERROR:` comments injected at the exact line numbers
