@@ -65,7 +65,6 @@ MAX_HISTORY_PAIRS = 10  # keep last 5 user+assistant pairs = 10 messages
 
 def append_and_cap(history: list[Message], user_msg: Message, assistant_msg: Message) -> list[Message]:
     updated = history + [user_msg, assistant_msg]
-    # Always keep system msg if present, then cap the tail
     pairs = updated[-MAX_HISTORY_PAIRS * 2:]
     return pairs
 
@@ -82,7 +81,7 @@ class GraphState(TypedDict):
     validation_passed: bool
     deploy_validation_result: Optional[DeployValidationResult]
 
-    # --- Static analysis smell report (populated by smell detector, consumed by retriever) ---
+    # --- Static analysis smell report ---
     smell_report: NotRequired[list[dict]]
 
     # --- Remediation history (all iterations) ---
@@ -96,23 +95,16 @@ class GraphState(TypedDict):
     llm_call_log: list[LLMCallRecord]
 
     # --- Per-agent conversation histories ---
-    # Kept for debugging and recording only.
-    # The Remediator and Retriever agents do NOT pass these as LLM context;
-    # structured remediation_history is injected via the prompt instead.
     planner_history:    list[Message]
     engineer_history:   list[Message]
     remediator_history: list[Message]
     retriever_history:  list[Message]
 
-    # --- Retriever outputs ---
+    # --- Retriever outputs (populated by retrieve_schema_context tool) ---
+    # retriever_context: schema context string from the last tool call
+    # retriever_queries: queries the LLM passed to the tool
     retriever_context: str
     retriever_queries: list[str]
-
-    # --- Remediator routing flag ---
-    # Set to True by the Remediator's first pass (tool-call phase) to signal
-    # graph.py that the Retriever should run next.  Cleared (False) by the
-    # Remediator's second pass (synthesis phase) once context has been consumed.
-    awaiting_retriever: bool
 
     # --- Final output ---
     final_template: Optional[str]
