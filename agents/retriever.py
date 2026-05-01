@@ -144,10 +144,11 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     Orchestration steps:
       1. Extract cfn-lint + deploy errors (security stages excluded).
       2. Annotate the template to seed resource types for Neo4j.
-      3. Build the single-turn retrieval prompt (pure, no I/O).
+      3. Build the retrieval prompt (pure, no I/O).
       4. Call the LLM (with rolling retriever_history) to generate queries.
       5. Execute ChromaDB (semantic) + Neo4j (graph) hybrid retrieval.
-      6. Append this invocation to retriever_history.txt via the recorder.
+      6. Persist prompt, response, queries, and full schema context to
+         retriever_history.txt via the recorder.
       7. Return retriever_context, retriever_queries, and updated
          retriever_history into state.
     """
@@ -190,7 +191,7 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     assistant_msg: Message = {"role": "assistant", "content": raw_response}
 
     llm_record = recorder.record_llm_call(
-    state=state,
+        state=state,
         agent="retriever",
         model=model,
         prompt=f"SYSTEM:\n{QUERY_GEN_SYSTEM}\n\nUSER:\n{user_content}",
@@ -210,6 +211,7 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         response=raw_response,
         retrieval_queries=retrieval_queries,
         context_chars=len(cfn_context),
+        retrieved_context=cfn_context,
     )
 
     print(
