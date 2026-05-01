@@ -27,10 +27,13 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     is_remediation = bool(state["remediation_history"])
 
     if not is_remediation:
-        # Iteration 1: simple generation request — no history yet.
+        # Iteration 1: no history yet — plain single-turn generation.
         user_content = ENGINEER_USER_INITIAL
+        history_to_pass: list[Message] = []
     else:
-        # Iteration 2+: full context in prompt — no conversation history passed to LLM.
+        # Iteration 2+: build full context prompt and pass rolling history
+        # so the model can track its own prior generations and the fixes
+        # it was asked to apply.
         latest = state["remediation_history"][-1]
         remediation_history_context = _build_remediation_history_context(
             state["remediation_history"][:-1]
@@ -51,12 +54,16 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
             cfn_context=latest.get("cfn_context", ""),
             remediation_history_context=remediation_history_context,
         )
+        # Pass the rolling conversation history so the LLM has prior
+        # generation context. The current user turn is appended below.
+        history_to_pass = state.get("engineer_history", [])
 
     user_msg: Message = {"role": "user", "content": user_content}
 
-    # Single-turn call: no conversation history passed — full context is in the prompt.
-    # engineer_history is kept in state for debugging/recording only.
-    content, usage = _call_llm_with_history(client, model, system, [user_msg])
+    content, usage = _call_llm_with_history(
+        client, model, system,
+        history_to_pass + [user_msg],
+    )
     template = _strip_yaml_fences(content)
     assistant_msg: Message = {"role": "assistant", "content": content}
 
@@ -73,8 +80,9 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     return {
         "cloudformation_template": template,
         "llm_call_log": state["llm_call_log"] + [llm_record],
-        # Keep history for recording/debugging — no longer used as LLM conversation context
-        "engineer_history": append_and_cap(state["engineer_history"], user_msg, assistant_msg),
+        "engineer_history": append_and_cap(
+            state.get("engineer_history", []), user_msg, assistant_msg
+        ),
     }
 
 

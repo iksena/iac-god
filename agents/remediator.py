@@ -281,7 +281,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
 
     formatted_errors = _build_validation_errors_text(state)
 
-    # Compute flat error list once here; stored in history so the engineer
+    # Compute flat error list once; stored in history so the engineer
     # can use it directly without re-deriving from raw ValidationResult snapshots.
     flat_errors = extract_errors(
         state.get("validation_results", []),
@@ -292,11 +292,6 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         errors=flat_errors,
     )
 
-    # NOTE: remediation_history_context is intentionally NOT passed here.
-    # The remediator maintains a rolling conversation history (remediator_history)
-    # that is fed directly to the LLM via _call_llm_with_history(). Injecting a
-    # separately-formatted history text block into the user prompt would
-    # double-count prior iterations and waste tokens.
     user_content = REMEDIATOR_USER.format(
         iteration=iteration,
         annotated_template=annotated_template,
@@ -308,6 +303,8 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     user_msg: Message = {"role": "user", "content": user_content}
 
     client, model = _build_client()
+    # Pass rolling conversation history so the model can track prior
+    # error analysis and suggestions across iterations.
     content, usage = _call_llm_with_history(
         client,
         model,
@@ -342,6 +339,6 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         "current_iteration":   iteration + 1,
         "llm_call_log":        state["llm_call_log"] + [llm_record],
         "remediator_history":  append_and_cap(
-            state["remediator_history"], user_msg, assistant_msg
+            state.get("remediator_history", []), user_msg, assistant_msg
         ),
     }

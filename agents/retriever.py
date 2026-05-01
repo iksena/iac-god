@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from state import GraphState, RemediationHistory
+from state import GraphState, RemediationHistory, Message, append_and_cap
 from agents.llm_client import _build_client, _call_llm_with_history
 from prompts.retriever_prompt import QUERY_GEN_SYSTEM
 from tools.template_annotator import (
@@ -122,16 +122,20 @@ def build_retrieval_prompt(
 
 def _call_query_generator(
     user_content: str,
-) -> tuple[str, str, str, dict | None]:
-    """Send the retrieval prompt to the LLM and return the raw response."""
+    history: list[Message],
+) -> tuple[str, str, dict | None]:
+    """Send the retrieval prompt to the LLM with conversation history.
+
+    Returns (model, raw_response, token_usage).
+    """
     client, model = _build_client()
     raw_response, usage = _call_llm_with_history(
         client,
         model,
         system=QUERY_GEN_SYSTEM,
-        messages=[{"role": "user", "content": user_content}],
+        messages=history + [{"role": "user", "content": user_content}],
     )
-    return model, raw_response, user_content, usage
+    return model, raw_response, usage
 
 
 def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
@@ -141,10 +145,11 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
       1. Extract cfn-lint + deploy errors (security stages excluded).
       2. Annotate the template to seed resource types for Neo4j.
       3. Build the single-turn retrieval prompt (pure, no I/O).
-      4. Call the LLM to generate targeted schema queries.
+      4. Call the LLM (with rolling retriever_history) to generate queries.
       5. Execute ChromaDB (semantic) + Neo4j (graph) hybrid retrieval.
       6. Append this invocation to retriever_history.txt via the recorder.
-      7. Return retriever_context and retriever_queries into state.
+      7. Return retriever_context, retriever_queries, and updated
+         retriever_history into state.
     """
     iteration = state["current_iteration"]
     print(f"\n[Retriever] Building CFN context (iteration {iteration})...")
@@ -175,11 +180,17 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         remediation_history=state.get("remediation_history", []),
     )
 
-    model, raw_response, _, usage = _call_query_generator(user_content)
+    model, raw_response, usage = _call_query_generator(
+        user_content=user_content,
+        history=state.get("retriever_history", []),
+    )
     retrieval_queries = parse_query_response(raw_response) or errors[:8]
 
+    user_msg: Message = {"role": "user", "content": user_content}
+    assistant_msg: Message = {"role": "assistant", "content": raw_response}
+
     llm_record = recorder.record_llm_call(
-        state=state,
+    state=state,
         agent="retriever",
         model=model,
         prompt=f"SYSTEM:\n{QUERY_GEN_SYSTEM}\n\nUSER:\n{user_content}",
@@ -207,7 +218,10 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     )
 
     return {
-        "retriever_context": cfn_context,
-        "retriever_queries": retrieval_queries,
-        "llm_call_log":      state["llm_call_log"] + [llm_record],
+        "retriever_context":  cfn_context,
+        "retriever_queries":  retrieval_queries,
+        "llm_call_log":       state["llm_call_log"] + [llm_record],
+        "retriever_history":  append_and_cap(
+            state.get("retriever_history", []), user_msg, assistant_msg
+        ),
     }
