@@ -49,6 +49,48 @@ def validate_yaml(template: str) -> ValidationResult:
         raw_output=raw_output,
     )
 
+
+def _format_cfn_lint_finding(finding: dict) -> str:
+    """Format a single cfn-lint JSON finding into a structured error string.
+
+    Output format (all fields that are present):
+        [W3005] line 42 | Resource: MyBucket | <message> | <rule description> | See: <url>
+
+    The 'line NN' token is intentionally kept as a plain word-number pair so
+    that the regex in retriever.py (_WORD_LINE_RE) and the line-extraction
+    logic in template_annotator.py can both find it without needing to parse
+    a raw Python dict repr.
+    """
+    rule    = finding.get("Rule") or {}
+    rule_id = rule.get("Id") or "?"
+
+    location = finding.get("Location") or {}
+    start    = location.get("Start") or {}
+    line_num = start.get("LineNumber")          # int or None
+
+    # Resource logical ID sits at Path[1] when present.
+    path = location.get("Path") or []
+    resource = path[1] if len(path) > 1 else None
+
+    message     = (finding.get("Message") or "").strip()
+    description = (rule.get("Description") or "").strip()
+    source_url  = (rule.get("Source") or "").strip()
+
+    parts: list[str] = [f"[{rule_id}]"]
+    if line_num is not None:
+        parts.append(f"line {line_num}")
+    if resource:
+        parts.append(f"Resource: {resource}")
+    if message:
+        parts.append(message)
+    if description and description.lower() != message.lower():
+        parts.append(description)
+    if source_url:
+        parts.append(f"See: {source_url}")
+
+    return " | ".join(parts)
+
+
 def validate_cfn_lint(template: str) -> ValidationResult:
     """Stage 2: AWS CloudFormation linting via cfn-lint."""
     with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
@@ -64,12 +106,7 @@ def validate_cfn_lint(template: str) -> ValidationResult:
         if result.returncode != 0:
             try:
                 findings = json.loads(raw)
-                errors = [
-                    f"[{f.get('Rule',{}).get('Id','?')}] "
-                    f"{f.get('Location',{}).get('Start',{})}: "
-                    f"{f.get('Message','')}"
-                    for f in findings
-                ]
+                errors = [_format_cfn_lint_finding(f) for f in findings]
             except json.JSONDecodeError:
                 errors = [raw]
         return ValidationResult(
@@ -116,7 +153,6 @@ def validate_checkov(template: str) -> ValidationResult:
             passed_policies = len(passed)
             total_policies = failed_policies + passed_policies
 
-            # Filtered compliance includes only high/critical failures.
             for check in failed:
                 severity = str(check.get("severity", "")).lower()
                 if severity in ("high", "critical"):
@@ -124,7 +160,7 @@ def validate_checkov(template: str) -> ValidationResult:
 
             errors = [
                 f"[{c['check_id']}] {c['check_result']['result']}: "
-                f"{c['resource']} — {c['check'].get('name','')}"
+                f"{c['resource']} \u2014 {c['check'].get('name','')}"
                 for c in failed
             ]
         except (json.JSONDecodeError, KeyError):
@@ -181,7 +217,6 @@ def validate_trivy(template: str) -> ValidationResult:
                 data = json.loads(raw)
                 for r in data.get("Results", []):
                     summary = r.get("MisconfSummary") or {}
-                    # Trivy reports the number of successful and failed checks.
                     passed_policies += int(summary.get("Successes", 0) or 0)
                     failed_policies += int(summary.get("Failures", 0) or 0)
 
@@ -189,7 +224,7 @@ def validate_trivy(template: str) -> ValidationResult:
                         if m.get("Severity", "").lower() in ("high", "critical"):
                             filtered_failed_policies += 1
                             errors.append(
-                                f"[{m['ID']}] {m['Severity']}: {m['Title']} — {m['Message']}"
+                                f"[{m['ID']}] {m['Severity']}: {m['Title']} \u2014 {m['Message']}"
                             )
 
                 total_policies = passed_policies + failed_policies
@@ -220,7 +255,7 @@ def validate_trivy(template: str) -> ValidationResult:
                 raw_output="TOOL_NOT_FOUND",
             )
 
-# Replace only run_all_validators:
+
 def run_all_validators(
     template: str,
     deploy_config: DeployConfig = DEFAULT_DEPLOY_CONFIG,
@@ -237,21 +272,8 @@ def run_all_validators(
         cfn_lint_result,
     ]
 
-    # Trivy runs only after YAML and cfn-lint succeed.
-    # if yaml_result["passed"] and cfn_lint_result["passed"]:
-    #     trivy_result = validate_trivy(template)
-    # else:
-    #     trivy_result = ValidationResult(
-    #         stage="trivy",
-    #         passed=False,
-    #         errors=[],
-    #         raw_output="Skipped: yaml/cfn-lint prerequisite validation failed",
-    #     )
-
-    # results.append(trivy_result)
     static_passed = all(r["passed"] for r in results)
 
-    # Stage 5: Deployability check (only if static stages pass)
     if static_passed and deploy_config.target != DeployTarget.NONE:
         deploy_result = validate_deployment(template, deploy_config)
     else:
