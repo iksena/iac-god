@@ -160,12 +160,7 @@ def _build_policy_source_context(validation_results: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 def _build_validation_errors_text(state: GraphState) -> str:
-    """Build the full validation error section for the remediator user prompt.
-
-    Uses format_cfn_lint_errors() and format_deploy_errors() from
-    retriever_helpers so both the retriever and remediator prompts render
-    errors with identical structure.
-    """
+    """Build the full validation error section for the remediator user prompt."""
     error_blocks: list[str] = []
 
     validation_results = state.get("validation_results", [])
@@ -210,15 +205,7 @@ def _build_validation_errors_text(state: GraphState) -> str:
 # ---------------------------------------------------------------------------
 
 def should_include_remediation_context(state: GraphState) -> bool:
-    """Return True only when cfn-lint or deployment failures are present.
-
-    YAML parse errors are excluded: they indicate malformed YAML syntax, not
-    CloudFormation schema violations, so schema RAG context provides no
-    actionable signal — the LLM just needs to fix the YAML structure.
-
-    Security-only failures (checkov, trivy) are also excluded — they are
-    handled by the policy source context path instead.
-    """
+    """Return True only when cfn-lint or deployment failures are present."""
     validation_results = state.get("validation_results", [])
     cfn_lint_result = get_latest_stage_result(validation_results, "cfn-lint")
 
@@ -250,6 +237,8 @@ def _should_include_policy_source_context(state: GraphState) -> bool:
 # ---------------------------------------------------------------------------
 
 def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
+    # current_iteration was already incremented by validator_agent; use it
+    # as-is for history labelling (reflects the iteration just completed).
     iteration = state["current_iteration"]
     print(f"\n[Remediator] Analyzing errors (iteration {iteration})...")
 
@@ -281,8 +270,6 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
 
     formatted_errors = _build_validation_errors_text(state)
 
-    # Compute flat error list once; stored in history so the engineer
-    # can use it directly without re-deriving from raw ValidationResult snapshots.
     flat_errors = extract_errors(
         state.get("validation_results", []),
         state.get("deploy_validation_result"),
@@ -303,8 +290,6 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     user_msg: Message = {"role": "user", "content": user_content}
 
     client, model = _build_client()
-    # Pass rolling conversation history so the model can track prior
-    # error analysis and suggestions across iterations.
     content, usage = _call_llm_with_history(
         client,
         model,
@@ -334,9 +319,10 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     }
 
     print("[Remediator] Suggestions generated. Routing back to Engineer.")
+    # NOTE: current_iteration is NOT incremented here — validator_agent owns
+    # the counter and already advanced it before this node ran.
     return {
         "remediation_history": state["remediation_history"] + [new_history_entry],
-        "current_iteration":   iteration + 1,
         "llm_call_log":        state["llm_call_log"] + [llm_record],
         "remediator_history":  append_and_cap(
             state.get("remediator_history", []), user_msg, assistant_msg
