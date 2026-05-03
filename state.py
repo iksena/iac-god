@@ -61,7 +61,7 @@ def compact_message_history(history: list[Message]) -> list[Message]:
 
     return compacted
 
-MAX_HISTORY_PAIRS = 10  # keep last 5 user+assistant pairs = 10 messages
+MAX_HISTORY_PAIRS = 15  # keep last 15 user+assistant pairs = 30 messages
 
 def append_and_cap(history: list[Message], user_msg: Message, assistant_msg: Message) -> list[Message]:
     updated = history + [user_msg, assistant_msg]
