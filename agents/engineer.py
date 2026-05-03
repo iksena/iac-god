@@ -3,36 +3,31 @@ from __future__ import annotations
 
 from state import GraphState, Message, append_and_cap
 from agents.llm_client import _build_client, _call_llm_with_history
-from agents.history_context import _build_remediation_history_context
 from prompts.engineer_prompt import (
     ENGINEER_SYSTEM,
     ENGINEER_USER_INITIAL,
     ENGINEER_USER_SIMPLE_FIX,
     ENGINEER_USER_REMEDIATION,
 )
-from tools.template_annotator import render_annotated_template
 from tools.retriever_helpers import (
     extract_errors,
     format_cfn_lint_errors,
     format_deploy_errors,
-    get_latest_stage_result,
 )
 from tracking.recorder import ResearchRecorder
 
 
-def _build_simple_fix_errors(state: GraphState) -> tuple[str, list[str]]:
-    """Build the formatted errors block and flat error list for simple-fix mode.
+def _build_simple_fix_errors(state: GraphState) -> str:
+    """Format validation errors for Path B (simple self-correction).
 
-    Produces the same rich format as the remediator prompt so the engineer
-    sees [RuleId] line N | Resource: X | message | description for each
-    cfn-lint finding, and a structured block for deploy failures.
+    Produces the same rich format used by the remediator:
+      [RuleId] line N | Resource: LogicalId | message | description | See: <url>
 
-    Returns (formatted_errors_text, flat_errors_list).
+    The engineer's conversation history already contains the template, so only
+    the error text is needed in the user turn.
     """
     validation_results = state.get("validation_results", [])
     deploy_result = state.get("deploy_validation_result")
-
-    flat_errors = extract_errors(validation_results, deploy_result)
 
     error_blocks: list[str] = []
 
@@ -64,8 +59,7 @@ def _build_simple_fix_errors(state: GraphState) -> tuple[str, list[str]]:
             f"### DEPLOYABILITY Errors\n{format_deploy_errors(deploy_result)}"
         )
 
-    formatted = "\n\n".join(error_blocks) if error_blocks else "No validation errors reported."
-    return formatted, flat_errors
+    return "\n\n".join(error_blocks) if error_blocks else "No validation errors reported."
 
 
 def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
@@ -87,7 +81,8 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
 
     if not has_remediation_history and not has_validation_errors:
         # ----------------------------------------------------------------
-        # Path A — Iteration 1: clean generation, no prior context at all.
+        # Path A — Iteration 1: no history, no errors; clean generation.
+        # No conversation history to pass yet.
         # ----------------------------------------------------------------
         print("[Engineer] Path A: initial generation.")
         user_content = ENGINEER_USER_INITIAL
@@ -95,45 +90,31 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
 
     elif has_validation_errors and not has_remediation_history:
         # ----------------------------------------------------------------
-        # Path B — Simple mode: validator failed but remediator has not run
-        # yet for this error cycle.  The engineer self-corrects using the
-        # rich cfn-lint error format (rule ID + line + resource + description)
-        # and the annotated template.  No schema context needed.
+        # Path B — Simple mode: validator failed but remediator has not run.
+        # User turn contains ONLY the rich validation errors.
+        # The template is already in engineer_history (conv context).
         # ----------------------------------------------------------------
         print("[Engineer] Path B: simple self-correction from validation errors.")
-        formatted_errors, flat_errors = _build_simple_fix_errors(state)
-        annotated_template = render_annotated_template(
-            template_yaml=state.get("cloudformation_template", ""),
-            errors=flat_errors,
-        )
+        validation_errors = _build_simple_fix_errors(state)
         user_content = ENGINEER_USER_SIMPLE_FIX.format(
             iteration=iteration,
-            annotated_template=annotated_template,
-            validation_errors=formatted_errors,
+            validation_errors=validation_errors,
         )
         history_to_pass = state.get("engineer_history", [])
 
     else:
         # ----------------------------------------------------------------
-        # Path C — Moderate mode: remediator has produced a suggestion;
-        # use full context prompt with schema context.
+        # Path C — Moderate mode: remediator has produced an RCA + fix
+        # objectives in remediation_history[-1].suggestion.
+        # User turn contains ONLY the formatted errors + remediator suggestion.
+        # The template and all prior context are already in engineer_history.
         # ----------------------------------------------------------------
-        print("[Engineer] Path C: moderate remediation with schema context.")
+        print("[Engineer] Path C: moderate remediation with RCA & fix objectives.")
         latest = state["remediation_history"][-1]
-        remediation_history_context = _build_remediation_history_context(
-            state["remediation_history"][:-1]
-        )
-        annotated_template = render_annotated_template(
-            template_yaml=state.get("cloudformation_template", ""),
-            errors=latest.get("flat_errors", []),
-        )
         user_content = ENGINEER_USER_REMEDIATION.format(
             iteration=latest["iteration"],
-            annotated_template=annotated_template,
-            error_context=latest["formatted_errors"],
+            formatted_errors=latest["formatted_errors"],
             remediation_suggestion=latest["suggestion"],
-            cfn_context=latest.get("cfn_context", ""),
-            remediation_history_context=remediation_history_context,
         )
         history_to_pass = state.get("engineer_history", [])
 

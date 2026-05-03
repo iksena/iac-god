@@ -14,76 +14,60 @@ Output ONLY the raw CloudFormation YAML. No explanation, no markdown fences.
 """
 
 # ---------------------------------------------------------------------------
-# Path A: clean generation on iteration 1
+# Path A — iteration 1, no prior context
 # ---------------------------------------------------------------------------
 ENGINEER_USER_INITIAL = (
     "Generate the CloudFormation template that fully satisfies all objectives above."
 )
 
 # ---------------------------------------------------------------------------
-# Path B: simple self-correction
-# The engineer receives rich cfn-lint errors (rule ID, line number, resource
-# logical ID, human-readable description) and the annotated template with
-# inline # ERROR: comments at the reported lines.  No schema RAG context is
-# provided — the errors carry enough signal for the model to self-correct.
+# Path B — simple self-correction (all failing stages < SIMPLE_MODE_THRESHOLD)
+#
+# The engineer's conversation history already holds the previously generated
+# template as an assistant turn, so there is no need to resend it.
+# The user turn carries ONLY the rich validation errors so the model can
+# identify and patch exactly the lines that are wrong.
+#
+# Error format (produced by format_cfn_lint_errors in retriever_helpers):
+#   [RuleId] line N | Resource: LogicalId | message | description | See: <url>
 # ---------------------------------------------------------------------------
 ENGINEER_USER_SIMPLE_FIX = """\
-Iteration {iteration} — The validator found errors in your template.
-Fix ALL errors listed below directly. No Remediator guidance is provided at this stage.
-
-## Current Template
-Lines prefixed with `# ERROR:` are injected at the exact line numbers reported
-by cfn-lint. Each error line also shows the Resource logical ID and rule
-description so you can resolve the issue without additional context.
-
-```yaml
-{annotated_template}
-```
+Iteration {iteration} — Fix ALL validation errors below in the template you just generated.
 
 ## Validation Errors
-Each error is in the format:
-  [RuleId] line N | Resource: LogicalId | Error message | Rule description | See: <doc url>
-
-Use the rule description and documentation URL to apply the correct fix.
-
 {validation_errors}
 
 Rules:
-- Fix every error listed. Do not suppress or comment out checks.
-- Preserve all resources, properties, and logic that are NOT related to the errors.
+- Fix every error listed. Do not suppress or comment out any check.
+- Keep all resources, properties, and logic unrelated to the errors intact.
 - Output the complete corrected CloudFormation YAML.
 """
 
 # ---------------------------------------------------------------------------
-# Path C: moderate remediation with schema context from retriever
+# Path C — moderate remediation (at least one stage ≥ SIMPLE_MODE_THRESHOLD)
+#
+# The remediator has analysed the errors using the retrieved CFN schema context
+# and produced:
+#   - formatted_errors: rich error block (same format as Path B)
+#   - remediation_suggestion: RCA + prioritised fix objectives
+#
+# The engineer's conversation history already holds the template; the schema
+# context was consumed by the remediator to produce the fix objectives and
+# does NOT need to be forwarded to the engineer.
 # ---------------------------------------------------------------------------
 ENGINEER_USER_REMEDIATION = """\
-Iteration {iteration} — Apply these fixes based on validation errors and remediation suggestions from the Remediator agent:
-
-## Current Template
-The template below has `# ERROR:` comments injected at the exact line numbers
-reported by cfn-lint and the deployment validator. Apply fixes precisely at the
-marked locations.
-```yaml
-{annotated_template}
-```
+Iteration {iteration} — The Remediator has analysed the current errors and provided fix objectives below.
+Apply them to the template you last generated.
 
 ## Validation Errors
-{error_context}
+{formatted_errors}
 
-## Remediation Suggestion
+## Remediator RCA and Fix Objectives
 {remediation_suggestion}
 
-## Retrieved CloudFormation Schema Context
-The following schema context was retrieved specifically for the errors above.
-Use it to produce property-correct, constraint-aware YAML:
-
-{cfn_context}
-
-{remediation_history_context}
-
-The final template must also satisfy Original User Request and Grounded Objectives.
-These fix objectives can override or extend previous fix objectives and Grounded Objectives.
-Do NOT repeat changes that are marked as already applied in the history above.
-Output the complete corrected CloudFormation YAML.
+Rules:
+- Apply every fix objective above to your last template.
+- Do not repeat changes already shown as applied in previous turns.
+- Do not include cfn schema context or annotated template markers — refer to your conversation history for the current template.
+- Output the complete corrected CloudFormation YAML.
 """
