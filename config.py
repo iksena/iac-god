@@ -27,7 +27,7 @@ OPENROUTER_QUANTIZATION_ORDER: tuple[str, ...] = (
 )
 
 
-def quantizations_from_min(min_quantization: str | None) -> tuple[str, ......]:
+def quantizations_from_min(min_quantization: str | None) -> tuple[str, ...]:
     if not min_quantization:
         return ()
 

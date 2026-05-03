@@ -40,6 +40,7 @@ Iteration {iteration} — Fix ALL validation errors below in the template you ju
 Rules:
 - Fix every error listed. Do not suppress or comment out any check.
 - Keep all resources, properties, and logic unrelated to the errors intact.
+- The final template must satisfy Original User Request and Grounded Objectives.
 - Output the complete corrected CloudFormation YAML.
 """
 
@@ -68,6 +69,6 @@ Apply them to the template you last generated.
 Rules:
 - Apply every fix objective above to your last template.
 - Do not repeat changes already shown as applied in previous turns.
-- Do not include cfn schema context or annotated template markers — refer to your conversation history for the current template.
+- The final template must also satisfy Original User Request and Grounded Objectives.
 - Output the complete corrected CloudFormation YAML.
 """

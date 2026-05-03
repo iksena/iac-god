@@ -13,29 +13,87 @@ Output format (numbered list, no extra prose):
 2. <objective>
 ...
 
+## CloudFormation Best Practices
+Follow these rules when generating objectives. They prevent the most common
+cfn-lint and deployment errors observed in generated templates.
+
+### Parameters & Deployability
+- Every Parameter that references environment-specific infrastructure (VPC IDs,
+  subnet IDs, key pair names, S3 bucket names, security group IDs) MUST include
+  a sensible Default value, use an SSM Parameter Store dynamic reference
+  (e.g. '{{resolve:ssm:/my/vpcid}}'), or be eliminated in favour of a
+  resource created within the same template. Templates must be deployable
+  without manual parameter overrides.
+- Every Parameter defined in the template MUST be referenced in at least one
+  Resource, Condition, or Output. Remove any unused parameters.
+- Use only valid CloudFormation Parameter types: String, Number,
+  CommaDelimitedList, and the AWS-specific types such as
+  AWS::EC2::VPC::Id, AWS::EC2::Subnet::Id, AWS::EC2::KeyPair::KeyName.
+  Never use custom types like "Boolean" or "Integer".
+- When a Parameter has an AllowedPattern or AllowedValues constraint, ensure
+  the Default value satisfies that constraint.
+
+### Secrets & Security
+- Never place secrets, passwords, or API keys as plain-text Parameter default
+  values or hardcoded strings. Use AWS Secrets Manager with
+  '{{resolve:secretsmanager:MySecret:SecretString:password}}' or SSM
+  SecureString with '{{resolve:ssm-secure:/my/secret:1}}'.
+- Every stateful resource (RDS instance, DynamoDB table, S3 bucket with data,
+  EFS file system) MUST include both DeletionPolicy: Retain and
+  UpdateReplacePolicy: Retain unless the task explicitly requires deletion.
+- S3 buckets MUST use AWS::S3::BucketPolicy instead of the legacy AccessControl
+  property. If AccessControl is used, also configure OwnershipControls with
+  BucketOwnerEnforced.
+
+### Intrinsic Functions
+- Use Fn::Sub ONLY when the string contains at least one ${VariableName}
+  substitution. For static strings write the value directly — do not wrap
+  them in Fn::Sub.
+- Never write ${Variable} syntax outside of an Fn::Sub block. Embedded
+  parameter references in plain strings (e.g. a Parameter Default value)
+  cause template parse errors.
+- Use Fn::Select with Fn::GetAZs (e.g. !Select [0, !GetAZs !Ref 'AWS::Region'])
+  instead of hardcoding Availability Zone names such as us-east-1a or us-east-1b.
+
+### Lambda Runtimes
+- Use only actively supported Lambda runtimes: python3.12, python3.11,
+  nodejs22.x, nodejs20.x, java21, dotnet8, ruby3.3.
+  Never use deprecated runtimes: python3.8, python3.9, nodejs14.x, nodejs16.x,
+  nodejs18.x, java8, java11 (unless the task explicitly requires a specific
+  legacy version and a cfn-lint suppression comment is added).
+
+### Resource Schema & Properties
+- Only use properties that exist in the official CloudFormation resource
+  specification for the target resource type. Do not invent or guess property
+  names. When uncertain whether a property is valid, omit it and note the
+  uncertainty in a comment objective.
+- Do not add DependsOn when a Ref or Fn::GetAtt already creates an implicit
+  CloudFormation dependency — this creates redundant or circular dependencies.
+  Only use DependsOn when there is a genuine dependency not expressed by Ref
+  or GetAtt.
+
+### Resource Types & Region Availability
+- Use only CloudFormation resource types that are available in us-east-1.
+  Replace or avoid the following non-existent / preview types:
+    - AWS::S3::BucketNotification → use NotificationConfiguration inside AWS::S3::Bucket
+    - AWS::ECR::RepositoryPolicy → use RepositoryPolicyText inside AWS::ECR::Repository
+    - AWS::IAM::RolePolicyAttachment → attach policies via ManagedPolicyArns or inline Policies on AWS::IAM::Role
+    - AWS::SecurityHub::StandardsSubscription → omit unless confirmed available
+    - AWS::CloudWatchLogs::QueryDefinition → omit unless confirmed available
+    - AWS::S3::BucketPublicAccessBlock → use PublicAccessBlockConfiguration inside AWS::S3::Bucket
+- For EventBridge resources use AWS::Events::Rule (not AWS::EventBridge::Rule)
+  and AWS::Pipes::Pipe (not AWS::Events::Pipe).
+
+### Template Structure
+- Always include AWSTemplateFormatVersion: '2010-09-09'.
+- Use CloudFormation intrinsic functions (Ref, Fn::Sub, Fn::GetAtt,
+  Fn::Select, Fn::GetAZs, Fn::If) throughout for dynamic references and
+  cross-region compatibility — never hardcode account IDs, region names,
+  or ARNs.
+- Avoid circular resource dependencies. If resource A references resource B
+  via Ref or GetAtt, resource B must not reference resource A.
+
 ## Examples
-<example>
-<user_request>
-We need a CloudFormation template that creates an IAM role for cross-service automation workflows, which centralizes permissions for Systems Manager (SSM), EC2, and monitoring tools.
-</user_request>
-<objectives>
-1. Identify the core resource required: an IAM Role designed for cross-service automation workflows spanning SSM, EC2, and monitoring services.
-2. Create an IAM Role resource with a defined RoleName of "AutomationRole" and set the Path to "/" for root-level placement.
-3. Define an AssumeRolePolicyDocument that allows the ssm.amazonaws.com service principal to assume the role for SSM automation workflows.
-4. Add ec2.amazonaws.com as an additional service principal in the AssumeRolePolicyDocument to enable EC2-related automation tasks.
-5. Create an inline policy named "PassRole" that grants iam:PassRole permission on all resources to allow the role to pass itself or other roles to AWS services during automation.
-6. Create an inline policy named "SNSPublish" that grants sns:Publish permission on all resources to enable notification capabilities during automation workflows.
-7. Attach the AmazonSSMAutomationRole managed policy to provide core permissions required for Systems Manager automation runbooks and documents.
-8. Attach the CloudWatchReadOnlyAccess managed policy to enable read access to CloudWatch metrics and dashboards for monitoring purposes.
-9. Attach the CloudWatchLogsReadOnlyAccess managed policy to enable read access to CloudWatch Logs for log analysis during automation.
-10. Attach the AmazonRDSReadOnlyAccess managed policy to allow the automation role to query RDS instance status and configurations.
-11. Attach the AWSCloudFormationReadOnlyAccess managed policy to enable inspection of CloudFormation stacks and resources during automation workflows.
-12. Attach the AmazonECS_FullAccess managed policy to grant full control over ECS resources for container-related automation tasks.
-13. Attach the CloudWatchSyntheticsReadOnlyAccess managed policy to enable read access to Synthetics canary results for application monitoring.
-14. Use a combination of inline policies for specific custom permissions and managed policies for standardized AWS service access patterns.
-15. Structure the template with AWSTemplateFormatVersion '2010-09-09' and organize properties in a logical order: AssumeRolePolicyDocument, Policies, ManagedPolicyArns, Path, and RoleName.
-</objectives>
-</example>
 
 <example>
 <user_request>
