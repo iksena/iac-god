@@ -27,7 +27,7 @@ OPENROUTER_QUANTIZATION_ORDER: tuple[str, ...] = (
 )
 
 
-def quantizations_from_min(min_quantization: str | None) -> tuple[str, ...]:
+def quantizations_from_min(min_quantization: str | None) -> tuple[str, ......]:
     if not min_quantization:
         return ()
 
@@ -44,19 +44,22 @@ def quantizations_from_min(min_quantization: str | None) -> tuple[str, ...]:
     start = OPENROUTER_QUANTIZATION_ORDER.index(q)
     return OPENROUTER_QUANTIZATION_ORDER[start:]
 
+
 class LLMProvider(Enum):
     OPENROUTER = "openrouter"
     CLAUDE = "claude"
+
 
 class DeployTarget(Enum):
     NONE = "none"
     LOCALSTACK = "localstack"
     AWS = "aws"
 
+
 @dataclass
 class LLMConfig:
     provider: LLMProvider = LLMProvider.OPENROUTER
-    model: str = "x-ai/grok-4.1-fast"   # or "claude-3-5-sonnet-20241022"
+    model: str = "x-ai/grok-4.1-fast"
     temperature: float = 0.0
     max_tokens: int = 8192
     reasoning_enabled: bool = True
@@ -72,18 +75,25 @@ class LLMConfig:
     # Anthropic direct
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
 
+
 @dataclass
 class DeployConfig:
     target: DeployTarget = DeployTarget.NONE
-    # LocalStack settings
     localstack_endpoint: str = os.getenv("LOCALSTACK_ENDPOINT", "http://localhost:4566")
-    localstack_reset_wait: float = 5      # Seconds to wait after state reset
-    # AWS settings (only used when target=AWS)
+    localstack_reset_wait: float = 5
     aws_region: str = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
     aws_profile: str = os.getenv("AWS_PROFILE", "default")
-    # Shared
-    stack_creation_timeout: int = 15*60       # Seconds before giving up on stack creation
-    stack_deletion_timeout: int = 5*60       # Seconds to wait for cleanup after each iteration
+    stack_creation_timeout: int = 15 * 60
+    stack_deletion_timeout: int = 5 * 60
+
+
+# ---------------------------------------------------------------------------
+# Staged remediation threshold
+# ---------------------------------------------------------------------------
+# When stage_error_counts[stage] reaches this value the stage escalates from
+# simple mode (engineer self-corrects directly) to moderate mode (full
+# retriever → remediator → engineer pipeline).
+SIMPLE_MODE_THRESHOLD: int = 5
 
 
 def build_openrouter_provider_preferences(config: LLMConfig) -> dict:
@@ -97,6 +107,7 @@ def build_openrouter_provider_preferences(config: LLMConfig) -> dict:
         provider["quantizations"] = list(quantizations)
 
     return provider
+
 
 DEFAULT_CONFIG = LLMConfig()
 DEFAULT_DEPLOY_CONFIG = DeployConfig()
