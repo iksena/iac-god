@@ -115,7 +115,9 @@ class ResearchRecorder:
 
         1. rag_tool_calls.jsonl  (append)
            Machine-readable; one JSON line per invocation across all iterations
-           and rounds. Never overwritten - full audit trail for benchmarking.
+           and rounds. Stores the full context_returned string (not just char
+           count) so benchmarks and replays have the exact retrieved content.
+           Never overwritten - full audit trail.
 
         2. rag_tool_data_flow.txt  (append)
            Human-readable; one dated block per invocation appended in order.
@@ -134,6 +136,10 @@ class ResearchRecorder:
             "round_idx": round_idx,
             "retrieval_queries": retrieval_queries,
             "seed_resources": seed_resources,
+            # FIX 1: store the full context string, not just the char count.
+            # Previously only context_returned_chars was persisted, making it
+            # impossible to benchmark or replay against the actual retrieved content.
+            "context_returned": context_returned,
             "context_returned_chars": len(context_returned),
             "reasoning_block": reasoning_block,
             "raw_ai_response": raw_ai_response,
