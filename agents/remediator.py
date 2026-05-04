@@ -302,7 +302,7 @@ def _run_tool_loop(
     initial_messages: list,
     state: GraphState,
     recorder: ResearchRecorder,
-) -> tuple[str, str, list, str, list[str]]:
+) -> tuple[str, str, list, str, list[str], str]:
     """Run the Remediator LLM -> ToolNode agentic loop.
 
     Flow per round:
@@ -323,11 +323,15 @@ def _run_tool_loop(
     pairs).
 
     Returns:
-        clean_content     : Final answer with <reasoning> stripped (for Engineer).
-        raw_content       : Final answer as-is, reasoning included (for audit).
-        all_messages      : Full accumulated message list (for audit only).
-        tool_context      : Schema context string from the ToolMessage, or ''.
-        retrieval_queries : All queries the LLM passed to the tool.
+        clean_content        : Final answer with <reasoning> stripped (for Engineer).
+        raw_content          : Final answer as-is, reasoning included (for audit).
+        all_messages         : Full accumulated message list (for audit only).
+        tool_context         : Schema context string from the ToolMessage, or ''.
+        retrieval_queries    : All queries the LLM passed to the tool.
+        tool_message_content : Raw ToolMessage content string, identical to
+                               tool_context but named explicitly so callers can
+                               use it to reconstruct the LLM's full context window
+                               for audit recording.
     """
     MAX_TOOL_ROUNDS = 3
     llm = _get_bound_llm()
@@ -396,7 +400,11 @@ def _run_tool_loop(
 
     tool_context = _extract_tool_context(messages)
     retrieval_queries = _extract_retrieval_queries(messages)
-    return clean_content, raw_content, messages, tool_context, retrieval_queries
+    # FIX 2: surface tool_message_content as an explicit return value so
+    # _build_return_state can include it verbatim in the recorded prompt,
+    # faithfully representing what the LLM saw when producing its final answer.
+    tool_message_content = tool_context
+    return clean_content, raw_content, messages, tool_context, retrieval_queries, tool_message_content
 
 
 # ---------------------------------------------------------------------------
@@ -512,7 +520,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     lc_history = _build_lc_history(state)
     user_lc_msg = HumanMessage(content=user_content)
 
-    clean_content, raw_content, _, tool_context, retrieval_queries = _run_tool_loop(
+    clean_content, raw_content, _, tool_context, retrieval_queries, tool_message_content = _run_tool_loop(
         system_msg=system_msg,
         initial_messages=lc_history + [user_lc_msg],
         state=state,
@@ -537,6 +545,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         formatted_errors=formatted_errors,
         tool_context=tool_context,
         retrieval_queries=retrieval_queries,
+        tool_message_content=tool_message_content,
         recorder=recorder,
     )
 
@@ -576,18 +585,34 @@ def _build_return_state(
     formatted_errors: str,
     tool_context: str,
     retrieval_queries: list[str],
+    tool_message_content: str,
     recorder: ResearchRecorder,
 ) -> GraphState:
     """Assemble the state update dict returned by the remediator agent."""
     from config import DEFAULT_CONFIG  # local import to avoid circular
     model = DEFAULT_CONFIG.model
 
+    # FIX 2+3: Build the recorded prompt to faithfully reflect the LLM's full
+    # context window. When the tool was called, the LLM saw:
+    #   SYSTEM + USER -> [decided to call tool] -> TOOL_RESULT -> FINAL_ANSWER
+    # Previously only SYSTEM + USER was recorded, making the audit trail
+    # misleading: the recorded prompt did not contain the schema context that
+    # actually drove the LLM's RCA and Fix Objectives.
+    if tool_message_content:
+        recorded_prompt = (
+            f"SYSTEM:\n{system_with_guidance}\n\n"
+            f"USER:\n{user_content}\n\n"
+            f"TOOL_RESULT (retrieve_schema_context):\n{tool_message_content}"
+        )
+    else:
+        recorded_prompt = f"SYSTEM:\n{system_with_guidance}\n\nUSER:\n{user_content}"
+
     # LLM call log stores the raw response (with reasoning) for full audit.
     llm_record = recorder.record_llm_call(
         state=state,
         agent="remediator",
         model=model,
-        prompt=f"SYSTEM:\n{system_with_guidance}\n\nUSER:\n{user_content}",
+        prompt=recorded_prompt,
         response=raw_content,
         token_usage={},
     )
