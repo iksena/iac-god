@@ -44,14 +44,17 @@ def quantizations_from_min(min_quantization: str | None) -> tuple[str, ...]:
     start = OPENROUTER_QUANTIZATION_ORDER.index(q)
     return OPENROUTER_QUANTIZATION_ORDER[start:]
 
+
 class LLMProvider(Enum):
     OPENROUTER = "openrouter"
     CLAUDE = "claude"
+
 
 class DeployTarget(Enum):
     NONE = "none"
     LOCALSTACK = "localstack"
     AWS = "aws"
+
 
 @dataclass
 class LLMConfig:
@@ -72,6 +75,7 @@ class LLMConfig:
     # Anthropic direct
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
 
+
 @dataclass
 class DeployConfig:
     target: DeployTarget = DeployTarget.NONE
@@ -82,8 +86,20 @@ class DeployConfig:
     aws_region: str = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
     aws_profile: str = os.getenv("AWS_PROFILE", "default")
     # Shared
-    stack_creation_timeout: int = 15*60       # Seconds before giving up on stack creation
-    stack_deletion_timeout: int = 5*60       # Seconds to wait for cleanup after each iteration
+    stack_creation_timeout: int = 15 * 60   # Seconds before giving up on stack creation
+    stack_deletion_timeout: int = 5 * 60    # Seconds to wait for cleanup after each iteration
+
+
+# ---------------------------------------------------------------------------
+# Staged remediation threshold
+# ---------------------------------------------------------------------------
+# When stage_error_counts[stage] reaches this value the stage escalates from
+# simple mode (engineer self-corrects directly) to moderate mode (full
+# remediator -> engineer pipeline, with retriever tool called internally).
+# Set to 0 to always use moderate mode (remediator runs every failure).
+# Set to a higher value (e.g. 2) to give the engineer a few self-correction
+# attempts before escalating to the remediator.
+SIMPLE_MODE_THRESHOLD: int = 0
 
 
 def build_openrouter_provider_preferences(config: LLMConfig) -> dict:
@@ -97,6 +113,7 @@ def build_openrouter_provider_preferences(config: LLMConfig) -> dict:
         provider["quantizations"] = list(quantizations)
 
     return provider
+
 
 DEFAULT_CONFIG = LLMConfig()
 DEFAULT_DEPLOY_CONFIG = DeployConfig()
