@@ -74,7 +74,7 @@ def _format_cfn_lint_finding(finding: dict) -> str:
 
     message     = (finding.get("Message") or "").strip()
     description = (rule.get("Description") or "").strip()
-    source_url  = (rule.get("Source") or "").strip()
+    # source_url  = (rule.get("Source") or "").strip()
 
     parts: list[str] = [f"[{rule_id}]"]
     if line_num is not None:
@@ -85,8 +85,8 @@ def _format_cfn_lint_finding(finding: dict) -> str:
         parts.append(message)
     if description and description.lower() != message.lower():
         parts.append(description)
-    if source_url:
-        parts.append(f"See: {source_url}")
+    # if source_url:
+    #     parts.append(f"See: {source_url}")
 
     return " | ".join(parts)
 

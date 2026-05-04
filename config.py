@@ -93,7 +93,7 @@ class DeployConfig:
 # When stage_error_counts[stage] reaches this value the stage escalates from
 # simple mode (engineer self-corrects directly) to moderate mode (full
 # retriever → remediator → engineer pipeline).
-SIMPLE_MODE_THRESHOLD: int = 5
+SIMPLE_MODE_THRESHOLD: int = 0
 
 
 def build_openrouter_provider_preferences(config: LLMConfig) -> dict:
