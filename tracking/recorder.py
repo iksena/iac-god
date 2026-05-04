@@ -177,7 +177,7 @@ class ResearchRecorder:
 
         # Conversation-history agents: overwrite with the latest full history
         # on every snapshot (the history list IS the source of truth).
-        for agent in ("planner", "engineer", "remediator"):
+        for agent in ("planner", "engineer", "remediator", "retriever"):
             self._write_agent_history(agent, state.get(f"{agent}_history", []))
 
         # Retriever has no rolling conversation history - each invocation is a
@@ -191,6 +191,7 @@ class ResearchRecorder:
         response: str,
         retrieval_queries: list[str],
         context_chars: int,
+        retrieved_context: str = "",
     ) -> None:
         """Append one retriever invocation to retriever_history.txt.
 
@@ -199,12 +200,20 @@ class ResearchRecorder:
         retriever's history file is append-only. Each call to this method
         writes a single dated block so no prior invocation is lost.
 
+        Each block contains:
+          - Run metadata (iteration, timestamp, run ID)
+          - Retrieval queries used
+          - Full assembled schema context returned by the hybrid RAG tool
+          - LLM prompt and raw response for the query-generation call
+
         Args:
             iteration:         Graph iteration number at time of call.
             prompt:            Full prompt sent to the query-generation LLM.
             response:          Raw LLM response (JSON with retrieval_queries).
             retrieval_queries: Parsed query list actually used for retrieval.
             context_chars:     Character count of the assembled CFN context.
+            retrieved_context: Full schema context string returned by the
+                               hybrid RAG tool (ChromaDB + Neo4j output).
         """
         history_path = self.output_dir / "retriever_history.txt"
         timestamp = datetime.now(timezone.utc).isoformat()
@@ -214,6 +223,8 @@ class ResearchRecorder:
             if retrieval_queries
             else "  (none - fell back to raw error strings)"
         )
+
+        context_section = retrieved_context.strip() if retrieved_context else "(empty)"
 
         block = (
             f"{'=' * 72}\n"
@@ -226,6 +237,8 @@ class ResearchRecorder:
             f"[prompt]\n{prompt}\n"
             f"{'- ' * 36}\n"
             f"[response]\n{response}\n"
+            f"{'- ' * 36}\n"
+            f"[retrieved schema context]\n{context_section}\n"
         )
 
         with open(history_path, "a", encoding="utf-8") as fh:

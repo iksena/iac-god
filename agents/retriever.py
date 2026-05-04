@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from state import GraphState, RemediationHistory
+from state import GraphState, RemediationHistory, Message, append_and_cap
 from agents.llm_client import _build_client, _call_llm_with_history
 from prompts.retriever_prompt import QUERY_GEN_SYSTEM
 from tools.template_annotator import (
@@ -20,21 +20,24 @@ from tracking.recorder import ResearchRecorder
 # Line-number detection
 # ---------------------------------------------------------------------------
 
-# Pattern 1: colon-separated line references: ":115" or ":115:7"
+# Format produced by validate_cfn_lint:  "[W3005] line 42 | ..."
+_WORD_LINE_RE  = re.compile(r"\bline\s+\d+\b", re.IGNORECASE)
+# Legacy colon-separated format (yamllint, other tools):  ":115" or ":115:7"
 _COLON_LINE_RE = re.compile(r":\d+(:\d+)?")
-# Pattern 2: cfn-lint dict-repr location: "{'LineNumber': 115, ...}"
+# Defensive fallback for any remaining raw-dict repr (should no longer appear).
 _DICT_LINE_RE  = re.compile(r"'LineNumber'\s*:\s*\d+")
 
 
 def _errors_have_line_numbers(errors: list[str]) -> bool:
     """Return True if at least one error string contains a line number reference.
 
-    Handles two formats:
-      - Colon-separated:  'Resources/Bucket/Type:12:3'  (generic validators)
-      - Dict-repr:        "{'LineNumber': 115, ...}"     (cfn-lint)
+    Checks three formats in priority order:
+      1. Word form:   'line 42'          (cfn-lint via _format_cfn_lint_finding)
+      2. Colon form:  ':115' or ':115:7' (yamllint and other validators)
+      3. Dict repr:   "{'LineNumber': 42}" (legacy fallback, should not appear)
     """
     for e in errors:
-        if _COLON_LINE_RE.search(e) or _DICT_LINE_RE.search(e):
+        if _WORD_LINE_RE.search(e) or _COLON_LINE_RE.search(e) or _DICT_LINE_RE.search(e):
             return True
     return False
 
@@ -71,7 +74,7 @@ def build_retrieval_prompt(
     """Assemble the single user-turn message for the query-generation LLM call.
 
     Sections (in order):
-      1. Validation errors.
+      1. Validation errors — rich format: [RuleId] line N | Resource: X | message | description
       2. Full template with inline ERROR comments at the exact reported lines
          (when errors carry line numbers), or plain template fallback.
       3. Prior retrieval-query history to avoid duplicate lookups.
@@ -90,8 +93,8 @@ def build_retrieval_prompt(
         parts.append(
             "## CloudFormation Template (errors annotated at reported lines)\n"
             "Lines prefixed with `# ERROR:` mark the exact location cfn-lint\n"
-            "reported a violation. Use them as the primary signal for which\n"
-            "Resource.Property pairs need schema retrieval.\n"
+            "reported a violation. Use the Resource name and rule description\n"
+            "from the error list above as the primary signal for schema retrieval.\n"
             f"```yaml\n{annotated}\n```"
         )
     elif template_yaml:
@@ -122,16 +125,20 @@ def build_retrieval_prompt(
 
 def _call_query_generator(
     user_content: str,
-) -> tuple[str, str, str, dict | None]:
-    """Send the retrieval prompt to the LLM and return the raw response."""
+    history: list[Message],
+) -> tuple[str, str, dict | None]:
+    """Send the retrieval prompt to the LLM with conversation history.
+
+    Returns (model, raw_response, token_usage).
+    """
     client, model = _build_client()
     raw_response, usage = _call_llm_with_history(
         client,
         model,
         system=QUERY_GEN_SYSTEM,
-        messages=[{"role": "user", "content": user_content}],
+        messages=history + [{"role": "user", "content": user_content}],
     )
-    return model, raw_response, user_content, usage
+    return model, raw_response, usage
 
 
 def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
@@ -140,11 +147,13 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     Orchestration steps:
       1. Extract cfn-lint + deploy errors (security stages excluded).
       2. Annotate the template to seed resource types for Neo4j.
-      3. Build the single-turn retrieval prompt (pure, no I/O).
-      4. Call the LLM to generate targeted schema queries.
+      3. Build the retrieval prompt (pure, no I/O).
+      4. Call the LLM (with rolling retriever_history) to generate queries.
       5. Execute ChromaDB (semantic) + Neo4j (graph) hybrid retrieval.
-      6. Append this invocation to retriever_history.txt via the recorder.
-      7. Return retriever_context and retriever_queries into state.
+      6. Persist prompt, response, queries, and full schema context to
+         retriever_history.txt via the recorder.
+      7. Return retriever_context, retriever_queries, and updated
+         retriever_history into state.
     """
     iteration = state["current_iteration"]
     print(f"\n[Retriever] Building CFN context (iteration {iteration})...")
@@ -154,8 +163,6 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         state.get("deploy_validation_result"),
     )
 
-    # Always annotate so extract_resource_types() can seed Neo4j,
-    # regardless of whether errors carry line numbers.
     template_yaml = state.get("cloudformation_template", "")
     annotation = _annotate_safely(
         template_yaml=template_yaml,
@@ -175,8 +182,14 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         remediation_history=state.get("remediation_history", []),
     )
 
-    model, raw_response, _, usage = _call_query_generator(user_content)
+    model, raw_response, usage = _call_query_generator(
+        user_content=user_content,
+        history=state.get("retriever_history", []),
+    )
     retrieval_queries = parse_query_response(raw_response) or errors[:8]
+
+    user_msg: Message = {"role": "user", "content": user_content}
+    assistant_msg: Message = {"role": "assistant", "content": raw_response}
 
     llm_record = recorder.record_llm_call(
         state=state,
@@ -199,6 +212,7 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         response=raw_response,
         retrieval_queries=retrieval_queries,
         context_chars=len(cfn_context),
+        retrieved_context=cfn_context,
     )
 
     print(
@@ -207,7 +221,10 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     )
 
     return {
-        "retriever_context": cfn_context,
-        "retriever_queries": retrieval_queries,
-        "llm_call_log":      state["llm_call_log"] + [llm_record],
+        "retriever_context":  cfn_context,
+        "retriever_queries":  retrieval_queries,
+        "llm_call_log":       state["llm_call_log"] + [llm_record],
+        "retriever_history":  append_and_cap(
+            state.get("retriever_history", []), user_msg, assistant_msg
+        ),
     }

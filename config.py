@@ -59,7 +59,7 @@ class DeployTarget(Enum):
 @dataclass
 class LLMConfig:
     provider: LLMProvider = LLMProvider.OPENROUTER
-    model: str = "x-ai/grok-4.1-fast"   # or "claude-3-5-sonnet-20241022"
+    model: str = "x-ai/grok-4.1-fast"
     temperature: float = 0.0
     max_tokens: int = 8192
     reasoning_enabled: bool = True
@@ -79,15 +79,12 @@ class LLMConfig:
 @dataclass
 class DeployConfig:
     target: DeployTarget = DeployTarget.NONE
-    # LocalStack settings
     localstack_endpoint: str = os.getenv("LOCALSTACK_ENDPOINT", "http://localhost:4566")
-    localstack_reset_wait: float = 5      # Seconds to wait after state reset
-    # AWS settings (only used when target=AWS)
+    localstack_reset_wait: float = 5
     aws_region: str = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
     aws_profile: str = os.getenv("AWS_PROFILE", "default")
-    # Shared
-    stack_creation_timeout: int = 15 * 60   # Seconds before giving up on stack creation
-    stack_deletion_timeout: int = 5 * 60    # Seconds to wait for cleanup after each iteration
+    stack_creation_timeout: int = 15 * 60
+    stack_deletion_timeout: int = 5 * 60
 
 
 # ---------------------------------------------------------------------------

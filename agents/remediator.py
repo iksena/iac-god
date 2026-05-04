@@ -614,10 +614,9 @@ def _build_return_state(
 
     return {
         "remediation_history": state["remediation_history"] + [new_history_entry],
-        "current_iteration":   iteration + 1,
         "llm_call_log":        state["llm_call_log"] + [llm_record],
         "remediator_history":  append_and_cap(
-            state["remediator_history"], user_msg, assistant_msg
+            state.get("remediator_history", []), user_msg, assistant_msg
         ),
         "retriever_context":   tool_context,
         "retriever_queries":   retrieval_queries,
