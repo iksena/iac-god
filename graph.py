@@ -28,13 +28,23 @@ def route_after_validator(state: GraphState) -> str:
     remediator immediately, preserving the original behaviour.
     Set it to 1 or higher to give the engineer N self-correction attempts
     before escalating to the remediator.
+
+    NOTE: current_iteration has already been incremented by validator_agent
+    before this function runs.  Use (current_iteration - 1) when referring
+    to the iteration that just completed.
     """
+    # The iteration that just finished validation.
+    completed_iteration = state["current_iteration"] - 1
+
     if state["validation_passed"]:
-        print(f"\n\u2705 All validations passed at iteration {state['current_iteration']}!")
+        print(f"\n\u2705 All validations passed at iteration {completed_iteration}!")
         return "end"
 
     if state["current_iteration"] >= state["max_iterations"]:
-        print(f"\n\u26a0\ufe0f  Max iterations ({state['max_iterations']}) reached. Stopping.")
+        print(
+            f"\n\u26a0\ufe0f  Max iterations ({state['max_iterations']}) reached "
+            f"after iteration {completed_iteration}. Stopping."
+        )
         return "end"
 
     failing_stages = classify_failing_stages(
