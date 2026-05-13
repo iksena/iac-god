@@ -84,7 +84,7 @@ class DeployConfig:
     aws_region: str = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
     aws_profile: str = os.getenv("AWS_PROFILE", "default")
     stack_creation_timeout: int = 15 * 60
-    stack_deletion_timeout: int = 5 * 60
+    stack_deletion_timeout: int = 1 * 60
 
 
 # ---------------------------------------------------------------------------

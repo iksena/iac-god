@@ -211,11 +211,36 @@ def merge_results(csv_paths, merged_csv_path, jsonl_paths=None, merged_jsonl_pat
     """
     Merges multiple CSV and JSONL files from the same model into single files.
     """
-    # Merge CSVs
+    # Merge CSVs while preserving original row order across files.
     if csv_paths:
-        dfs = [pd.read_csv(f) for f in csv_paths if os.path.exists(f)]
+        dfs = []
+        for file_idx, f in enumerate(csv_paths):
+            if os.path.exists(f):
+                df = pd.read_csv(f)
+                df = df.reset_index(drop=True)
+                df["_file_order"] = file_idx
+                df["_row_order"] = df.index
+                dfs.append(df)
+
         if dfs:
             merged_df = pd.concat(dfs, ignore_index=True)
+
+            # If a `row_number` column exists, prefer sorting by it across all files.
+            if "row_number" in merged_df.columns:
+                merged_df["row_number"] = pd.to_numeric(merged_df["row_number"], errors="coerce")
+                merged_df = merged_df.sort_values(
+                    by=["row_number", "_file_order", "_row_order"],
+                    na_position="last",
+                ).reset_index(drop=True)
+            else:
+                # Fall back to file-order then original within-file order
+                merged_df = merged_df.sort_values(by=["_file_order", "_row_order"]).reset_index(drop=True)
+
+            # Remove helper ordering columns before saving
+            drop_cols = [c for c in ("_file_order", "_row_order") if c in merged_df.columns]
+            if drop_cols:
+                merged_df = merged_df.drop(columns=drop_cols)
+
             merged_df.to_csv(merged_csv_path, index=False)
             print(f"Merged {len(dfs)} CSVs into {merged_csv_path}")
         else:
@@ -235,34 +260,85 @@ def merge_results(csv_paths, merged_csv_path, jsonl_paths=None, merged_jsonl_pat
 if __name__ == "__main__":
     # You can change input_csv, base_dir, and output_csv as needed
     merge_results_with_reports(
-        input_csv="./benchmark_runs/20260422_012409 Hybrid RAG Grok4.1 Fast 0-27/results_merged.csv", 
+        input_csv="./benchmark_runs/20260427_163601 Grok Hybrid 15-Itr 0-29/results_merged.csv", 
         base_dir="runs/", 
-        output_csv="./benchmark_runs/20260422_012409 Hybrid RAG Grok4.1 Fast 0-27/grok_hybrid_rag_results_agg.csv"
+        output_csv="./benchmark_runs/20260427_163601 Grok Hybrid 15-Itr 0-29/grok_hybrid_15_all_results_agg.csv"
     )
-    merge_results(
-        csv_paths=[
-            './benchmark_runs/20260422_012409 Hybrid RAG Grok4.1 Fast 0-27/results.csv', 
-            './benchmark_runs/20260422_110630/results.csv',
-            './benchmark_runs/20260422_135849/results.csv',
-            './benchmark_runs/20260422_164425/results.csv',
-            './benchmark_runs/20260422_185827/results.csv',
-            './benchmark_runs/20260422_220303/results.csv',
-            './benchmark_runs/20260423_012254/results.csv',
-            './benchmark_runs/20260423_101506/results.csv',
-            './benchmark_runs/20260423_103455/results.csv',
-            './benchmark_runs/20260423_103742/results.csv',
-        ], 
-        merged_csv_path='./benchmark_runs/20260422_012409 Hybrid RAG Grok4.1 Fast 0-27/results_merged.csv',
-        jsonl_paths=[
-            './benchmark_runs/20260422_012409 Hybrid RAG Grok4.1 Fast 0-27/results.jsonl', 
-            './benchmark_runs/20260422_110630/results.jsonl',
-            './benchmark_runs/20260422_135849/results.jsonl',
-            './benchmark_runs/20260422_164425/results.jsonl',
-            './benchmark_runs/20260422_185827/results.jsonl',
-            './benchmark_runs/20260422_220303/results.jsonl',
-            './benchmark_runs/20260423_012254/results.jsonl',
-            './benchmark_runs/20260423_103455/results.jsonl',
-            './benchmark_runs/20260423_103742/results.jsonl',
-        ],
-        merged_jsonl_path='./benchmark_runs/20260422_012409 Hybrid RAG Grok4.1 Fast 0-27/results_merged.jsonl'
-    )
+    # merge_results(
+    #     csv_paths=[
+    #         './benchmark_runs/20260508_013226 Retriever + Security/results.csv', 
+    #         './benchmark_runs/20260509_012338/results.csv',
+    #         './benchmark_runs/20260509_141904/results.csv',
+    #         './benchmark_runs/20260509_235120/results.csv',
+    #         './benchmark_runs/20260510_095430/results.csv',
+    #         './benchmark_runs/20260510_181824/results.csv',
+    #         './benchmark_runs/20260511_025801/results.csv',
+    #         './benchmark_runs/20260511_153550/results.csv',
+    #         './benchmark_runs/20260511_194305/results.csv',
+    #     ], 
+    #     merged_csv_path='./benchmark_runs/20260508_013226 Retriever + Security/results_merged.csv',
+    #     jsonl_paths=[
+    #         './benchmark_runs/20260508_013226 Retriever + Security/results.jsonl', 
+    #         './benchmark_runs/20260509_012338/results.jsonl',
+    #         './benchmark_runs/20260509_141904/results.jsonl',
+    #         './benchmark_runs/20260509_235120/results.jsonl',
+    #         './benchmark_runs/20260510_095430/results.jsonl',
+    #         './benchmark_runs/20260510_181824/results.jsonl',
+    #         './benchmark_runs/20260511_025801/results.jsonl',
+    #         './benchmark_runs/20260511_153550/results.jsonl',
+    #         './benchmark_runs/20260511_194305/results.jsonl',
+    #     ],
+    #     merged_jsonl_path='./benchmark_runs/20260508_013226 Retriever + Security/results_merged.jsonl'
+    # )
+    # merge_results(
+    #     csv_paths=[
+    #         './benchmark_runs/20260430_025759 RAG Tool/results.csv', 
+    #         './benchmark_runs/20260505_014850 RAG Tool/results.csv',
+    #         './benchmark_runs/20260505_202135 RAG Tool/results.csv',
+    #         './benchmark_runs/20260506_104349 RAG Tool/results.csv',
+    #         './benchmark_runs/20260507_002939 RAG Tool/results.csv',
+    #     ], 
+    #     merged_csv_path='./benchmark_runs/20260430_025759 RAG Tool/results_merged.csv',
+    #     jsonl_paths=[
+    #         './benchmark_runs/20260430_025759 RAG Tool/results.jsonl', 
+    #         './benchmark_runs/20260505_014850 RAG Tool/results.jsonl',
+    #         './benchmark_runs/20260505_202135 RAG Tool/results.jsonl',
+    #         './benchmark_runs/20260506_104349 RAG Tool/results.jsonl',
+    #         './benchmark_runs/20260507_002939 RAG Tool/results.jsonl',
+    #     ],
+    #     merged_jsonl_path='./benchmark_runs/20260430_025759 RAG Tool/results_merged.jsonl'
+    # )
+    # merge_results(
+    #     csv_paths=[
+    #         './benchmark_runs/20260427_163601 Grok Hybrid 15-Itr 0-29/results.csv', 
+    #         './benchmark_runs/20260428_120119 Grok Hybrid 15-Itr 30-47/results.csv',
+    #         './benchmark_runs/20260428_140414 Grok Hybrid 15-Itr 48-60/results.csv',
+    #         './benchmark_runs/20260428_170008 Grok Hybrid 15-Itr 61-91/results.csv',
+    #         './benchmark_runs/20260428_230436 Grok Hybrid 15-Itr 92-112/results.csv',
+    #         './benchmark_runs/20260429_143042 Grok Hybrid 15-Itr 112-121/results.csv',
+    #         './benchmark_runs/20260429_163803 Grok Hybrid 15-Itr 122-137/results.csv',
+    #         './benchmark_runs/20260503_163359 Grok Hybrid 15-Itr 138-152/results.csv',
+    #         './benchmark_runs/20260504_120843 Grok Hybrid 15-Itr 10/results.csv',
+    #         './benchmark_runs/20260504_141843 Grok Hybrid 15-Itr 27/results.csv',
+    #         './benchmark_runs/20260504_162919 Grok Hybrid 15-Itr 84/results.csv',
+    #         './benchmark_runs/20260504_172854 Grok Hybrid 15-Itr 96/results.csv',
+    #         './benchmark_runs/20260505_012857 Grok Hybrid 15-Itr 118/results.csv',
+    #     ], 
+    #     merged_csv_path='./benchmark_runs/20260427_163601 Grok Hybrid 15-Itr 0-29/results_merged.csv',
+    #     jsonl_paths=[
+    #         './benchmark_runs/20260427_163601 Grok Hybrid 15-Itr 0-29/results.jsonl', 
+    #         './benchmark_runs/20260428_120119 Grok Hybrid 15-Itr 30-47/results.jsonl',
+    #         './benchmark_runs/20260428_140414 Grok Hybrid 15-Itr 48-60/results.jsonl',
+    #         './benchmark_runs/20260428_170008 Grok Hybrid 15-Itr 61-91/results.jsonl',
+    #         './benchmark_runs/20260428_230436 Grok Hybrid 15-Itr 92-112/results.jsonl',
+    #         './benchmark_runs/20260429_143042 Grok Hybrid 15-Itr 112-121/results.jsonl',
+    #         './benchmark_runs/20260429_163803 Grok Hybrid 15-Itr 122-137/results.jsonl',
+    #         './benchmark_runs/20260503_163359 Grok Hybrid 15-Itr 138-152/results.jsonl',
+    #         './benchmark_runs/20260504_120843 Grok Hybrid 15-Itr 10/results.jsonl',
+    #         './benchmark_runs/20260504_141843 Grok Hybrid 15-Itr 27/results.jsonl',
+    #         './benchmark_runs/20260504_162919 Grok Hybrid 15-Itr 84/results.jsonl',
+    #         './benchmark_runs/20260504_172854 Grok Hybrid 15-Itr 96/results.jsonl',
+    #         './benchmark_runs/20260505_012857 Grok Hybrid 15-Itr 118/results.jsonl',
+    #     ],
+    #     merged_jsonl_path='./benchmark_runs/20260427_163601 Grok Hybrid 15-Itr 0-29/results_merged.jsonl'
+    # )
