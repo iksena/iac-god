@@ -4,22 +4,32 @@
 
 Stage 1a – Parse trivy_enriched.csv into a clean security_checks.json.
 
-The CSV has multiple rows per logical check:
-  - Primary rows: check_id is set, contain check metadata + Rego source
-  - Supplement rows: check_id is empty, contain extra YAML fixture data
+Service → CFN prefix mapping strategy
+---------------------------------------
+Instead of a hardcoded dict (which would go stale), the mapping is derived
+at runtime from two sources already in the repo:
 
-This script:
-  1. Reads all rows, groups by check_id (skipping blank-id supplement rows)
-  2. Resolves `service` → AWS CloudFormation resource type prefix via SERVICE_TO_CFN_PREFIX
-  3. Emits data/security_checks.json keyed by check_id
+  1. PRIMARY: data/cfn_spec.json
+     ResourceTypes keys have the form 'AWS::<Namespace>::<ResourceType>'.
+     We extract the <Namespace> segment (e.g. 'ApiGateway', 'S3') and
+     case-insensitively match it against the Trivy service name.
 
-Output path: data/security_checks.json
+  2. FALLBACK: data/trivy_cfn_policy_map.csv
+     Some rows contain CFN YAML examples with 'Type: AWS::...' lines.
+     We parse those to extract additional AWS:: prefixes for services
+     that might not be covered by the spec match above
+     (e.g. Trivy 'documentdb' → CFN 'AWS::DocDB::').
+
+Output
+------
+  data/security_checks.json  – keyed by check_id
 """
 
 import csv
 import json
 import re
 import sys
+from collections import defaultdict
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -27,63 +37,131 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CSV_PATH = REPO_ROOT / "data" / "trivy_enriched.csv"
+CFN_SPEC_PATH = REPO_ROOT / "data" / "cfn_spec.json"
+TRIVY_CFN_MAP_PATH = REPO_ROOT / "data" / "trivy_cfn_policy_map.csv"
 OUTPUT_PATH = REPO_ROOT / "data" / "security_checks.json"
 
 # ---------------------------------------------------------------------------
-# Service → CloudFormation resource prefix mapping
-# Maps Trivy service names to the AWS:: prefix used in the CFN graph.
+# Build service → CFN prefix map from repo data
 # ---------------------------------------------------------------------------
-SERVICE_TO_CFN_PREFIX = {
-    "accessanalyzer": "AWS::AccessAnalyzer::",
-    "apigateway": "AWS::ApiGateway::",
-    "athena": "AWS::Athena::",
-    "cloudfront": "AWS::CloudFront::",
-    "cloudtrail": "AWS::CloudTrail::",
-    "cloudwatch": "AWS::CloudWatch::",
-    "codebuild": "AWS::CodeBuild::",
-    "config": "AWS::Config::",
-    "documentdb": "AWS::DocDB::",
-    "dynamodb": "AWS::DynamoDB::",
-    "ec2": "AWS::EC2::",
-    "ecr": "AWS::ECR::",
-    "ecs": "AWS::ECS::",
-    "efs": "AWS::EFS::",
-    "eks": "AWS::EKS::",
-    "elasticache": "AWS::ElastiCache::",
-    "elasticsearch": "AWS::Elasticsearch::",
-    "elb": "AWS::ElasticLoadBalancing::",
-    "elbv2": "AWS::ElasticLoadBalancingV2::",
-    "emr": "AWS::EMR::",
-    "glacier": "AWS::Glacier::",
-    "glue": "AWS::Glue::",
-    "iam": "AWS::IAM::",
-    "kinesis": "AWS::Kinesis::",
-    "kms": "AWS::KMS::",
-    "lambda": "AWS::Lambda::",
-    "mq": "AWS::AmazonMQ::",
-    "msk": "AWS::MSK::",
-    "neptune": "AWS::Neptune::",
-    "rds": "AWS::RDS::",
-    "redshift": "AWS::Redshift::",
-    "s3": "AWS::S3::",
-    "sagemaker": "AWS::SageMaker::",
-    "secretsmanager": "AWS::SecretsManager::",
-    "sns": "AWS::SNS::",
-    "sqs": "AWS::SQS::",
-    "ssm": "AWS::SSM::",
-    "vpc": "AWS::EC2::",  # VPC resources live under EC2 in CFN
-    "waf": "AWS::WAF::",
-    "workspaces": "AWS::WorkSpaces::",
-}
 
+def build_service_to_cfn_prefix(cfn_spec_path: Path, trivy_map_path: Path) -> dict[str, str]:
+    """
+    Derive a {trivy_service_name: 'AWS::<Namespace>::'} mapping.
+
+    Step 1 – Parse cfn_spec.json ResourceTypes keys.
+      'AWS::S3::Bucket' → namespace='S3' → lowercase key 's3'
+      'AWS::ApiGateway::RestApi' → namespace='ApiGateway' → 'apigateway'
+
+    Step 2 – Scan trivy_cfn_policy_map.csv for 'Type: AWS::...' in YAML.
+      Covers cases where the CFN namespace token differs from the Trivy
+      service name (e.g. Trivy 'documentdb', YAML 'AWS::DocDB::').
+      If a service has multiple YAML prefixes, the one whose namespace
+      is closest (Levenshtein) to the service name wins.
+
+    Step 3 – Apply a small ALIASES dict for structurally different names
+      that the above steps cannot auto-resolve (vpc, elb, elbv2, msk, mq).
+    """
+    # --- Step 1: CFN spec namespaces ---
+    namespace_to_prefix: dict[str, str] = {}
+
+    if cfn_spec_path.exists():
+        print(f"  Loading CFN spec from {cfn_spec_path} ...")
+        with cfn_spec_path.open(encoding="utf-8") as fh:
+            try:
+                spec = json.load(fh)
+            except json.JSONDecodeError as e:
+                print(f"  WARNING: Could not parse cfn_spec.json: {e}")
+                spec = {}
+
+        # Handle both the official CloudFormation spec format (ResourceTypes at top-level)
+        # and the merged knowledge graph format (flat dict keyed by resource name).
+        resource_types = (
+            spec.get("ResourceTypes", {})
+            or spec.get("resource_types", {})
+            or spec
+        )
+
+        for key in resource_types:
+            m = re.match(r'^AWS::([^:]+)::', str(key))
+            if m:
+                namespace = m.group(1)          # e.g. 'ApiGateway'
+                prefix = f"AWS::{namespace}::"
+                namespace_to_prefix[namespace.lower()] = prefix
+
+        print(f"  Found {len(namespace_to_prefix)} unique CFN namespaces in spec.")
+    else:
+        print(f"  WARNING: cfn_spec.json not found at {cfn_spec_path}. Skipping spec-based mapping.")
+
+    # --- Step 2: YAML-derived prefixes from trivy_cfn_policy_map.csv ---
+    service_from_yaml: dict[str, set[str]] = defaultdict(set)
+
+    if trivy_map_path.exists():
+        with trivy_map_path.open(encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                service = row.get("service", "").strip().lower()
+                if not service:
+                    continue
+                for value in row.values():
+                    for match in re.finditer(r'Type:\s*(AWS::[A-Za-z0-9]+::)', str(value)):
+                        service_from_yaml[service].add(match.group(1))
+
+        print(f"  Found YAML-derived CFN prefixes for {len(service_from_yaml)} services.")
+    else:
+        print(f"  WARNING: trivy_cfn_policy_map.csv not found. Skipping YAML-derived mapping.")
+
+    # --- Step 3: merge ---
+    mapping: dict[str, str] = dict(namespace_to_prefix)  # copy
+
+    for service, prefixes in service_from_yaml.items():
+        if service not in mapping:
+            # Service not matched by namespace – pick closest prefix by Levenshtein
+            best = min(prefixes, key=lambda p: _levenshtein(service, p.split("::")[1].lower()))
+            mapping[service] = best
+        # If already mapped by namespace, keep the namespace-derived one (more reliable).
+
+    # --- Step 4: hand-coded aliases for structurally different names ---
+    ALIASES = {
+        "vpc": "AWS::EC2::",           # VPC resources live under EC2 in CFN
+        "elb": "AWS::ElasticLoadBalancing::",
+        "elbv2": "AWS::ElasticLoadBalancingV2::",
+        "msk": "AWS::MSK::",
+        "mq": "AWS::AmazonMQ::",
+        "neptune": "AWS::Neptune::",
+        "glacier": "AWS::Glacier::",
+    }
+    for alias, prefix in ALIASES.items():
+        if alias not in mapping:
+            mapping[alias] = prefix
+
+    return mapping
+
+
+def _levenshtein(a: str, b: str) -> int:
+    """Simple Levenshtein distance for short strings."""
+    if len(a) < len(b):
+        return _levenshtein(b, a)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a):
+        curr = [i + 1]
+        for j, cb in enumerate(b):
+            curr.append(min(prev[j + 1] + 1, curr[j] + 1, prev[j] + (ca != cb)))
+        prev = curr
+    return prev[-1]
+
+
+# ---------------------------------------------------------------------------
+# CSV parsing helpers
+# ---------------------------------------------------------------------------
 
 def clean_list_field(raw: str) -> list[str]:
     """Parse fields that look like Python list literals: "['a', 'b']" → ['a', 'b']."""
     if not raw or raw.strip() == "":
         return []
-    # Strip outer brackets
     inner = raw.strip().lstrip("[").rstrip("]")
-    # Split on ', ' boundaries between quoted items
     items = re.findall(r"'([^']*)'|\"([^\"]*)\"", inner)
     return [a or b for a, b in items if a or b]
 
@@ -97,7 +175,7 @@ def clean_links_field(raw: str) -> list[str]:
     return [u.strip() for u in raw.split("|") if u.strip()]
 
 
-def load_csv(csv_path: Path) -> dict:
+def load_csv(csv_path: Path, service_map: dict) -> dict:
     checks: dict = {}
 
     with csv_path.open(encoding="utf-8") as fh:
@@ -105,11 +183,10 @@ def load_csv(csv_path: Path) -> dict:
         for row in reader:
             check_id = row.get("check_id", "").strip()
             if not check_id:
-                # Supplement row – skip for now; enrichment handled in stage 2
                 continue
 
             service = row.get("service", "").strip().lower()
-            cfn_prefix = SERVICE_TO_CFN_PREFIX.get(service, "")
+            cfn_prefix = service_map.get(service, "")
 
             checks[check_id] = {
                 "check_id": check_id,
@@ -136,19 +213,33 @@ def load_csv(csv_path: Path) -> dict:
 
 
 def main():
-    print(f"Reading CSV from: {CSV_PATH}")
+    print("Building service → CFN prefix mapping from repository data...")
+    service_map = build_service_to_cfn_prefix(CFN_SPEC_PATH, TRIVY_CFN_MAP_PATH)
+    print(f"  Mapping covers {len(service_map)} service tokens.\n")
+
+    print("  Derived mapping (sorted):")
+    for svc, prefix in sorted(service_map.items()):
+        print(f"    {svc:<30} →  {prefix}")
+
+    print(f"\nReading CSV from: {CSV_PATH}")
     if not CSV_PATH.exists():
         print(f"ERROR: CSV not found at {CSV_PATH}", file=sys.stderr)
         sys.exit(1)
 
-    checks = load_csv(CSV_PATH)
-    print(f"Loaded {len(checks)} unique security checks.")
+    checks = load_csv(CSV_PATH, service_map)
+    print(f"\nLoaded {len(checks)} unique security checks.")
 
-    # Show severity breakdown
     from collections import Counter
     severity_counts = Counter(c["severity"] for c in checks.values())
     for sev, count in sorted(severity_counts.items()):
         print(f"  {sev}: {count}")
+
+    # Warn about any services that ended up with no CFN prefix
+    unmapped = sorted({c["service"] for c in checks.values() if not c["cfn_resource_prefix"]})
+    if unmapped:
+        print(f"\n  WARNING: {len(unmapped)} services have no CFN prefix resolved: {unmapped}")
+        print("  These checks will still be embedded; cfn_resource_prefix will be empty string.")
+        print("  Add them to the ALIASES dict in build_service_to_cfn_prefix() if needed.")
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with OUTPUT_PATH.open("w", encoding="utf-8") as fh:
