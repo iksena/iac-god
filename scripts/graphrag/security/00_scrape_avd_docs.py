@@ -4,13 +4,6 @@
 
 Stage 0 – Scrape all AWS misconfiguration checks from avd.aquasec.com.
 
-Why this exists
----------------
-trivy_enriched.csv only contains checks that happened to be mapped during
-a previous enrichment pass. The AVD website is the authoritative source and
-contains additional checks (especially console-only / cloud-provider checks)
-that Trivy's Rego policies do not cover.
-
 What it does
 ------------
 1. Fetch the AWS index page  https://avd.aquasec.com/misconfig/aws/
@@ -20,24 +13,26 @@ What it does
    → collect every (check_name, check_slug) pair
 
 3. For each check, fetch  /misconfig/aws/<service>/<check_slug>/
-   → extract title, description paragraphs, remediation steps
+   → extract title, description, remediation steps
+   → IMPORTANT: content is scoped to div.content.vulnerability_content
+     to avoid picking up nav/CTA elements like the "Get Demo" button
+     that appear earlier in DOM order than the main description.
 
 4. Merge results into trivy_enriched.csv
-   - Rows already in the CSV (matched on avd_url suffix or check_id) → update
-     avd_url, title, description fields if they were blank
-   - Brand-new checks → append as new rows with service + avd_url populated;
-     check_id derived from the URL slug (e.g. 'AVD-AWS-EC2-default-security-group')
+   - Rows already in the CSV (matched on avd_url) → update title/description
+     if they were blank OR if the existing value is a known stale value
+     written by a prior enrichment pass (e.g. "Get Demo" captured from a
+     nav button by an unscoped scraper).
+   - Brand-new checks → append as new rows.
 
-5. Write data/avd_scraped.json as a raw cache (re-running skips already-fetched
-   URLs unless --force is passed on the command line)
+5. Write data/avd_scraped.json as a raw cache.
 
 Usage
 -----
     python scripts/graphrag/security/00_scrape_avd_docs.py
-    python scripts/graphrag/security/00_scrape_avd_docs.py --force   # ignore cache
+    python scripts/graphrag/security/00_scrape_avd_docs.py --force
 
-Dependencies: requests, beautifulsoup4  (both already in requirements if you
-ran the CFN scraper; add with: pip install requests beautifulsoup4)
+Dependencies: requests, beautifulsoup4
 """
 
 import argparse
@@ -46,22 +41,34 @@ import json
 import re
 import time
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 BASE_URL = "https://avd.aquasec.com/misconfig/aws/"
-CRAWL_DELAY = 0.5          # seconds between requests (polite crawl)
+CRAWL_DELAY = 0.5
 MAX_RETRIES = 3
-RETRY_DELAY = 5            # seconds to wait on 429 / 5xx
+RETRY_DELAY = 5
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CSV_PATH = REPO_ROOT / "data" / "trivy_enriched.csv"
 CACHE_PATH = REPO_ROOT / "data" / "avd_scraped.json"
+
+# Descriptions known to be stale nav/CTA text from unscoped prior scrapes.
+# These are overwritten (not filtered) by the corrected scraper.
+STALE_DESCRIPTIONS = frozenset({
+    "get demo",
+    "request a demo",
+    "get a demo",
+})
+
+# HTML comment scaffold AVD uses as placeholder for empty impact fields.
+_HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.DOTALL | re.IGNORECASE)
+
 
 # ---------------------------------------------------------------------------
 # HTTP helper
@@ -97,11 +104,43 @@ def fetch(url: str, retries: int = MAX_RETRIES) -> BeautifulSoup | None:
 
 
 # ---------------------------------------------------------------------------
-# Step 1 – discover service slugs from the index page
+# Helpers
+# ---------------------------------------------------------------------------
+
+def is_stale_description(text: str) -> bool:
+    """True if the description is nav/CTA text captured by an unscoped prior scrape."""
+    return text.strip().lower() in STALE_DESCRIPTIONS
+
+
+def clean_impact(raw: str) -> str:
+    """Strip HTML comment placeholders (AVD scaffold for empty impact fields)."""
+    if not raw:
+        return ""
+    return _HTML_COMMENT_RE.sub("", raw).strip()
+
+
+def get_content_scope(soup: BeautifulSoup) -> Tag:
+    """
+    Return the main content container for a check detail page.
+
+    AVD check pages structure their content inside:
+        <div class="content vulnerability_content">...</div>
+
+    This container holds the description paragraphs, remediation steps, and
+    code examples. Scoping to it avoids nav elements ("Get Demo" CTA button
+    lives in div.field.is-grouped earlier in DOM order).
+
+    Falls back to the full soup if the container is not found.
+    """
+    container = soup.find("div", class_="vulnerability_content")
+    return container if container else soup
+
+
+# ---------------------------------------------------------------------------
+# Step 1 – discover service slugs
 # ---------------------------------------------------------------------------
 
 def scrape_service_slugs() -> list[str]:
-    """Return list of service slugs, e.g. ['ec2', 'rds', 's3', …]"""
     print(f"Fetching index: {BASE_URL}")
     soup = fetch(BASE_URL)
     if not soup:
@@ -109,9 +148,7 @@ def scrape_service_slugs() -> list[str]:
 
     slugs: list[str] = []
     for a in soup.find_all("a", href=True):
-        href = a["href"]
-        # Match links like /misconfig/aws/ec2/  (exactly two path components after /misconfig/aws/)
-        m = re.match(r'^/misconfig/aws/([a-z0-9\-]+)/?$', href)
+        m = re.match(r'^/misconfig/aws/([a-z0-9\-]+)/?$', a["href"])
         if m:
             slug = m.group(1)
             if slug not in slugs:
@@ -126,10 +163,6 @@ def scrape_service_slugs() -> list[str]:
 # ---------------------------------------------------------------------------
 
 def scrape_check_slugs(service_slug: str) -> list[dict]:
-    """
-    Return list of {name, slug, url} for every check under a service.
-    Handles the 'Next >>' pagination link.
-    """
     checks: list[dict] = []
     seen_slugs: set[str] = set()
     page_url = f"{BASE_URL}{service_slug}/"
@@ -139,7 +172,6 @@ def scrape_check_slugs(service_slug: str) -> list[dict]:
         if not soup:
             break
 
-        # Check links look like /misconfig/aws/ec2/default-security-group/
         pattern = re.compile(
             rf'^/misconfig/aws/{re.escape(service_slug)}/([a-z0-9\-]+)/?$'
         )
@@ -155,11 +187,9 @@ def scrape_check_slugs(service_slug: str) -> list[dict]:
                         "url": urljoin("https://avd.aquasec.com", a["href"]),
                     })
 
-        # Follow "Next >>" pagination
         next_link = soup.find("a", string=re.compile(r'Next', re.I))
         if next_link and next_link.get("href"):
-            next_href = next_link["href"]
-            page_url = urljoin("https://avd.aquasec.com", next_href)
+            page_url = urljoin("https://avd.aquasec.com", next_link["href"])
         else:
             page_url = None
 
@@ -174,44 +204,49 @@ def scrape_check_detail(url: str) -> dict:
     """
     Extract structured data from a check detail page.
 
-    Returns a dict with keys:
-      title, description, remediation_steps (list[str]), raw_text
+    Scopes all content extraction to div.content.vulnerability_content to
+    avoid nav/CTA elements that appear earlier in the DOM.
     """
     soup = fetch(url)
     if not soup:
         return {}
 
-    # Title is in the <title> tag or first <h1>/<h2>
+    # Title from <title> tag
     title = ""
     if soup.title:
-        title = soup.title.get_text(strip=True).replace(" - Aqua Vulnerability Database", "").strip()
+        title = (
+            soup.title.get_text(strip=True)
+            .replace(" - Aqua Vulnerability Database", "")
+            .replace(" | Vulnerability Database | Aqua Security", "")
+            .strip()
+        )
     if not title:
         h = soup.find(["h1", "h2"])
         title = h.get_text(strip=True) if h else ""
 
-    # All paragraph text – first non-empty para is usually the description
-    paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p") if p.get_text(strip=True)]
+    # Scope all content extraction to the main content container
+    content = get_content_scope(soup)
 
+    paragraphs = [
+        p.get_text(" ", strip=True)
+        for p in content.find_all("p")
+        if p.get_text(strip=True)
+    ]
     description = paragraphs[0] if paragraphs else ""
 
-    # Remediation steps: numbered list items or paragraphs that start with a number
     remediation_steps: list[str] = []
-    for li in soup.find_all("li"):
+    for li in content.find_all("li"):
         text = li.get_text(" ", strip=True)
         if text:
             remediation_steps.append(text)
-
-    # If no <li>, fall back to paragraphs 2+ (skip description at index 0)
     if not remediation_steps and len(paragraphs) > 1:
         remediation_steps = paragraphs[1:]
-
-    raw_text = soup.get_text(" ", strip=True)
 
     return {
         "title": title,
         "description": description,
         "remediation_steps": remediation_steps,
-        "raw_text": raw_text[:4000],  # cap to avoid bloat
+        "raw_text": content.get_text(" ", strip=True)[:4000],
     }
 
 
@@ -233,13 +268,6 @@ def save_cache(cache_path: Path, data: dict) -> None:
 
 
 def build_avd_dataset(force: bool = False) -> dict[str, dict]:
-    """
-    Crawl the full AVD AWS section, using the on-disk cache to skip
-    already-fetched URLs unless force=True.
-
-    Returns a dict keyed by check URL, each value containing:
-      service_slug, check_slug, check_name, url + fields from scrape_check_detail()
-    """
     cache = {} if force else load_cache(CACHE_PATH)
     changed = False
 
@@ -253,7 +281,7 @@ def build_avd_dataset(force: bool = False) -> dict[str, dict]:
         for check in check_list:
             url = check["url"]
             if url in cache and not force:
-                continue  # already scraped
+                continue
 
             print(f"  Scraping: {check['slug']} …", end=" ", flush=True)
             detail = scrape_check_detail(url)
@@ -278,14 +306,11 @@ def build_avd_dataset(force: bool = False) -> dict[str, dict]:
 # Step 5 – merge into trivy_enriched.csv
 # ---------------------------------------------------------------------------
 
-# Derive a pseudo check_id from the URL slug so new rows have a stable key.
-# Format: AVD-AWS-<SERVICE>-<slug>  (uppercased, hyphens preserved)
 def slug_to_check_id(service_slug: str, check_slug: str) -> str:
     return f"AVD-AWS-{service_slug}-{check_slug}".upper()
 
 
 def load_existing_csv(csv_path: Path) -> tuple[list[dict], list[str]]:
-    """Returns (rows, fieldnames)."""
     if not csv_path.exists():
         return [], []
     with csv_path.open(encoding="utf-8") as fh:
@@ -298,14 +323,12 @@ def load_existing_csv(csv_path: Path) -> tuple[list[dict], list[str]]:
 def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
     rows, fieldnames = load_existing_csv(csv_path)
 
-    # Build lookup: avd_url (normalised) → row index
     url_to_idx: dict[str, int] = {}
     for i, row in enumerate(rows):
         avd_url = row.get("avd_url", "").strip().rstrip("/")
         if avd_url:
             url_to_idx[avd_url] = i
 
-    # Ensure the CSV has all required columns
     extra_cols = ["avd_url", "title", "description", "remediation_console", "raw_text"]
     for col in extra_cols:
         if col not in fieldnames:
@@ -315,32 +338,42 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
 
     added = 0
     updated = 0
+    overwritten_stale = 0
 
     for url, item in avd_data.items():
         normalised_url = url.rstrip("/")
+        scraped_desc = item.get("description", "")
         remediation_text = "\n".join(item.get("remediation_steps", []))
 
         if normalised_url in url_to_idx:
-            # Update existing row – only fill blanks, don't overwrite enriched data
             idx = url_to_idx[normalised_url]
             row = rows[idx]
+
+            existing_desc = row.get("description", "")
+            # Overwrite if blank OR if it's stale nav text from a prior scrape
+            if not existing_desc or is_stale_description(existing_desc):
+                if is_stale_description(existing_desc) and scraped_desc:
+                    overwritten_stale += 1
+                row["description"] = scraped_desc
+                updated += 1
+
             if not row.get("title"):
                 row["title"] = item.get("title", "")
-                updated += 1
-            if not row.get("description"):
-                row["description"] = item.get("description", "")
             if not row.get("remediation_console"):
                 row["remediation_console"] = remediation_text
             if not row.get("raw_text"):
                 row["raw_text"] = item.get("raw_text", "")
+
+            # Always clean impact HTML comment placeholders
+            if row.get("impact"):
+                row["impact"] = clean_impact(row["impact"])
         else:
-            # New check not in CSV – append
             new_row = {col: "" for col in fieldnames}
             new_row.update({
                 "check_id": slug_to_check_id(item["service_slug"], item["check_slug"]),
                 "check_name": item.get("check_name", ""),
                 "title": item.get("title", ""),
-                "description": item.get("description", ""),
+                "description": scraped_desc,
                 "service": item["service_slug"],
                 "framework": "cloudformation",
                 "avd_url": url,
@@ -360,7 +393,6 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
             url_to_idx[normalised_url] = len(rows) - 1
             added += 1
 
-    # Write back
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with csv_path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
@@ -368,10 +400,11 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
         writer.writerows(rows)
 
     print(f"\nCSV merge complete:")
-    print(f"  Updated existing rows : {updated}")
-    print(f"  Appended new rows     : {added}")
-    print(f"  Total rows in CSV     : {len(rows)}")
-    print(f"  Output                : {csv_path}")
+    print(f"  Updated existing rows         : {updated}")
+    print(f"    of which overwritten stale  : {overwritten_stale}")
+    print(f"  Appended new rows             : {added}")
+    print(f"  Total rows in CSV             : {len(rows)}")
+    print(f"  Output                        : {csv_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -380,14 +413,10 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Scrape AVD AWS misconfig pages.")
-    parser.add_argument(
-        "--force", action="store_true",
-        help="Ignore the on-disk cache and re-fetch all pages."
-    )
-    parser.add_argument(
-        "--no-merge", action="store_true",
-        help="Skip merging into trivy_enriched.csv (just update the JSON cache)."
-    )
+    parser.add_argument("--force", action="store_true",
+                        help="Ignore the on-disk cache and re-fetch all pages.")
+    parser.add_argument("--no-merge", action="store_true",
+                        help="Skip merging into trivy_enriched.csv.")
     args = parser.parse_args()
 
     print("=" * 60)
