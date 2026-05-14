@@ -42,7 +42,6 @@ Usage (as module)
         retrieve_combined_context
     )
     context = retrieve_combined_context("create a secure RDS instance")
-    # Pass context into your LLM prompt builder
 
 Environment variables
 ---------------------
@@ -54,6 +53,7 @@ Dependencies: neo4j, langchain-huggingface, langchain-chroma, chromadb
 
 import argparse
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -94,7 +94,62 @@ CHROMA_PERSIST_DIR = os.getenv(
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 CFN_COLLECTION = "cfn_resources"
 SECURITY_COLLECTION = "security_checks"
-SEMANTIC_K = 5  # results from each ChromaDB collection
+SEMANTIC_K = 5
+
+# ---------------------------------------------------------------------------
+# Data quality helpers
+# ---------------------------------------------------------------------------
+
+# AVD uses HTML comment scaffolding as placeholder for empty impact fields:
+#   <!-- Add Impact here -->
+#   <!-- DO NOT CHANGE -->
+# These must never appear in LLM context.
+_HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.DOTALL)
+
+# Real AVD check IDs follow the pattern AVD-AWS-NNNN (4-digit number).
+# Slug-derived synthetic IDs (e.g. AVD-AWS-S3-S3-BUCKET-ENCRYPTION-ENFORCEMENT)
+# indicate enterprise/gated checks that have no actionable public data.
+_REAL_CHECK_ID_RE = re.compile(r'^AVD-AWS-\d{4}$')
+
+
+def clean_impact(raw: str | None) -> str:
+    """
+    Strip HTML comment placeholders from the impact field.
+
+    AVD populates empty impact fields with:
+        <!-- Add Impact here -->
+        <!-- DO NOT CHANGE -->
+    Stripping these gives an empty string that the formatter can omit.
+    """
+    if not raw:
+        return ""
+    return _HTML_COMMENT_RE.sub("", raw).strip()
+
+
+def is_actionable_check(chk: dict) -> bool:
+    """
+    Return False for enterprise/gated checks that have no actionable data.
+
+    A check is considered non-actionable if:
+      1. Its check_id does not match the real AVD numeric format (AVD-AWS-NNNN)
+         – this catches slug-derived synthetic IDs from gated enterprise checks
+      2. Its description is the paywall placeholder "Get Demo"
+      3. It has no severity AND no remediations
+         – belt-and-suspenders for any edge cases that slip through (1) and (2)
+    """
+    check_id = chk.get("check_id", "")
+    description = (chk.get("description") or "").strip()
+    severity = (chk.get("severity") or "").strip()
+    remediations = [r for r in (chk.get("remediations") or []) if r.get("instruction")]
+
+    if not _REAL_CHECK_ID_RE.match(check_id):
+        return False
+    if description.lower() in ("get demo", "request a demo", ""):
+        return False
+    if not severity and not remediations:
+        return False
+    return True
+
 
 # ---------------------------------------------------------------------------
 # Shared embedding model (lazy-initialised once)
@@ -118,10 +173,7 @@ def get_embeddings() -> HuggingFaceEmbeddings:
 # ---------------------------------------------------------------------------
 
 def semantic_search_cfn(query: str, k: int = SEMANTIC_K) -> list[str]:
-    """
-    Returns a deduplicated list of CFN resource names relevant to the query.
-    e.g. ['AWS::S3::Bucket', 'AWS::S3::BucketPolicy']
-    """
+    """Returns a deduplicated list of CFN resource names relevant to the query."""
     print(f"  [CFN ChromaDB] Semantic search: '{query[:60]}'")
     vectorstore = Chroma(
         collection_name=CFN_COLLECTION,
@@ -145,10 +197,7 @@ def semantic_search_cfn(query: str, k: int = SEMANTIC_K) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def semantic_search_security(query: str, k: int = SEMANTIC_K) -> list[str]:
-    """
-    Returns a deduplicated list of check_ids relevant to the query.
-    e.g. ['AVD-AWS-0173', 'AVD-AWS-0089']
-    """
+    """Returns a deduplicated list of check_ids relevant to the query."""
     print(f"  [Security ChromaDB] Semantic search: '{query[:60]}'")
     vectorstore = Chroma(
         collection_name=SECURITY_COLLECTION,
@@ -169,7 +218,6 @@ def semantic_search_security(query: str, k: int = SEMANTIC_K) -> list[str]:
 
 # ---------------------------------------------------------------------------
 # Stage 2a: Neo4j graph traversal – CFN schema subgraph
-#           Mirrors query_knowledge_graph() in neo4j_client.py
 # ---------------------------------------------------------------------------
 
 CFN_CYPHER = """
@@ -219,7 +267,6 @@ def query_cfn_subgraph(driver, resource_names: list[str]) -> list[dict[str, Any]
 
 # ---------------------------------------------------------------------------
 # Stage 2b: Neo4j graph traversal – security subgraph
-#           Also follows APPLIES_TO_RESOURCE for cross-graph enrichment
 # ---------------------------------------------------------------------------
 
 SECURITY_CYPHER = """
@@ -230,8 +277,6 @@ SECURITY_CYPHER = """
     OPTIONAL MATCH (s)-[:HAS_REMEDIATION]->(rem:Remediation)
     OPTIONAL MATCH (s)-[:HAS_GOOD_EXAMPLE]->(ex:GoodExample)
     OPTIONAL MATCH (s)-[:ENFORCED_BY]->(rp:RegoPolicy)
-
-    // Cross-graph: CFN resource names this check applies to
     OPTIONAL MATCH (s)-[:APPLIES_TO_RESOURCE]->(cfn_r:Resource)
 
     RETURN s.check_id     AS check_id,
@@ -276,11 +321,9 @@ def query_security_subgraph(driver, check_ids: list[str]) -> list[dict[str, Any]
 
 # ---------------------------------------------------------------------------
 # Stage 3: Format context blocks
-#           Mirrors format_prompt_from_neo4j_result() in neo4j_client.py
 # ---------------------------------------------------------------------------
 
 def format_cfn_context(resources: list[dict]) -> str:
-    """Produce the CloudFormation schema block for the LLM prompt."""
     if not resources:
         return "No CloudFormation schema context found."
 
@@ -298,7 +341,7 @@ def format_cfn_context(resources: list[dict]) -> str:
         opt = [p for p in (res.get("optional_properties") or []) if p.get("name")]
         if opt:
             lines.append("Optional Properties (selection):")
-            for p in opt[:10]:  # cap to keep prompt size manageable
+            for p in opt[:10]:
                 lines.append(f"  - {p['name']} ({p['type']})")
 
         nt = [n for n in (res.get("nested_types") or []) if n.get("name")]
@@ -318,20 +361,31 @@ def format_cfn_context(resources: list[dict]) -> str:
 
 
 def format_security_context(checks: list[dict]) -> str:
-    """Produce the security remediation block for the LLM prompt."""
-    if not checks:
+    """
+    Produce the security remediation block for the LLM prompt.
+
+    Filters out enterprise/gated checks before formatting.
+    Cleans HTML comment placeholders from impact fields.
+    """
+    # Filter out non-actionable (gated/enterprise) checks
+    actionable = [chk for chk in checks if is_actionable_check(chk)]
+
+    if not actionable:
         return "No security constraints found for this query."
 
     lines = []
-    for chk in checks:
+    for chk in actionable:
+        severity = chk.get("severity") or "UNKNOWN"
         lines.append(
-            f"[{chk['check_id']}] {chk['check_name']} "
-            f"(Severity: {chk.get('severity', 'UNKNOWN')})"
+            f"[{chk['check_id']}] {chk['check_name']} (Severity: {severity})"
         )
         if chk.get("description"):
             lines.append(f"Description: {chk['description']}")
-        if chk.get("impact"):
-            lines.append(f"Impact: {chk['impact']}")
+
+        # Clean and emit impact only if non-empty after stripping placeholders
+        impact = clean_impact(chk.get("impact"))
+        if impact:
+            lines.append(f"Impact: {impact}")
 
         # CFN remediations only
         cfn_rems = [
@@ -361,7 +415,6 @@ def format_security_context(checks: list[dict]) -> str:
 
 
 def format_combined_context(cfn_results: list[dict], security_results: list[dict]) -> str:
-    """Combine both context blocks into the final prompt string."""
     return (
         "=== CloudFormation Schema Context ===\n"
         + format_cfn_context(cfn_results)
@@ -380,11 +433,6 @@ def retrieve_combined_context(query: str) -> str:
 
     Returns a structured context string ready to be injected into an LLM prompt.
     Covers both CloudFormation schema and security remediation constraints.
-
-    Example
-    -------
-    >>> context = retrieve_combined_context("secure S3 bucket with versioning")
-    >>> prompt = f"{context}\n\nUSER QUERY: {query}\n\nGenerate CloudFormation YAML:"
     """
     print(f"\n[G-Retrieval] Query: '{query}'")
     print("Stage 1: Semantic search in ChromaDB...")

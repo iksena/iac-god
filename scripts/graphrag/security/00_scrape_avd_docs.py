@@ -21,12 +21,15 @@ What it does
 
 3. For each check, fetch  /misconfig/aws/<service>/<check_slug>/
    → extract title, description paragraphs, remediation steps
+   → detect gated/enterprise checks ("Get Demo" / paywall pages) and
+     mark them so downstream stages can skip them
 
 4. Merge results into trivy_enriched.csv
    - Rows already in the CSV (matched on avd_url suffix or check_id) → update
      avd_url, title, description fields if they were blank
    - Brand-new checks → append as new rows with service + avd_url populated;
      check_id derived from the URL slug (e.g. 'AVD-AWS-EC2-default-security-group')
+   - Gated / enterprise rows are SKIPPED entirely (no value without the data)
 
 5. Write data/avd_scraped.json as a raw cache (re-running skips already-fetched
    URLs unless --force is passed on the command line)
@@ -46,7 +49,7 @@ import json
 import re
 import time
 from pathlib import Path
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -62,6 +65,24 @@ RETRY_DELAY = 5            # seconds to wait on 429 / 5xx
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CSV_PATH = REPO_ROOT / "data" / "trivy_enriched.csv"
 CACHE_PATH = REPO_ROOT / "data" / "avd_scraped.json"
+
+# Phrases that indicate a gated / enterprise-only check page.
+# When the description or page body contains any of these, the check has no
+# actionable public data and should be excluded.
+GATED_PHRASES = (
+    "get demo",
+    "request a demo",
+    "contact us for",
+    "sign up to view",
+    "available in aqua",
+)
+
+# HTML comment scaffold that AVD uses as placeholder for empty impact fields.
+# These must be stripped at ingest time so they don't pollute downstream data.
+IMPACT_PLACEHOLDER_RE = re.compile(
+    r'<!--.*?-->',
+    re.DOTALL | re.IGNORECASE,
+)
 
 # ---------------------------------------------------------------------------
 # HTTP helper
@@ -94,6 +115,33 @@ def fetch(url: str, retries: int = MAX_RETRIES) -> BeautifulSoup | None:
             print(f"    [ERROR] {url}: {exc}")
             time.sleep(RETRY_DELAY)
     return None
+
+
+# ---------------------------------------------------------------------------
+# Helper: detect gated pages
+# ---------------------------------------------------------------------------
+
+def is_gated(text: str) -> bool:
+    """Return True if the page body indicates a paywall / enterprise gate."""
+    normalised = text.lower()
+    return any(phrase in normalised for phrase in GATED_PHRASES)
+
+
+# ---------------------------------------------------------------------------
+# Helper: clean impact text
+# ---------------------------------------------------------------------------
+
+def clean_impact(raw: str) -> str:
+    """
+    Strip HTML comment placeholders that AVD uses for empty impact fields.
+
+    AVD source uses:
+        <!-- Add Impact here -->
+        <!-- DO NOT CHANGE -->
+    as scaffold that should never appear in user-facing output.
+    """
+    cleaned = IMPACT_PLACEHOLDER_RE.sub("", raw)
+    return cleaned.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -175,11 +223,26 @@ def scrape_check_detail(url: str) -> dict:
     Extract structured data from a check detail page.
 
     Returns a dict with keys:
-      title, description, remediation_steps (list[str]), raw_text
+      title, description, remediation_steps (list[str]), raw_text, gated (bool)
+
+    gated=True means the page is behind a paywall/enterprise gate and has no
+    actionable data.  Callers should skip gated entries.
     """
     soup = fetch(url)
     if not soup:
         return {}
+
+    raw_text = soup.get_text(" ", strip=True)
+
+    # Detect gated pages early – no point parsing further
+    if is_gated(raw_text):
+        return {
+            "title": "",
+            "description": "",
+            "remediation_steps": [],
+            "raw_text": "",
+            "gated": True,
+        }
 
     # Title is in the <title> tag or first <h1>/<h2>
     title = ""
@@ -191,27 +254,23 @@ def scrape_check_detail(url: str) -> dict:
 
     # All paragraph text – first non-empty para is usually the description
     paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p") if p.get_text(strip=True)]
-
     description = paragraphs[0] if paragraphs else ""
 
-    # Remediation steps: numbered list items or paragraphs that start with a number
+    # Remediation steps: list items or paragraphs after the first
     remediation_steps: list[str] = []
     for li in soup.find_all("li"):
         text = li.get_text(" ", strip=True)
         if text:
             remediation_steps.append(text)
-
-    # If no <li>, fall back to paragraphs 2+ (skip description at index 0)
     if not remediation_steps and len(paragraphs) > 1:
         remediation_steps = paragraphs[1:]
-
-    raw_text = soup.get_text(" ", strip=True)
 
     return {
         "title": title,
         "description": description,
         "remediation_steps": remediation_steps,
-        "raw_text": raw_text[:4000],  # cap to avoid bloat
+        "raw_text": raw_text[:4000],
+        "gated": False,
     }
 
 
@@ -237,8 +296,9 @@ def build_avd_dataset(force: bool = False) -> dict[str, dict]:
     Crawl the full AVD AWS section, using the on-disk cache to skip
     already-fetched URLs unless force=True.
 
-    Returns a dict keyed by check URL, each value containing:
-      service_slug, check_slug, check_name, url + fields from scrape_check_detail()
+    Returns a dict keyed by check URL.  Gated entries are retained in the
+    cache (so we don't re-fetch them) but are marked gated=True so
+    merge_into_csv can skip them.
     """
     cache = {} if force else load_cache(CACHE_PATH)
     changed = False
@@ -253,7 +313,7 @@ def build_avd_dataset(force: bool = False) -> dict[str, dict]:
         for check in check_list:
             url = check["url"]
             if url in cache and not force:
-                continue  # already scraped
+                continue
 
             print(f"  Scraping: {check['slug']} …", end=" ", flush=True)
             detail = scrape_check_detail(url)
@@ -265,7 +325,10 @@ def build_avd_dataset(force: bool = False) -> dict[str, dict]:
                 **detail,
             }
             changed = True
-            print("done" if detail else "EMPTY")
+            if detail.get("gated"):
+                print("GATED (skipped)")
+            else:
+                print("done" if detail else "EMPTY")
 
     if changed:
         save_cache(CACHE_PATH, cache)
@@ -315,13 +378,18 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
 
     added = 0
     updated = 0
+    skipped_gated = 0
 
     for url, item in avd_data.items():
+        # Skip enterprise/gated checks – they have no actionable data
+        if item.get("gated"):
+            skipped_gated += 1
+            continue
+
         normalised_url = url.rstrip("/")
         remediation_text = "\n".join(item.get("remediation_steps", []))
 
         if normalised_url in url_to_idx:
-            # Update existing row – only fill blanks, don't overwrite enriched data
             idx = url_to_idx[normalised_url]
             row = rows[idx]
             if not row.get("title"):
@@ -333,8 +401,10 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
                 row["remediation_console"] = remediation_text
             if not row.get("raw_text"):
                 row["raw_text"] = item.get("raw_text", "")
+            # Always clean impact placeholders on existing rows
+            if row.get("impact"):
+                row["impact"] = clean_impact(row["impact"])
         else:
-            # New check not in CSV – append
             new_row = {col: "" for col in fieldnames}
             new_row.update({
                 "check_id": slug_to_check_id(item["service_slug"], item["check_slug"]),
@@ -370,6 +440,7 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
     print(f"\nCSV merge complete:")
     print(f"  Updated existing rows : {updated}")
     print(f"  Appended new rows     : {added}")
+    print(f"  Skipped gated rows    : {skipped_gated}")
     print(f"  Total rows in CSV     : {len(rows)}")
     print(f"  Output                : {csv_path}")
 
@@ -395,7 +466,12 @@ def main():
     print("=" * 60)
 
     avd_data = build_avd_dataset(force=args.force)
-    print(f"\nTotal checks scraped/cached: {len(avd_data)}")
+
+    total = len(avd_data)
+    gated = sum(1 for v in avd_data.values() if v.get("gated"))
+    print(f"\nTotal checks scraped/cached : {total}")
+    print(f"  Gated (enterprise-only)   : {gated}")
+    print(f"  Actionable (public)        : {total - gated}")
 
     if not args.no_merge:
         print(f"\nMerging into {CSV_PATH} …")
