@@ -58,7 +58,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CHECKS_JSON = REPO_ROOT / "data" / "security_checks.json"
-CHROMA_PERSIST_DIR = str(REPO_ROOT / "data" / "chroma_security_db")
+CHROMA_PERSIST_DIR = str(Path("/Users/iksena/Documents/research/cfn-chroma-docker") / "chroma_data")
 COLLECTION_NAME = "security_checks"
 
 # Embedding model – same as CFN pipeline for consistency

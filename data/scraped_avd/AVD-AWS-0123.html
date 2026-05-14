@@ -1,0 +1,225 @@
+<!doctype html><html lang=en-us><head><meta charset=UTF-8><meta name=viewport content="width=device-width,initial-scale=1"><link rel="shortcut icon" href=/favicon.ico><link rel=icon type=image/png href=/favicon_192x192.png sizes=192x192><link rel=apple-touch-icon sizes=180x180 href=/apple-touch-icon-180x180.png><meta http-equiv=X-UA-Compatible content="IE=edge"><title>Enforce Group MFA | Vulnerability Database | Aqua Security</title>
+<meta name=description content="Enforce Group MFA | AWS-0123 | medium"><meta property="og:title" content="Enforce Group MFA | Vulnerability Database | Aqua Security"><meta property="og:site_name" content="Aqua Vulnerability Database"><meta property="og:description" content="Enforce Group MFA | AWS-0123 | medium"><link rel=stylesheet href=/css/avdblank.min.css><link rel=stylesheet href=/css/syntax.css><link rel=stylesheet href=https://maxst.icons8.com/vue-static/landings/line-awesome/font-awesome-line-awesome/css/all.min.css><script type=text/javascript src=/js/avdblank.js></script><script type=text/javascript src=/js/iac.js></script><script async src="https://www.googletagmanager.com/gtag/js?id=G-C5LEECC0J5"></script><script>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-C5LEECC0J5")</script><div class=avd_header_wrap><div class=header_navbar_wrap><nav class=navbar><div class="container is-small"><div class=navbar-brand><a class="navbar-item logo" href=https://avd.aquasec.com/ title="Aqua Vulnerability Database">Aqua Vulnerability Database</a><div role=button tabindex=0 class="navbar-burger burger"><span></span><span></span><span></span></div></div><div id=main-navigation-navbar class=navbar-menu><div class=navbar-start></div><div class=navbar-end><div class=navbar-item><div id=fastSearch class=search_box_wrap><input id=searchInput class=avd_header_search placeholder="Search by Keyword or CVE-ID..." tabindex=0><div class="content search_results_list_wrap"><ul id=search_results_list></ul></div></div></div><div class=navbar-item><div class="field is-grouped"><p class=control><a href=https://www.aquasec.com/demo/ target=_blank class="button is-primary type_btn">Get Demo</a></p></div></div></div></div></div></nav></div></div><div class="avd_hero_wrap animatable"><div class="hero header_wrap is-primary"><div class=hero-body><div class="clearboth container"><div><div class="clearboth container main-menu"><div class=dropdown><a href=/nvd><span class=dropbtn>Vulnerabilities</span></a></div><div class=dropdown><a href=/misconfig><span class="dropbtn active">Misconfiguration</span></a></div><div class=dropdown><a href=/compliance><span class=dropbtn>Compliance</span></a></div></div></div><div class=header_title_wrap><div class="page_pretitle with_icon aws fadeInUp"><a href=/misconfig/aws>AWS</a> >
+<a href=/misconfig/aws/iam>IAM</a> ></div><h1 class="title page_title fadeInUp animationDelay_1">Enforce Group MFA</h1></div></div></div></div></div><div class="section avdcve_wrap animatable"><div class="clearboth container page-fill"><div class="columns is-multiline reverse-columns"><div class="column is-3-desktop is-12-tablet is-12-mobile fadeInUp animationDelay_4"><div class=avdcve_sidebar_wrap><div class="avd_sidebar_widget avdcve_scores_wrap"><div class="avdcve_scores_cvss cvss_5"><div class=large_score_wrap><div class=large_score_gauge_wrap><div class=large_score_gague><div class=score_gague_content><div class=score_label>MEDIUM</div></div><div class=score_bg></div></div></div></div></div><div class=avdcve_scores_additional><div class=score_bar><div class=score_bar_name>Source</div><div class=score_bar_label>Trivy/CSPM</div></div><div class=score_bar><div class=score_bar_name>CSPM ID</div><div class=score_bar_label>users-mfa-enabled</div></div><div class=score_bar><div class=score_bar_name>ID</div><div class=score_bar_label>AWS-0123</div></div><div class=score_bar><span class="remediation-pill management_console"><a href=/misconfig/aws/iam/aws-0123/#management_console>management_console</a>
+</span><span class="remediation-pill terraform"><a href=/misconfig/aws/iam/aws-0123/#terraform>terraform</a></span></div></div></div></div></div><div class="column is-9-desktop is-12-tablet is-12-mobile fadeInUp animationDelay_4"><div class="vulnerability_content_wrap fadeInUp"><div class="content vulnerability_content"><a name=iam-groups-should-have-mfa-enforcement-activated></a><h3 id=iam-groups-should-have-mfa-enforcement-activated>IAM groups should have MFA enforcement activated.</h3><p>IAM groups should be protected with multi factor authentication to add safe guards to password compromise.</p><a name=impact></a><h3 id=impact>Impact</h3><a name=recommended-actions></a><h3 id=recommended-actions>Recommended Actions</h3><p>Follow the appropriate remediation steps below to resolve the issue.</p><div class=tab-panel><div class=tab-nav><button data-tab-item="Management Console" data-tab-group=remediation class="tab-nav-button btn active" onclick='switchTab("remediation","Management Console")'>Management Console</button>
+<button data-tab-item=Terraform data-tab-group=remediation class="tab-nav-button btn" onclick='switchTab("remediation","Terraform")'>Terraform</button></div><div class=tab-content><div data-tab-item="Management Console" data-tab-group=remediation class="tab-item active"><ol><li><p>Log in to the AWS Management Console.</p></li><li><p>Select the &ldquo;Services&rdquo; option and search for IAM. <img alt=Step src=/resources/aws/iam/users-mfa-enabled/step2.png></p></li><li><p>Scroll down the left navigation panel and choose &ldquo;Users&rdquo;. <img alt=Step src=/resources/aws/iam/users-mfa-enabled/step3.png></p></li><li><p>Select the &ldquo;User&rdquo; that needs to be verified and click on the &ldquo;User name&rdquo; to access the selected &ldquo;IAM User&rdquo;.<img alt=Step src=/resources/aws/iam/users-mfa-enabled/step4.png></p></li><li><p>Click on the &ldquo;Security Credentials&rdquo; under the configuration page.<img alt=Step src=/resources/aws/iam/users-mfa-enabled/step5.png></p></li><li><p>Scroll down the &ldquo;Security Credentials&rdquo; tab and check the &ldquo;Assigned MFA device&rdquo;. Check the &ldquo;Multi-factor authentication (MFA)&rdquo; section for any active devices. If &ldquo;Not assigned&rdquo; is showing against &ldquo;Assigned MFA device&rdquo; then a multi-factor authentication device is not enabled for the selected user account.<img alt=Step src=/resources/aws/iam/users-mfa-enabled/step6.png></p></li><li><p>Repeat step number 2 - 6 to check other IAM users.</p></li><li><p>On &ldquo;Security Credentials&rdquo; page scroll down and click on the &ldquo;Multi-factor authentication (MFA)&rdquo; and click on the &ldquo;Manage&rdquo; link to enable a multi-factor authentication device.<img alt=Step src=/resources/aws/iam/users-mfa-enabled/step8.png></p></li><li><p>Click on the &ldquo;Virtual MFA device&rdquo; and click on &ldquo;Continue&rdquo;. <img alt=Step src=/resources/aws/iam/users-mfa-enabled/step9.png></p></li><li><p>Now install the AWS MFA compatible application on mobile device or computer. Once the application is installed click on the &ldquo;Show QR code&rdquo; and scan the code with pre-installed application.<img alt=Step src=/resources/aws/iam/users-mfa-enabled/step10.png></p></li><li><p>Enter two consecutive MFA codes generated from application in &ldquo;MFA code 1&rdquo; and &ldquo;MFA code 2&rdquo; and click on the &ldquo;Assign MFA&rdquo; button.<img alt=Step src=/resources/aws/iam/users-mfa-enabled/step11.png></p></li><li><p>On successful setup will get the following message &ldquo;You have successfully assigned virtual MFA&rdquo;. <img alt=Step src=/resources/aws/iam/users-mfa-enabled/step12.png></p></li><li><p>Repeat steps number 8 - 12 to enable multi-factor authentication device for all other IAM users.</p></li></ol></div><div data-tab-item=Terraform data-tab-group=remediation class=tab-item><p>Use terraform-module/enforce-mfa/aws to ensure that MFA is enforced</p><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-hcl data-lang=hcl><span class=line><span class=cl><span class=k>resource</span> <span class=s2>&#34;aws_iam_group&#34; &#34;support&#34;</span> {
+</span></span><span class=line><span class=cl><span class=n>  name</span> <span class=o>=</span> <span class=s2>&#34;support&#34;</span>
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl><span class=k>resource</span> <span class=s2>&#34;aws_iam_group_policy&#34; &#34;mfa&#34;</span> {
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>  group</span>  <span class=o>=</span> <span class=k>aws_iam_group</span><span class=p>.</span><span class=k>support</span><span class=p>.</span><span class=k>name</span>
+</span></span><span class=line><span class=cl><span class=n>  policy</span> <span class=o>=</span> <span class=err>&lt;&lt;</span><span class=k>EOF</span>
+</span></span><span class=line><span class=cl>{
+</span></span><span class=line><span class=cl>  <span class=s2>&#34;Version&#34;: &#34;2012-10-17&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=s2>&#34;Statement&#34;</span><span class=err>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    {
+</span></span><span class=line><span class=cl>      <span class=s2>&#34;Sid&#34;: &#34;&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=s2>&#34;Effect&#34;: &#34;Allow&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=s2>&#34;Action&#34;: &#34;ec2:*&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=s2>&#34;Resource&#34;: &#34;*&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=s2>&#34;Condition&#34;</span><span class=err>:</span> {
+</span></span><span class=line><span class=cl>          <span class=s2>&#34;Bool&#34;</span><span class=err>:</span> {
+</span></span><span class=line><span class=cl>              <span class=s2>&#34;aws:MultiFactorAuthPresent&#34;: [&#34;true&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>          }
+</span></span><span class=line><span class=cl>      }
+</span></span><span class=line><span class=cl>    }
+</span></span><span class=line><span class=cl>  <span class=p>]</span>
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl><span class=k>EOF</span>
+</span></span><span class=line><span class=cl>}
+</span></span></code></pre></td></tr></table></div></div><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-hcl data-lang=hcl><span class=line><span class=cl><span class=k>resource</span> <span class=s2>&#34;aws_iam_group&#34; &#34;support&#34;</span> {
+</span></span><span class=line><span class=cl><span class=n>  name</span> <span class=o>=</span> <span class=s2>&#34;support&#34;</span>
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl><span class=k>resource</span> <span class=s2>&#34;aws_iam_policy&#34; &#34;mfa&#34;</span> {
+</span></span><span class=line><span class=cl>
+</span></span><span class=line><span class=cl><span class=n>  name</span>   <span class=o>=</span> <span class=s2>&#34;something&#34;</span>
+</span></span><span class=line><span class=cl><span class=n>  policy</span> <span class=o>=</span> <span class=err>&lt;&lt;</span><span class=k>EOF</span>
+</span></span><span class=line><span class=cl>{
+</span></span><span class=line><span class=cl>  <span class=s2>&#34;Version&#34;: &#34;2012-10-17&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>  <span class=s2>&#34;Statement&#34;</span><span class=err>:</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    {
+</span></span><span class=line><span class=cl>      <span class=s2>&#34;Sid&#34;: &#34;&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=s2>&#34;Effect&#34;: &#34;Allow&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=s2>&#34;Action&#34;: &#34;ec2:*&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=s2>&#34;Resource&#34;: &#34;*&#34;</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>      <span class=s2>&#34;Condition&#34;</span><span class=err>:</span> {
+</span></span><span class=line><span class=cl>          <span class=s2>&#34;Bool&#34;</span><span class=err>:</span> {
+</span></span><span class=line><span class=cl>              <span class=s2>&#34;aws:MultiFactorAuthPresent&#34;: [&#34;true&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>          }
+</span></span><span class=line><span class=cl>      }
+</span></span><span class=line><span class=cl>    }
+</span></span><span class=line><span class=cl>  <span class=p>]</span>
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl><span class=k>EOF</span>
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl><span class=k>resource</span> <span class=s2>&#34;aws_iam_group_policy_attachment&#34; &#34;attach&#34;</span> {
+</span></span><span class=line><span class=cl><span class=n>  group</span>      <span class=o>=</span> <span class=k>aws_iam_group</span><span class=p>.</span><span class=k>support</span><span class=p>.</span><span class=k>name</span>
+</span></span><span class=line><span class=cl><span class=n>  policy_arn</span> <span class=o>=</span> <span class=k>aws_iam_policy</span><span class=p>.</span><span class=k>mfa</span><span class=p>.</span><span class=k>id</span>
+</span></span><span class=line><span class=cl>}
+</span></span></code></pre></td></tr></table></div></div><div class=highlight><div class=chroma><table class=lntable><tr><td class=lntd><pre tabindex=0 class=chroma><code><span class=lnt> 1
+</span><span class=lnt> 2
+</span><span class=lnt> 3
+</span><span class=lnt> 4
+</span><span class=lnt> 5
+</span><span class=lnt> 6
+</span><span class=lnt> 7
+</span><span class=lnt> 8
+</span><span class=lnt> 9
+</span><span class=lnt>10
+</span><span class=lnt>11
+</span><span class=lnt>12
+</span><span class=lnt>13
+</span><span class=lnt>14
+</span><span class=lnt>15
+</span><span class=lnt>16
+</span><span class=lnt>17
+</span><span class=lnt>18
+</span><span class=lnt>19
+</span><span class=lnt>20
+</span><span class=lnt>21
+</span><span class=lnt>22
+</span><span class=lnt>23
+</span><span class=lnt>24
+</span><span class=lnt>25
+</span><span class=lnt>26
+</span><span class=lnt>27
+</span><span class=lnt>28
+</span><span class=lnt>29
+</span><span class=lnt>30
+</span><span class=lnt>31
+</span><span class=lnt>32
+</span><span class=lnt>33
+</span><span class=lnt>34
+</span><span class=lnt>35
+</span><span class=lnt>36
+</span><span class=lnt>37
+</span><span class=lnt>38
+</span><span class=lnt>39
+</span><span class=lnt>40
+</span><span class=lnt>41
+</span><span class=lnt>42
+</span><span class=lnt>43
+</span><span class=lnt>44
+</span><span class=lnt>45
+</span><span class=lnt>46
+</span><span class=lnt>47
+</span><span class=lnt>48
+</span><span class=lnt>49
+</span><span class=lnt>50
+</span><span class=lnt>51
+</span><span class=lnt>52
+</span><span class=lnt>53
+</span><span class=lnt>54
+</span><span class=lnt>55
+</span><span class=lnt>56
+</span></code></pre></td><td class=lntd><pre tabindex=0 class=chroma><code class=language-hcl data-lang=hcl><span class=line><span class=cl><span class=k>resource</span> <span class=s2>&#34;aws_iam_group&#34; &#34;support&#34;</span> {
+</span></span><span class=line><span class=cl><span class=n>  name</span> <span class=o>=</span> <span class=s2>&#34;support&#34;</span>
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl><span class=k>resource</span> <span class=s2>&#34;aws_iam_group_policy&#34; &#34;mfa&#34;</span> {
+</span></span><span class=line><span class=cl><span class=n>  group</span>  <span class=o>=</span> <span class=k>aws_iam_group</span><span class=p>.</span><span class=k>support</span><span class=p>.</span><span class=k>name</span>
+</span></span><span class=line><span class=cl><span class=n>  policy</span> <span class=o>=</span> <span class=k>data</span><span class=p>.</span><span class=k>aws_iam_policy_document</span><span class=p>.</span><span class=k>combined</span><span class=p>.</span><span class=k>json</span>
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl><span class=k>data</span> <span class=s2>&#34;aws_iam_policy_document&#34; &#34;policy_override&#34;</span> {
+</span></span><span class=line><span class=cl>  <span class=k>statement</span> {
+</span></span><span class=line><span class=cl><span class=n>    sid</span>       <span class=o>=</span> <span class=s2>&#34;main&#34;</span>
+</span></span><span class=line><span class=cl><span class=n>    effect</span>    <span class=o>=</span> <span class=s2>&#34;Allow&#34;</span>
+</span></span><span class=line><span class=cl><span class=n>    actions</span>   <span class=o>=</span> <span class=p>[</span><span class=s2>&#34;s3:*&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl><span class=n>    resources</span> <span class=o>=</span> <span class=p>[</span><span class=s2>&#34;*&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    <span class=k>condition</span> {
+</span></span><span class=line><span class=cl><span class=n>      test</span>     <span class=o>=</span> <span class=s2>&#34;Bool&#34;</span>
+</span></span><span class=line><span class=cl><span class=n>      variable</span> <span class=o>=</span> <span class=s2>&#34;aws:MultiFactorAuthPresent&#34;</span>
+</span></span><span class=line><span class=cl><span class=n>      values</span>   <span class=o>=</span> <span class=p>[</span><span class=s2>&#34;true&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>    }
+</span></span><span class=line><span class=cl>  }
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl><span class=k>data</span> <span class=s2>&#34;aws_iam_policy_document&#34; &#34;policy_source&#34;</span> {
+</span></span><span class=line><span class=cl>  <span class=k>statement</span> {
+</span></span><span class=line><span class=cl><span class=n>    sid</span>       <span class=o>=</span> <span class=s2>&#34;main&#34;</span>
+</span></span><span class=line><span class=cl><span class=n>    effect</span>    <span class=o>=</span> <span class=s2>&#34;Allow&#34;</span>
+</span></span><span class=line><span class=cl><span class=n>    actions</span>   <span class=o>=</span> <span class=p>[</span><span class=s2>&#34;iam:*&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl><span class=n>    resources</span> <span class=o>=</span> <span class=p>[</span><span class=s2>&#34;*&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>  }
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl><span class=k>data</span> <span class=s2>&#34;aws_iam_policy_document&#34; &#34;policy_misc&#34;</span> {
+</span></span><span class=line><span class=cl>  <span class=k>statement</span> {
+</span></span><span class=line><span class=cl><span class=n>    sid</span>       <span class=o>=</span> <span class=s2>&#34;misc&#34;</span>
+</span></span><span class=line><span class=cl><span class=n>    effect</span>    <span class=o>=</span> <span class=s2>&#34;Deny&#34;</span>
+</span></span><span class=line><span class=cl><span class=n>    actions</span>   <span class=o>=</span> <span class=p>[</span><span class=s2>&#34;logs:*&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl><span class=n>    resources</span> <span class=o>=</span> <span class=p>[</span><span class=s2>&#34;*&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>  }
+</span></span><span class=line><span class=cl>}
+</span></span><span class=line><span class=cl><span class=k>data</span> <span class=s2>&#34;aws_iam_policy_document&#34; &#34;combined&#34;</span> {
+</span></span><span class=line><span class=cl><span class=n>  source_json</span> <span class=o>=</span> <span class=err>&lt;&lt;</span><span class=k>EOF</span>
+</span></span><span class=line><span class=cl>    {
+</span></span><span class=line><span class=cl>        <span class=s2>&#34;Id&#34;: &#34;base&#34;</span>
+</span></span><span class=line><span class=cl>    }
+</span></span><span class=line><span class=cl><span class=k>EOF</span>
+</span></span><span class=line><span class=cl><span class=n>  source_policy_documents</span> <span class=o>=</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=k>data</span><span class=p>.</span><span class=k>aws_iam_policy_document</span><span class=p>.</span><span class=k>policy_source</span><span class=p>.</span><span class=k>json</span>
+</span></span><span class=line><span class=cl>  <span class=p>]</span>
+</span></span><span class=line><span class=cl><span class=n>  override_policy_documents</span> <span class=o>=</span> <span class=p>[</span>
+</span></span><span class=line><span class=cl>    <span class=k>data</span><span class=p>.</span><span class=k>aws_iam_policy_document</span><span class=p>.</span><span class=k>policy_override</span><span class=p>.</span><span class=k>json</span><span class=p>,</span>
+</span></span><span class=line><span class=cl>    <span class=k>data</span><span class=p>.</span><span class=k>aws_iam_policy_document</span><span class=p>.</span><span class=k>policy_misc</span><span class=p>.</span><span class=k>json</span>
+</span></span><span class=line><span class=cl>  <span class=p>]</span>
+</span></span><span class=line><span class=cl>  <span class=k>statement</span> {
+</span></span><span class=line><span class=cl><span class=n>    sid</span>       <span class=o>=</span> <span class=s2>&#34;whatever&#34;</span>
+</span></span><span class=line><span class=cl><span class=n>    effect</span>    <span class=o>=</span> <span class=s2>&#34;Deny&#34;</span>
+</span></span><span class=line><span class=cl><span class=n>    actions</span>   <span class=o>=</span> <span class=p>[</span><span class=s2>&#34;*&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl><span class=n>    resources</span> <span class=o>=</span> <span class=p>[</span><span class=s2>&#34;*&#34;</span><span class=p>]</span>
+</span></span><span class=line><span class=cl>  }
+</span></span><span class=line><span class=cl>}
+</span></span></code></pre></td></tr></table></div></div><a name=remediation-links></a><h4 id=remediation-links>Remediation Links</h4><ul><li><p><a href=https://registry.terraform.io/modules/terraform-module/enforce-mfa/aws/latest>https://registry.terraform.io/modules/terraform-module/enforce-mfa/aws/latest</a></p></li><li><p><a href=https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_passwords_account-policy.html#password-policy-details>https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_passwords_account-policy.html#password-policy-details</a></p></li></ul></div></div></div><a name=links></a><h3 id=links>Links</h3><ul><li><a href=https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_passwords_account-policy.html#password-policy-details>https://docs.aws.amazon.com/IAM/latest/UserGuide/id_credentials_passwords_account-policy.html#password-policy-details</a></li></ul></div></div></div></div></div></div></div><section class="avd_footer_wrap animatable"><div class=section><div class=container><div class="columns is-multiline"><div class="column is-7 fadeInUp animationDelay_2"><a class=footer_logo href=https://www.aquasec.com title="Aqua Container Security" target=_blank>Aqua Container Security</a><div class=footer_blurb>Aqua Security is the largest pure-play cloud native security company, providing customers the freedom to innovate and run their businesses with minimal friction. The Aqua Cloud Native Security Platform provides prevention, detection, and response automation across the entire application lifecycle to secure the build, secure cloud infrastructure and secure running workloads wherever they are deployed.</div><div class=footer_copyright>Copyright &copy; 2026 Aqua Security Software Ltd. &nbsp; <a href=https://www.aquasec.com/privacy/ target=_blank>Privacy Policy</a> | <a href=https://www.aquasec.com/terms-of-use/ target=_blank>Terms of Use</a></div></div><div class="column is-5 social_links_column fadeInUp animationDelay_3"><div class=social_links_wrap><a href=https://www.facebook.com/AquaSecTeam class="social_link facebook" target=_blank title=facebook></a><a href=https://twitter.com/AquaSecTeam class="social_link twitter" target=_blank title=twitter></a><a href=https://www.linkedin.com/company/aquasecteam class="social_link linkedin" target=_blank title=linkedin></a><a href=https://www.youtube.com/channel/UCLstqAtOx2t0xy8YaYMjkWg class="social_link youtube" target=_blank title=youtube></a><a href=https://github.com/aquasecurity class="social_link git" target=_blank title=git></a></div></div></div></div></div></section></body><script src=https://avd.aquasec.com/js/fastsearch.js></script><script src=https://avd.aquasec.com/js/meilisearch.js></script></html>
