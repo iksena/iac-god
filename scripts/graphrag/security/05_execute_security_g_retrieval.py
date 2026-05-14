@@ -4,51 +4,30 @@
 
 Stage 3 – Combined G-Retrieval: CFN schema + security remediation context.
 
-This is the retrieval layer that feeds the LLM in the IaC generation agent.
-It extends execute_g_retrieval.py (CFN-only) with a dual-collection fan-out
-that simultaneously queries:
-  1. ChromaDB 'cfn_resources'   → CFN schema subgraph from Neo4j
-  2. ChromaDB 'security_checks' → security remediation subgraph from Neo4j
-
-The two subgraphs are merged into a single structured prompt context.
-
 Retrieval flow
 --------------
   User query
-      ├─ ChromaDB 'cfn_resources'   (k=5) → resource_names
-      └─ ChromaDB 'security_checks'  (k=5) → check_ids
-           │
+      ├─ ChromaDB 'cfn_resources'    (k=SEMANTIC_K)   → resource_names
+      └─ ChromaDB 'security_checks'  (k=SEMANTIC_K_SEC) → check_ids
+           │  (+ optional service-hint boost pass if service name in query)
            ▼
       Neo4j pass A: query_cfn_subgraph(resource_names)
-           │  MATCH (r:Resource) with full property + example subgraph
-           ▼
       Neo4j pass B: query_security_subgraph(check_ids)
-           │  MATCH (s:SecurityCheck) with impact, remediation, examples
-           │  + follow APPLIES_TO_RESOURCE to enrich with linked CFN resources
            ▼
       format_combined_context(cfn_result, security_result)
-           │  Produces a structured prompt string with two labelled blocks
            ▼
       Caller injects into LLM prompt
+
+Environment variables
+---------------------
+    NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
+    CHROMA_PERSIST_DIR   (default: same path used by 03_build_security_chromadb.py
+                          and 05_build_chromadb.py in the CFN pipeline)
 
 Usage (standalone test)
 -----------------------
     python scripts/graphrag/security/05_execute_security_g_retrieval.py \\
         --query "S3 bucket with encryption and no public access"
-
-Usage (as module)
------------------
-    from scripts.graphrag.security.execute_security_g_retrieval import (
-        retrieve_combined_context
-    )
-    context = retrieve_combined_context("create a secure RDS instance")
-
-Environment variables
----------------------
-    NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
-    CHROMA_PERSIST_DIR   (default: same as CFN pipeline docker volume path)
-
-Dependencies: neo4j, langchain-huggingface, langchain-chroma, chromadb
 """
 
 import argparse
@@ -80,12 +59,16 @@ except ImportError:
         sys.exit(1)
 
 # ---------------------------------------------------------------------------
-# Config  (mirrors execute_g_retrieval.py + 03_build_security_chromadb.py)
+# Config
 # ---------------------------------------------------------------------------
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 
+# Both the CFN pipeline (05_build_chromadb.py) and the security pipeline
+# (03_build_security_chromadb.py) must write to the SAME persist directory
+# so that retrieve_combined_context() can find both collections in one store.
+# Override via env var if your local path differs.
 CHROMA_PERSIST_DIR = os.getenv(
     "CHROMA_PERSIST_DIR",
     str(Path("/Users/iksena/Documents/research/cfn-chroma-docker") / "chroma_data"),
@@ -94,61 +77,36 @@ CHROMA_PERSIST_DIR = os.getenv(
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 CFN_COLLECTION = "cfn_resources"
 SECURITY_COLLECTION = "security_checks"
+
+# k for CFN schema search – 5 is enough (schema results are per-resource)
 SEMANTIC_K = 5
+# k for security search – higher because one service can have 10-15 checks
+SEMANTIC_K_SEC = 10
+# absolute ceiling when service-hint boost is added
+SEMANTIC_K_MAX = 15
+
+# Known AWS service name tokens for service-hint boosting.
+# When the user query contains one of these words, a second semantic search
+# is run with just the service name to surface additional service-specific checks.
+_AWS_SERVICE_TOKENS = {
+    "s3", "ec2", "rds", "iam", "lambda", "cloudtrail", "cloudfront",
+    "apigateway", "api", "dynamodb", "elasticache", "eks", "ecs",
+    "kinesis", "sqs", "sns", "kms", "vpc", "elb", "elbv2", "msk",
+    "athena", "glue", "redshift", "emr", "sagemaker", "codebuild",
+    "codecommit", "secretsmanager", "ssm", "config",
+}
 
 # ---------------------------------------------------------------------------
-# Data quality helpers
+# HTML comment cleaning (AVD scaffold for empty impact fields)
 # ---------------------------------------------------------------------------
-
-# AVD uses HTML comment scaffolding as placeholder for empty impact fields:
-#   <!-- Add Impact here -->
-#   <!-- DO NOT CHANGE -->
-# These must never appear in LLM context.
 _HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.DOTALL)
-
-# Real AVD check IDs follow the pattern AVD-AWS-NNNN (4-digit number).
-# Slug-derived synthetic IDs (e.g. AVD-AWS-S3-S3-BUCKET-ENCRYPTION-ENFORCEMENT)
-# indicate enterprise/gated checks that have no actionable public data.
-_REAL_CHECK_ID_RE = re.compile(r'^AVD-AWS-\d{4}$')
 
 
 def clean_impact(raw: str | None) -> str:
-    """
-    Strip HTML comment placeholders from the impact field.
-
-    AVD populates empty impact fields with:
-        <!-- Add Impact here -->
-        <!-- DO NOT CHANGE -->
-    Stripping these gives an empty string that the formatter can omit.
-    """
+    """Strip HTML comment placeholders (<!-- Add Impact here -->) from impact."""
     if not raw:
         return ""
     return _HTML_COMMENT_RE.sub("", raw).strip()
-
-
-def is_actionable_check(chk: dict) -> bool:
-    """
-    Return False for enterprise/gated checks that have no actionable data.
-
-    A check is considered non-actionable if:
-      1. Its check_id does not match the real AVD numeric format (AVD-AWS-NNNN)
-         – this catches slug-derived synthetic IDs from gated enterprise checks
-      2. Its description is the paywall placeholder "Get Demo"
-      3. It has no severity AND no remediations
-         – belt-and-suspenders for any edge cases that slip through (1) and (2)
-    """
-    check_id = chk.get("check_id", "")
-    description = (chk.get("description") or "").strip()
-    severity = (chk.get("severity") or "").strip()
-    remediations = [r for r in (chk.get("remediations") or []) if r.get("instruction")]
-
-    if not _REAL_CHECK_ID_RE.match(check_id):
-        return False
-    if description.lower() in ("get demo", "request a demo", ""):
-        return False
-    if not severity and not remediations:
-        return False
-    return True
 
 
 # ---------------------------------------------------------------------------
@@ -169,17 +127,50 @@ def get_embeddings() -> HuggingFaceEmbeddings:
 
 
 # ---------------------------------------------------------------------------
+# Collection health-check helper
+# ---------------------------------------------------------------------------
+
+def _validate_collection(vectorstore: Chroma, collection_name: str) -> int:
+    """
+    Return the document count in the collection.
+    Raises RuntimeError with an actionable message if the collection is empty.
+    """
+    try:
+        count = vectorstore._collection.count()
+    except Exception:
+        count = 0
+    return count
+
+
+# ---------------------------------------------------------------------------
 # Stage 1a: Semantic search – CFN collection
 # ---------------------------------------------------------------------------
 
 def semantic_search_cfn(query: str, k: int = SEMANTIC_K) -> list[str]:
-    """Returns a deduplicated list of CFN resource names relevant to the query."""
+    """
+    Returns a deduplicated list of CFN resource names relevant to the query.
+
+    Raises RuntimeError with an actionable message if the cfn_resources
+    collection is missing or empty – previously this returned [] silently,
+    masking the fact that the CFN ChromaDB had not been built into this dir.
+    """
     print(f"  [CFN ChromaDB] Semantic search: '{query[:60]}'")
     vectorstore = Chroma(
         collection_name=CFN_COLLECTION,
         embedding_function=get_embeddings(),
         persist_directory=CHROMA_PERSIST_DIR,
     )
+    count = _validate_collection(vectorstore, CFN_COLLECTION)
+    if count == 0:
+        raise RuntimeError(
+            f"\nERROR: CFN collection '{CFN_COLLECTION}' is empty or missing in:\n"
+            f"  {CHROMA_PERSIST_DIR}\n"
+            "Fix: Run scripts/graphrag/05_build_chromadb.py first, ensuring\n"
+            "  CHROMA_PERSIST_DIR points to the same directory as this script.\n"
+            "  Both collections (cfn_resources + security_checks) must share\n"
+            "  a single persist directory."
+        )
+
     results = vectorstore.similarity_search(query, k=k)
     resource_names: list[str] = []
     seen: set[str] = set()
@@ -196,14 +187,44 @@ def semantic_search_cfn(query: str, k: int = SEMANTIC_K) -> list[str]:
 # Stage 1b: Semantic search – security collection
 # ---------------------------------------------------------------------------
 
-def semantic_search_security(query: str, k: int = SEMANTIC_K) -> list[str]:
-    """Returns a deduplicated list of check_ids relevant to the query."""
+def _extract_service_hint(query: str) -> str | None:
+    """
+    If the query mentions a known AWS service token, return it.
+    Used to run a second targeted search to boost service-specific recall.
+    """
+    tokens = set(re.findall(r'[a-z0-9]+', query.lower()))
+    hits = tokens & _AWS_SERVICE_TOKENS
+    # Prefer more specific tokens (longer = more specific, e.g. 'apigateway' > 'api')
+    return max(hits, key=len) if hits else None
+
+
+def semantic_search_security(
+    query: str,
+    k: int = SEMANTIC_K_SEC,
+    k_max: int = SEMANTIC_K_MAX,
+) -> list[str]:
+    """
+    Returns a deduplicated list of check_ids relevant to the query.
+
+    Two-pass strategy:
+      Pass 1: full query, k=k results
+      Pass 2 (if service hint detected): service token as query, k=k//2 results
+    Results are merged (pass-1 order preserved, pass-2 appended) up to k_max.
+    """
     print(f"  [Security ChromaDB] Semantic search: '{query[:60]}'")
     vectorstore = Chroma(
         collection_name=SECURITY_COLLECTION,
         embedding_function=get_embeddings(),
         persist_directory=CHROMA_PERSIST_DIR,
     )
+
+    count = _validate_collection(vectorstore, SECURITY_COLLECTION)
+    if count == 0:
+        print(f"  WARNING: Security collection '{SECURITY_COLLECTION}' is empty.")
+        print("  Run scripts/graphrag/security/03_build_security_chromadb.py first.")
+        return []
+
+    # Pass 1: full query
     results = vectorstore.similarity_search(query, k=k)
     check_ids: list[str] = []
     seen: set[str] = set()
@@ -212,6 +233,20 @@ def semantic_search_security(query: str, k: int = SEMANTIC_K) -> list[str]:
         if cid and cid not in seen:
             seen.add(cid)
             check_ids.append(cid)
+
+    # Pass 2: service-hint boost
+    service_hint = _extract_service_hint(query)
+    if service_hint and len(check_ids) < k_max:
+        remaining = k_max - len(check_ids)
+        boost_results = vectorstore.similarity_search(service_hint, k=remaining)
+        for doc in boost_results:
+            cid = doc.metadata.get("check_id", "")
+            if cid and cid not in seen:
+                seen.add(cid)
+                check_ids.append(cid)
+        if service_hint:
+            print(f"    (service hint '{service_hint}' added {len(check_ids) - len(results)} more checks)")
+
     print(f"    → {check_ids}")
     return check_ids
 
@@ -364,17 +399,15 @@ def format_security_context(checks: list[dict]) -> str:
     """
     Produce the security remediation block for the LLM prompt.
 
-    Filters out enterprise/gated checks before formatting.
-    Cleans HTML comment placeholders from impact fields.
+    No filtering is applied – all 723 checks in the CSV are public AVD data.
+    The only data cleaning is stripping HTML comment placeholders from the
+    impact field (AVD scaffold: <!-- Add Impact here -->).
     """
-    # Filter out non-actionable (gated/enterprise) checks
-    actionable = [chk for chk in checks if is_actionable_check(chk)]
-
-    if not actionable:
+    if not checks:
         return "No security constraints found for this query."
 
     lines = []
-    for chk in actionable:
+    for chk in checks:
         severity = chk.get("severity") or "UNKNOWN"
         lines.append(
             f"[{chk['check_id']}] {chk['check_name']} (Severity: {severity})"
@@ -432,7 +465,7 @@ def retrieve_combined_context(query: str) -> str:
     Main entry point for the IaC generation agent.
 
     Returns a structured context string ready to be injected into an LLM prompt.
-    Covers both CloudFormation schema and security remediation constraints.
+    Raises RuntimeError if the CFN ChromaDB collection is missing/empty.
     """
     print(f"\n[G-Retrieval] Query: '{query}'")
     print("Stage 1: Semantic search in ChromaDB...")
