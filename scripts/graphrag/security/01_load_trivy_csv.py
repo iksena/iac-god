@@ -16,17 +16,17 @@ at runtime from two sources already in the repo:
 
   2. FALLBACK: data/trivy_cfn_policy_map.csv
      Some rows contain CFN YAML examples with 'Type: AWS::...' lines.
-     We parse those to extract additional AWS:: prefixes for services
-     that might not be covered by the spec match above.
+     We parse those to extract additional AWS:: prefixes.
 
-Data quality filtering
------------------------
-Rows are skipped (with a printed warning count) if:
-  - description matches a known stale/paywall value ("Get Demo" etc.)
-    These were written by a prior headless-browser enrichment pass.
-    Run `python 00_scrape_avd_docs.py` first to clean them from the CSV.
-  - check_id does not match real AVD numeric format AND description is empty
-    (catches fully placeholder rows with no usable data)
+Data quality
+------------
+impact fields are cleaned of HTML comment scaffold placeholders at load time
+(AVD uses <!-- Add Impact here --> for empty fields).
+
+No rows are filtered out. All 723 checks are valid public AVD data.
+The prior "Get Demo" values in description were caused by an unscoped scraper
+that picked up the nav CTA button; 00_scrape_avd_docs.py now scopes to
+div.content.vulnerability_content and overwrites those stale values.
 
 Output
 ------
@@ -49,49 +49,8 @@ CFN_SPEC_PATH = REPO_ROOT / "data" / "cfn_spec.json"
 TRIVY_CFN_MAP_PATH = REPO_ROOT / "data" / "trivy_cfn_policy_map.csv"
 OUTPUT_PATH = REPO_ROOT / "data" / "security_checks.json"
 
-# ---------------------------------------------------------------------------
-# Data quality constants
-# ---------------------------------------------------------------------------
-
-# Descriptions that indicate stale paywall content from a prior enrichment pass.
-# Rows with these descriptions have no actionable security data.
-GATED_DESCRIPTIONS = frozenset({
-    "get demo",
-    "request a demo",
-    "get a demo",
-    "contact us",
-    "available in aqua",
-    "sign up to view",
-})
-
-# Real AVD check IDs follow AVD-AWS-NNNN (exactly 4 digits).
-# Slug-derived synthetic IDs (e.g. AVD-AWS-S3-S3-BUCKET-ENCRYPTION-ENFORCEMENT)
-# indicate either new open-source checks not yet assigned a number, or enterprise
-# checks; we keep them only if they have a non-empty, non-gated description.
-_REAL_AVD_ID_RE = re.compile(r'^AVD-AWS-\d{4}$')
-
-# HTML comment scaffold placeholder in impact fields
+# HTML comment scaffold AVD uses as placeholder for empty impact fields.
 _HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.DOTALL)
-
-
-def is_actionable_row(check_id: str, description: str) -> bool:
-    """
-    Return False for rows that have no actionable security data.
-
-    Rules (applied in order):
-      1. description is a known stale paywall value → skip
-      2. check_id is not a real numeric AVD ID AND description is empty → skip
-         (fully placeholder rows written by prior enrichment with no live data)
-    """
-    desc_lower = description.strip().lower()
-
-    if desc_lower in GATED_DESCRIPTIONS:
-        return False
-
-    if not _REAL_AVD_ID_RE.match(check_id) and not description.strip():
-        return False
-
-    return True
 
 
 def clean_impact(raw: str) -> str:
@@ -106,9 +65,6 @@ def clean_impact(raw: str) -> str:
 # ---------------------------------------------------------------------------
 
 def build_service_to_cfn_prefix(cfn_spec_path: Path, trivy_map_path: Path) -> dict[str, str]:
-    """
-    Derive a {trivy_service_name: 'AWS::<Namespace>::'} mapping.
-    """
     namespace_to_prefix: dict[str, str] = {}
 
     if cfn_spec_path.exists():
@@ -125,17 +81,15 @@ def build_service_to_cfn_prefix(cfn_spec_path: Path, trivy_map_path: Path) -> di
             or spec.get("resource_types", {})
             or spec
         )
-
         for key in resource_types:
             m = re.match(r'^AWS::([^:]+)::', str(key))
             if m:
                 namespace = m.group(1)
-                prefix = f"AWS::{namespace}::"
-                namespace_to_prefix[namespace.lower()] = prefix
+                namespace_to_prefix[namespace.lower()] = f"AWS::{namespace}::"
 
         print(f"  Found {len(namespace_to_prefix)} unique CFN namespaces in spec.")
     else:
-        print(f"  WARNING: cfn_spec.json not found at {cfn_spec_path}. Skipping spec-based mapping.")
+        print(f"  WARNING: cfn_spec.json not found at {cfn_spec_path}.")
 
     service_from_yaml: dict[str, set[str]] = defaultdict(set)
 
@@ -149,13 +103,11 @@ def build_service_to_cfn_prefix(cfn_spec_path: Path, trivy_map_path: Path) -> di
                 for value in row.values():
                     for match in re.finditer(r'Type:\s*(AWS::[A-Za-z0-9]+::)', str(value)):
                         service_from_yaml[service].add(match.group(1))
-
         print(f"  Found YAML-derived CFN prefixes for {len(service_from_yaml)} services.")
     else:
-        print(f"  WARNING: trivy_cfn_policy_map.csv not found. Skipping YAML-derived mapping.")
+        print(f"  WARNING: trivy_cfn_policy_map.csv not found.")
 
     mapping: dict[str, str] = dict(namespace_to_prefix)
-
     for service, prefixes in service_from_yaml.items():
         if service not in mapping:
             best = min(prefixes, key=lambda p: _levenshtein(service, p.split("::")[1].lower()))
@@ -211,26 +163,14 @@ def clean_links_field(raw: str) -> list[str]:
     return [u.strip() for u in raw.split("|") if u.strip()]
 
 
-def load_csv(csv_path: Path, service_map: dict) -> tuple[dict, int]:
-    """
-    Parse CSV into a dict keyed by check_id.
-    Returns (checks_dict, filtered_count).
-    """
+def load_csv(csv_path: Path, service_map: dict) -> dict:
     checks: dict = {}
-    filtered = 0
 
     with csv_path.open(encoding="utf-8") as fh:
         reader = csv.DictReader(fh)
         for row in reader:
             check_id = row.get("check_id", "").strip()
             if not check_id:
-                continue
-
-            description = row.get("description", "").strip()
-
-            # Filter out rows with no actionable data
-            if not is_actionable_row(check_id, description):
-                filtered += 1
                 continue
 
             service = row.get("service", "").strip().lower()
@@ -241,7 +181,7 @@ def load_csv(csv_path: Path, service_map: dict) -> tuple[dict, int]:
                 "check_name": row.get("check_name", "").strip(),
                 "severity": row.get("severity", "").strip().upper(),
                 "short_code": row.get("short_code", "").strip(),
-                "description": description,
+                "description": row.get("description", "").strip(),
                 "service": service,
                 "cfn_resource_prefix": cfn_prefix,
                 "framework": row.get("framework", "").strip(),
@@ -249,7 +189,7 @@ def load_csv(csv_path: Path, service_map: dict) -> tuple[dict, int]:
                 "source_code": row.get("source_code", "").strip(),
                 "avd_url": row.get("avd_url", "").strip(),
                 "title": row.get("title", "").strip(),
-                # Clean impact HTML placeholders at load time
+                # Clean HTML comment placeholders at load time
                 "impact": clean_impact(row.get("impact", "")),
                 "remediation_cfn": clean_list_field(row.get("remediation_cfn", "")),
                 "remediation_tf": clean_list_field(row.get("remediation_tf", "")),
@@ -258,7 +198,7 @@ def load_csv(csv_path: Path, service_map: dict) -> tuple[dict, int]:
                 "links": clean_links_field(row.get("links", "")),
             }
 
-    return checks, filtered
+    return checks
 
 
 def main():
@@ -275,16 +215,8 @@ def main():
         print(f"ERROR: CSV not found at {CSV_PATH}", file=sys.stderr)
         sys.exit(1)
 
-    checks, filtered = load_csv(CSV_PATH, service_map)
-
+    checks = load_csv(CSV_PATH, service_map)
     print(f"\nLoaded {len(checks)} unique security checks.")
-    if filtered:
-        print(
-            f"  WARNING: Filtered out {filtered} rows with stale/gated descriptions "
-            f"(e.g. 'Get Demo').\n"
-            f"  Run `python 00_scrape_avd_docs.py` to overwrite stale values "
-            f"with live AVD content, then re-run this script."
-        )
 
     severity_counts = Counter(c["severity"] for c in checks.values())
     for sev, count in sorted(severity_counts.items()):
@@ -292,7 +224,8 @@ def main():
 
     unmapped = sorted({c["service"] for c in checks.values() if not c["cfn_resource_prefix"]})
     if unmapped:
-        print(f"\n  WARNING: {len(unmapped)} services have no CFN prefix: {unmapped}")
+        print(f"\n  WARNING: {len(unmapped)} services have no CFN prefix resolved: {unmapped}")
+        print("  Add them to the ALIASES dict in build_service_to_cfn_prefix() if needed.")
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with OUTPUT_PATH.open("w", encoding="utf-8") as fh:

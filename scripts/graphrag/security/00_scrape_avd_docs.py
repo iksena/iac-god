@@ -4,13 +4,6 @@
 
 Stage 0 – Scrape all AWS misconfiguration checks from avd.aquasec.com.
 
-Why this exists
----------------
-trivy_enriched.csv only contains checks that happened to be mapped during
-a previous enrichment pass. The AVD website is the authoritative source and
-contains additional checks (especially console-only / cloud-provider checks)
-that Trivy's Rego policies do not cover.
-
 What it does
 ------------
 1. Fetch the AWS index page  https://avd.aquasec.com/misconfig/aws/
@@ -20,32 +13,24 @@ What it does
    → collect every (check_name, check_slug) pair
 
 3. For each check, fetch  /misconfig/aws/<service>/<check_slug>/
-   → extract title, description paragraphs, remediation steps
+   → extract title, description, remediation steps
+   → IMPORTANT: content is scoped to div.content.vulnerability_content
+     to avoid picking up nav/CTA elements like the "Get Demo" button
+     that appear earlier in DOM order than the main description.
 
 4. Merge results into trivy_enriched.csv
    - Rows already in the CSV (matched on avd_url) → update title/description
-     if they were blank OR if the existing value is a known bad/stale value
-     (e.g. "Get Demo" written by a prior headless-browser enrichment pass).
-   - Brand-new checks → append as new rows with service + avd_url populated;
-     check_id derived from the URL slug.
+     if they were blank OR if the existing value is a known stale value
+     written by a prior enrichment pass (e.g. "Get Demo" captured from a
+     nav button by an unscoped scraper).
+   - Brand-new checks → append as new rows.
 
-5. Write data/avd_scraped.json as a raw cache (re-running skips already-fetched
-   URLs unless --force is passed on the command line)
-
-Background on "Get Demo" stale values
---------------------------------------
-AVD serves all check pages as SSR HTML — requests.get() receives real content.
-However, a prior enrichment pass used a headless browser that hit a JS-rendered
-paywall variant for some enterprise-adjacent checks, storing "Get Demo" as the
-description in trivy_enriched.csv.  The old merge logic had an
-`if not row.get("description")` guard that prevented these stale values from
-being overwritten.  This version replaces that guard with is_bad_description()
-so stale paywall text is always replaced by live content.
+5. Write data/avd_scraped.json as a raw cache.
 
 Usage
 -----
     python scripts/graphrag/security/00_scrape_avd_docs.py
-    python scripts/graphrag/security/00_scrape_avd_docs.py --force   # ignore cache
+    python scripts/graphrag/security/00_scrape_avd_docs.py --force
 
 Dependencies: requests, beautifulsoup4
 """
@@ -59,7 +44,7 @@ from pathlib import Path
 from urllib.parse import urljoin
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
 # ---------------------------------------------------------------------------
 # Config
@@ -73,17 +58,15 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CSV_PATH = REPO_ROOT / "data" / "trivy_enriched.csv"
 CACHE_PATH = REPO_ROOT / "data" / "avd_scraped.json"
 
-# Descriptions that indicate stale/bad data from a prior enrichment pass.
-# These should always be overwritten by the freshly scraped live content.
-BAD_DESCRIPTIONS = frozenset({
+# Descriptions known to be stale nav/CTA text from unscoped prior scrapes.
+# These are overwritten (not filtered) by the corrected scraper.
+STALE_DESCRIPTIONS = frozenset({
     "get demo",
     "request a demo",
     "get a demo",
-    "contact us",
-    "available in aqua",
 })
 
-# HTML comment scaffold that AVD uses as placeholder for empty impact fields.
+# HTML comment scaffold AVD uses as placeholder for empty impact fields.
 _HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.DOTALL | re.IGNORECASE)
 
 
@@ -124,22 +107,33 @@ def fetch(url: str, retries: int = MAX_RETRIES) -> BeautifulSoup | None:
 # Helpers
 # ---------------------------------------------------------------------------
 
-def is_bad_description(text: str) -> bool:
-    """
-    Return True if the description is a known stale/bad value that should be
-    replaced by freshly scraped content.
-
-    This catches values written by prior enrichment passes that hit a JS-rendered
-    paywall variant of AVD (e.g. "Get Demo", "Request a demo").
-    """
-    return text.strip().lower() in BAD_DESCRIPTIONS
+def is_stale_description(text: str) -> bool:
+    """True if the description is nav/CTA text captured by an unscoped prior scrape."""
+    return text.strip().lower() in STALE_DESCRIPTIONS
 
 
 def clean_impact(raw: str) -> str:
-    """Strip HTML comment placeholders from the impact field."""
+    """Strip HTML comment placeholders (AVD scaffold for empty impact fields)."""
     if not raw:
         return ""
     return _HTML_COMMENT_RE.sub("", raw).strip()
+
+
+def get_content_scope(soup: BeautifulSoup) -> Tag:
+    """
+    Return the main content container for a check detail page.
+
+    AVD check pages structure their content inside:
+        <div class="content vulnerability_content">...</div>
+
+    This container holds the description paragraphs, remediation steps, and
+    code examples. Scoping to it avoids nav elements ("Get Demo" CTA button
+    lives in div.field.is-grouped earlier in DOM order).
+
+    Falls back to the full soup if the container is not found.
+    """
+    container = soup.find("div", class_="vulnerability_content")
+    return container if container else soup
 
 
 # ---------------------------------------------------------------------------
@@ -207,27 +201,41 @@ def scrape_check_slugs(service_slug: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def scrape_check_detail(url: str) -> dict:
+    """
+    Extract structured data from a check detail page.
+
+    Scopes all content extraction to div.content.vulnerability_content to
+    avoid nav/CTA elements that appear earlier in the DOM.
+    """
     soup = fetch(url)
     if not soup:
         return {}
 
+    # Title from <title> tag
     title = ""
     if soup.title:
-        title = soup.title.get_text(strip=True) \
-            .replace(" - Aqua Vulnerability Database", "").strip()
+        title = (
+            soup.title.get_text(strip=True)
+            .replace(" - Aqua Vulnerability Database", "")
+            .replace(" | Vulnerability Database | Aqua Security", "")
+            .strip()
+        )
     if not title:
         h = soup.find(["h1", "h2"])
         title = h.get_text(strip=True) if h else ""
 
+    # Scope all content extraction to the main content container
+    content = get_content_scope(soup)
+
     paragraphs = [
         p.get_text(" ", strip=True)
-        for p in soup.find_all("p")
+        for p in content.find_all("p")
         if p.get_text(strip=True)
     ]
     description = paragraphs[0] if paragraphs else ""
 
     remediation_steps: list[str] = []
-    for li in soup.find_all("li"):
+    for li in content.find_all("li"):
         text = li.get_text(" ", strip=True)
         if text:
             remediation_steps.append(text)
@@ -238,7 +246,7 @@ def scrape_check_detail(url: str) -> dict:
         "title": title,
         "description": description,
         "remediation_steps": remediation_steps,
-        "raw_text": soup.get_text(" ", strip=True)[:4000],
+        "raw_text": content.get_text(" ", strip=True)[:4000],
     }
 
 
@@ -342,10 +350,9 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
             row = rows[idx]
 
             existing_desc = row.get("description", "")
-            # Overwrite if blank OR if it's a known stale/bad value from a
-            # prior headless-browser enrichment pass (e.g. "Get Demo").
-            if not existing_desc or is_bad_description(existing_desc):
-                if is_bad_description(existing_desc) and scraped_desc:
+            # Overwrite if blank OR if it's stale nav text from a prior scrape
+            if not existing_desc or is_stale_description(existing_desc):
+                if is_stale_description(existing_desc) and scraped_desc:
                     overwritten_stale += 1
                 row["description"] = scraped_desc
                 updated += 1
