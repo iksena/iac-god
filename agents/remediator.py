@@ -48,7 +48,7 @@ def _extract_check_ids_from_errors(errors: list[object]) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Policy source context builders
+# Policy source context builders (Checkov / Trivy)
 # ---------------------------------------------------------------------------
 
 def _extract_security_findings(
@@ -111,40 +111,23 @@ def _filter_findings_by_check_ids(
     return filtered
 
 
-def _build_trivy_findings_for_rag(
-    validation_results: list[dict],
-) -> list[dict]:
-    """Extract Trivy misconfig objects from raw JSON output for RAG retrieval.
+def _build_policy_source_context(validation_results: list[dict]) -> str:
+    """Build the security policy context block for the remediator prompt.
 
-    Returns full misconfig dicts (with ID, Severity, Title, Message) so that
-    security_hybrid_rag can embed the complete finding text rather than just
-    the check ID — richer context leads to better semantic matching.
+    Preference order (highest fidelity first):
+      1. GraphRAG (ChromaDB + Neo4j) via execute_security_retrieval()
+         - Uses Trivy finding text directly as semantic queries.
+         - Returns description, impact, CFN remediation, CFN good example,
+           Rego policy source code. No URLs.
+         - Falls back if collection or Neo4j is unavailable.
+      2. CSV fallback (existing get_trivy_policy_context / get_checkov_policy_context)
+         - Used when GraphRAG returns empty (graph not yet built, or no match).
+         - Same fields from trivy_enriched.csv + rego source code.
+
+    Both paths feed into the same prompt section:
+      '## Relevant Policy Source Context (Checkov/Trivy)'
+    so the remediator prompt format does not need to change.
     """
-    result = get_latest_stage_result(validation_results, "trivy")
-    if not result:
-        return []
-    raw = result.get("raw_output", "")
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return []
-
-    misconfigs: list[dict] = []
-    for entry in data.get("Results", []):
-        for m in entry.get("Misconfigurations", []):
-            if m.get("Severity", "").lower() in ("high", "critical"):
-                misconfigs.append({
-                    "check_id":    str(m.get("ID") or "").strip(),
-                    "Title":       str(m.get("Title") or "").strip(),
-                    "Message":     str(m.get("Message") or "").strip(),
-                    "Description": str(m.get("Description") or "").strip(),
-                    "Severity":    str(m.get("Severity") or "").strip(),
-                })
-    return misconfigs
-
-
-def _build_checkov_policy_source_context(validation_results: list[dict]) -> str:
-    """Build Checkov-only policy source context (unchanged from original)."""
     latest_by_stage: dict[str, dict] = {}
     for result in validation_results:
         stage = str(result.get("stage") or "").strip()
@@ -158,19 +141,62 @@ def _build_checkov_policy_source_context(validation_results: list[dict]) -> str:
     if not allowed_check_ids:
         return ""
 
-    checkov_findings = _extract_security_findings(
-        validation_results,
-        stage="checkov",
-        results_key="results",
-        items_path=["failed_checks"],
-    )
+    # ---- Path 1: GraphRAG ----
+    # Collect the raw Trivy error strings to use as semantic queries.
+    # We pass the full formatted error strings (not just check_ids) so
+    # ChromaDB can use the rich natural-language description for similarity
+    # matching, not just the ID token.
+    trivy_result = latest_by_stage.get("trivy")
+    trivy_finding_texts: list[str] = []
+    if trivy_result and not trivy_result.get("passed", True):
+        trivy_finding_texts = [
+            str(e) for e in trivy_result.get("errors", []) if str(e).strip()
+        ]
 
-    checkov_context = get_checkov_policy_context(
-        _filter_findings_by_check_ids(checkov_findings, allowed_check_ids)
-    )
-    if not checkov_context:
+    graphrag_context = ""
+    if trivy_finding_texts:
+        graphrag_context = execute_security_retrieval(trivy_finding_texts)
+
+    # ---- Path 2: CSV fallback ----
+    # Used when GraphRAG returns empty (graph unavailable or no match).
+    checkov_context = ""
+    trivy_csv_context = ""
+
+    if not graphrag_context:
+        checkov_findings = _extract_security_findings(
+            validation_results,
+            stage="checkov",
+            results_key="results",
+            items_path=["failed_checks"],
+        )
+        trivy_findings = _extract_security_findings(
+            validation_results,
+            stage="trivy",
+            results_key="Results",
+            items_path=["Misconfigurations"],
+        )
+        checkov_context = get_checkov_policy_context(
+            _filter_findings_by_check_ids(checkov_findings, allowed_check_ids)
+        )
+        trivy_csv_context = get_trivy_policy_context(
+            _filter_findings_by_check_ids(trivy_findings, allowed_check_ids)
+        )
+
+    # ---- Assemble section ----
+    sections: list[str] = []
+
+    if graphrag_context:
+        sections.append(f"### Trivy Security Findings (GraphRAG)\n{graphrag_context}")
+    else:
+        if checkov_context:
+            sections.append(f"### Checkov Policy Source\n{checkov_context}")
+        if trivy_csv_context:
+            sections.append(f"### Trivy Policy Source\n{trivy_csv_context}")
+
+    if not sections:
         return ""
-    return "## Relevant Policy Source Context (Checkov)\n\n### Checkov Policy Source\n" + checkov_context
+
+    return "## Relevant Policy Source Context (Checkov/Trivy)\n\n" + "\n\n".join(sections)
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +267,7 @@ def should_include_remediation_context(state: GraphState) -> bool:
     return False
 
 
-def _should_include_security_context(state: GraphState) -> bool:
+def _should_include_policy_source_context(state: GraphState) -> bool:
     validation_results = state.get("validation_results", [])
     for stage in ("trivy", "checkov"):
         result = get_latest_stage_result(validation_results, stage)
@@ -268,10 +294,10 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     cfn_graph_context = state.get("retriever_context", "")
     retrieval_queries = state.get("retriever_queries", [])
 
-    include_cfn_schema  = should_include_remediation_context(state)
-    include_security    = _should_include_security_context(state)
+    include_remediation = should_include_remediation_context(state)
+    include_policy      = _should_include_policy_source_context(state)
 
-    if include_cfn_schema:
+    if include_remediation:
         print(
             f"[Remediator] CFN schema context: {len(cfn_graph_context)} chars, "
             f"{len(retrieval_queries)} retrieval queries."
@@ -280,27 +306,10 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         cfn_graph_context = ""
         print("[Remediator] CFN schema context skipped (YAML/security-only failure).")
 
-    # ------------------------------------------------------------------
-    # Security remediation context — GraphRAG path (no retriever agent).
-    # The Trivy findings are passed directly as embedding queries; the RAG
-    # tool handles Chroma search → Neo4j traversal → CSV fallback.
-    # Checkov context is kept on its existing CSV path.
-    # ------------------------------------------------------------------
-    security_rag_context    = ""
-    checkov_policy_context  = ""
-
-    if include_security:
-        trivy_findings = _build_trivy_findings_for_rag(state["validation_results"])
-        if trivy_findings:
-            print(f"[Remediator] Running Security GraphRAG for {len(trivy_findings)} Trivy finding(s).")
-            security_rag_context = execute_security_retrieval(trivy_findings)
-            print(f"[Remediator] Security RAG context: {len(security_rag_context)} chars.")
-
-        checkov_policy_context = _build_checkov_policy_source_context(state["validation_results"])
-
-    # Merge security contexts: GraphRAG result (Trivy) + Checkov CSV.
-    policy_source_context = "\n\n".join(
-        p for p in (security_rag_context, checkov_policy_context) if p.strip()
+    policy_source_context = (
+        _build_policy_source_context(state["validation_results"])
+        if include_policy
+        else ""
     )
 
     formatted_errors = _build_validation_errors_text(state)
