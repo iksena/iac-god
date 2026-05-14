@@ -1,5 +1,6 @@
 # main.py
 from datetime import datetime
+import os
 import uuid
 import argparse
 import traceback
@@ -15,6 +16,7 @@ def _parse_csv_arg(value: str | None) -> tuple[str, ...]:
     parts = [part.strip() for part in value.split(",")]
     return tuple(part for part in parts if part)
 
+
 def run_pipeline(
     user_request: str,
     max_iterations: int = 5,
@@ -26,11 +28,26 @@ def run_pipeline(
     openrouter_min_quantization: str | None = None,
 ) -> GraphState:
 
-    # Configure provider
+    # ------------------------------------------------------------------
+    # Configure LLM provider
+    # ------------------------------------------------------------------
     if provider == "claude":
         DEFAULT_CONFIG.provider = LLMProvider.CLAUDE
         DEFAULT_CONFIG.model = model or "claude-3-5-sonnet-20241022"
-    else:
+
+    elif provider == "openai":
+        DEFAULT_CONFIG.provider = LLMProvider.OPENAI
+        # Fallback order: explicit --model arg → OPENAI_MODEL env var → o3-mini
+        DEFAULT_CONFIG.model = model or os.getenv("OPENAI_MODEL", "o3-mini")
+        # api_key and base_url are already populated from .env by LLMConfig,
+        # but allow callers to override them via the existing DEFAULT_CONFIG fields.
+        if not DEFAULT_CONFIG.openai_api_key:
+            raise ValueError(
+                "OPENAI_API_KEY is not set. "
+                "Add it to your .env file or set the environment variable directly."
+            )
+
+    else:  # openrouter (default)
         DEFAULT_CONFIG.provider = LLMProvider.OPENROUTER
         DEFAULT_CONFIG.model = model or "arcee-ai/trinity-large-preview:free"
 
@@ -38,8 +55,10 @@ def run_pipeline(
             DEFAULT_CONFIG.openrouter_provider_only = _parse_csv_arg(openrouter_provider_only)
         if openrouter_min_quantization is not None:
             DEFAULT_CONFIG.openrouter_min_quantization = openrouter_min_quantization.strip().lower()
-    
+
+    # ------------------------------------------------------------------
     # Configure deploy target
+    # ------------------------------------------------------------------
     deploy_config = DeployConfig(
         target=DeployTarget(deploy_target),
         localstack_endpoint=localstack_endpoint or DEFAULT_DEPLOY_CONFIG.localstack_endpoint,
@@ -50,7 +69,6 @@ def run_pipeline(
     recorder = ResearchRecorder(run_id=run_id)
     graph = build_graph(recorder, deploy_config=deploy_config)
 
-    # Initialize the Grounded Objectives Document
     initial_state: GraphState = {
         "user_request": user_request,
         "objectives": [],
@@ -74,12 +92,12 @@ def run_pipeline(
 
     print(f"\n{'='*60}")
     print(f"IaC Multi-Agent System | Run ID: {run_id}")
+    print(f"Provider: {DEFAULT_CONFIG.provider.value}")
     print(f"Model: {DEFAULT_CONFIG.model}")
     print(f"Max iterations: {max_iterations}")
     print(f"Deploy target: {deploy_target.upper()}")
     print(f"{'='*60}")
 
-    # Execute the graph
     try:
         final_state = graph.invoke(
             initial_state,
@@ -92,7 +110,6 @@ def run_pipeline(
         print(traceback.format_exc())
         raise
 
-    # Persist final template
     final_state["final_template"] = final_state["cloudformation_template"]
     recorder.save_final_report(final_state)
 
@@ -110,9 +127,23 @@ if __name__ == "__main__":
     parser.add_argument("--request", type=str, required=True,
                         help="Infrastructure request in natural language")
     parser.add_argument("--max-iterations", type=int, default=30)
-    parser.add_argument("--provider", choices=["openrouter", "claude"],
-                        default="openrouter")
-    parser.add_argument("--model", type=str, default=None)
+    parser.add_argument(
+        "--provider",
+        choices=["openrouter", "claude", "openai"],
+        default="openrouter",
+        help="LLM provider to use. 'openai' reads OPENAI_API_KEY / OPENAI_MODEL from .env",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help=(
+            "Model name. Examples: "
+            "openrouter → 'x-ai/grok-4.1-fast', "
+            "claude → 'claude-3-5-sonnet-20241022', "
+            "openai → 'o3-mini', 'o3', 'o4-mini', 'gpt-4o', 'codex-mini-latest'"
+        ),
+    )
     parser.add_argument(
         "--openrouter-provider-only",
         type=str,
@@ -130,7 +161,6 @@ if __name__ == "__main__":
         "--deploy-target",
         choices=["none", "localstack", "aws"],
         default="localstack",
-        help="Deploy each iteration's template to validate actual deployability",
     )
     parser.add_argument(
         "--localstack-endpoint",
