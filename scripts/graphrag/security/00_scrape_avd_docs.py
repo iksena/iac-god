@@ -21,26 +21,33 @@ What it does
 
 3. For each check, fetch  /misconfig/aws/<service>/<check_slug>/
    → extract title, description paragraphs, remediation steps
-   → detect gated/enterprise checks ("Get Demo" / paywall pages) and
-     mark them so downstream stages can skip them
 
 4. Merge results into trivy_enriched.csv
-   - Rows already in the CSV (matched on avd_url suffix or check_id) → update
-     avd_url, title, description fields if they were blank
+   - Rows already in the CSV (matched on avd_url) → update title/description
+     if they were blank OR if the existing value is a known bad/stale value
+     (e.g. "Get Demo" written by a prior headless-browser enrichment pass).
    - Brand-new checks → append as new rows with service + avd_url populated;
-     check_id derived from the URL slug (e.g. 'AVD-AWS-EC2-default-security-group')
-   - Gated / enterprise rows are SKIPPED entirely (no value without the data)
+     check_id derived from the URL slug.
 
 5. Write data/avd_scraped.json as a raw cache (re-running skips already-fetched
    URLs unless --force is passed on the command line)
+
+Background on "Get Demo" stale values
+--------------------------------------
+AVD serves all check pages as SSR HTML — requests.get() receives real content.
+However, a prior enrichment pass used a headless browser that hit a JS-rendered
+paywall variant for some enterprise-adjacent checks, storing "Get Demo" as the
+description in trivy_enriched.csv.  The old merge logic had an
+`if not row.get("description")` guard that prevented these stale values from
+being overwritten.  This version replaces that guard with is_bad_description()
+so stale paywall text is always replaced by live content.
 
 Usage
 -----
     python scripts/graphrag/security/00_scrape_avd_docs.py
     python scripts/graphrag/security/00_scrape_avd_docs.py --force   # ignore cache
 
-Dependencies: requests, beautifulsoup4  (both already in requirements if you
-ran the CFN scraper; add with: pip install requests beautifulsoup4)
+Dependencies: requests, beautifulsoup4
 """
 
 import argparse
@@ -58,31 +65,27 @@ from bs4 import BeautifulSoup
 # Config
 # ---------------------------------------------------------------------------
 BASE_URL = "https://avd.aquasec.com/misconfig/aws/"
-CRAWL_DELAY = 0.5          # seconds between requests (polite crawl)
+CRAWL_DELAY = 0.5
 MAX_RETRIES = 3
-RETRY_DELAY = 5            # seconds to wait on 429 / 5xx
+RETRY_DELAY = 5
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CSV_PATH = REPO_ROOT / "data" / "trivy_enriched.csv"
 CACHE_PATH = REPO_ROOT / "data" / "avd_scraped.json"
 
-# Phrases that indicate a gated / enterprise-only check page.
-# When the description or page body contains any of these, the check has no
-# actionable public data and should be excluded.
-GATED_PHRASES = (
+# Descriptions that indicate stale/bad data from a prior enrichment pass.
+# These should always be overwritten by the freshly scraped live content.
+BAD_DESCRIPTIONS = frozenset({
     "get demo",
     "request a demo",
-    "contact us for",
-    "sign up to view",
+    "get a demo",
+    "contact us",
     "available in aqua",
-)
+})
 
 # HTML comment scaffold that AVD uses as placeholder for empty impact fields.
-# These must be stripped at ingest time so they don't pollute downstream data.
-IMPACT_PLACEHOLDER_RE = re.compile(
-    r'<!--.*?-->',
-    re.DOTALL | re.IGNORECASE,
-)
+_HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.DOTALL | re.IGNORECASE)
+
 
 # ---------------------------------------------------------------------------
 # HTTP helper
@@ -118,38 +121,32 @@ def fetch(url: str, retries: int = MAX_RETRIES) -> BeautifulSoup | None:
 
 
 # ---------------------------------------------------------------------------
-# Helper: detect gated pages
+# Helpers
 # ---------------------------------------------------------------------------
 
-def is_gated(text: str) -> bool:
-    """Return True if the page body indicates a paywall / enterprise gate."""
-    normalised = text.lower()
-    return any(phrase in normalised for phrase in GATED_PHRASES)
+def is_bad_description(text: str) -> bool:
+    """
+    Return True if the description is a known stale/bad value that should be
+    replaced by freshly scraped content.
 
+    This catches values written by prior enrichment passes that hit a JS-rendered
+    paywall variant of AVD (e.g. "Get Demo", "Request a demo").
+    """
+    return text.strip().lower() in BAD_DESCRIPTIONS
 
-# ---------------------------------------------------------------------------
-# Helper: clean impact text
-# ---------------------------------------------------------------------------
 
 def clean_impact(raw: str) -> str:
-    """
-    Strip HTML comment placeholders that AVD uses for empty impact fields.
-
-    AVD source uses:
-        <!-- Add Impact here -->
-        <!-- DO NOT CHANGE -->
-    as scaffold that should never appear in user-facing output.
-    """
-    cleaned = IMPACT_PLACEHOLDER_RE.sub("", raw)
-    return cleaned.strip()
+    """Strip HTML comment placeholders from the impact field."""
+    if not raw:
+        return ""
+    return _HTML_COMMENT_RE.sub("", raw).strip()
 
 
 # ---------------------------------------------------------------------------
-# Step 1 – discover service slugs from the index page
+# Step 1 – discover service slugs
 # ---------------------------------------------------------------------------
 
 def scrape_service_slugs() -> list[str]:
-    """Return list of service slugs, e.g. ['ec2', 'rds', 's3', …]"""
     print(f"Fetching index: {BASE_URL}")
     soup = fetch(BASE_URL)
     if not soup:
@@ -157,9 +154,7 @@ def scrape_service_slugs() -> list[str]:
 
     slugs: list[str] = []
     for a in soup.find_all("a", href=True):
-        href = a["href"]
-        # Match links like /misconfig/aws/ec2/  (exactly two path components after /misconfig/aws/)
-        m = re.match(r'^/misconfig/aws/([a-z0-9\-]+)/?$', href)
+        m = re.match(r'^/misconfig/aws/([a-z0-9\-]+)/?$', a["href"])
         if m:
             slug = m.group(1)
             if slug not in slugs:
@@ -174,10 +169,6 @@ def scrape_service_slugs() -> list[str]:
 # ---------------------------------------------------------------------------
 
 def scrape_check_slugs(service_slug: str) -> list[dict]:
-    """
-    Return list of {name, slug, url} for every check under a service.
-    Handles the 'Next >>' pagination link.
-    """
     checks: list[dict] = []
     seen_slugs: set[str] = set()
     page_url = f"{BASE_URL}{service_slug}/"
@@ -187,7 +178,6 @@ def scrape_check_slugs(service_slug: str) -> list[dict]:
         if not soup:
             break
 
-        # Check links look like /misconfig/aws/ec2/default-security-group/
         pattern = re.compile(
             rf'^/misconfig/aws/{re.escape(service_slug)}/([a-z0-9\-]+)/?$'
         )
@@ -203,11 +193,9 @@ def scrape_check_slugs(service_slug: str) -> list[dict]:
                         "url": urljoin("https://avd.aquasec.com", a["href"]),
                     })
 
-        # Follow "Next >>" pagination
         next_link = soup.find("a", string=re.compile(r'Next', re.I))
         if next_link and next_link.get("href"):
-            next_href = next_link["href"]
-            page_url = urljoin("https://avd.aquasec.com", next_href)
+            page_url = urljoin("https://avd.aquasec.com", next_link["href"])
         else:
             page_url = None
 
@@ -219,44 +207,25 @@ def scrape_check_slugs(service_slug: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def scrape_check_detail(url: str) -> dict:
-    """
-    Extract structured data from a check detail page.
-
-    Returns a dict with keys:
-      title, description, remediation_steps (list[str]), raw_text, gated (bool)
-
-    gated=True means the page is behind a paywall/enterprise gate and has no
-    actionable data.  Callers should skip gated entries.
-    """
     soup = fetch(url)
     if not soup:
         return {}
 
-    raw_text = soup.get_text(" ", strip=True)
-
-    # Detect gated pages early – no point parsing further
-    if is_gated(raw_text):
-        return {
-            "title": "",
-            "description": "",
-            "remediation_steps": [],
-            "raw_text": "",
-            "gated": True,
-        }
-
-    # Title is in the <title> tag or first <h1>/<h2>
     title = ""
     if soup.title:
-        title = soup.title.get_text(strip=True).replace(" - Aqua Vulnerability Database", "").strip()
+        title = soup.title.get_text(strip=True) \
+            .replace(" - Aqua Vulnerability Database", "").strip()
     if not title:
         h = soup.find(["h1", "h2"])
         title = h.get_text(strip=True) if h else ""
 
-    # All paragraph text – first non-empty para is usually the description
-    paragraphs = [p.get_text(" ", strip=True) for p in soup.find_all("p") if p.get_text(strip=True)]
+    paragraphs = [
+        p.get_text(" ", strip=True)
+        for p in soup.find_all("p")
+        if p.get_text(strip=True)
+    ]
     description = paragraphs[0] if paragraphs else ""
 
-    # Remediation steps: list items or paragraphs after the first
     remediation_steps: list[str] = []
     for li in soup.find_all("li"):
         text = li.get_text(" ", strip=True)
@@ -269,8 +238,7 @@ def scrape_check_detail(url: str) -> dict:
         "title": title,
         "description": description,
         "remediation_steps": remediation_steps,
-        "raw_text": raw_text[:4000],
-        "gated": False,
+        "raw_text": soup.get_text(" ", strip=True)[:4000],
     }
 
 
@@ -292,14 +260,6 @@ def save_cache(cache_path: Path, data: dict) -> None:
 
 
 def build_avd_dataset(force: bool = False) -> dict[str, dict]:
-    """
-    Crawl the full AVD AWS section, using the on-disk cache to skip
-    already-fetched URLs unless force=True.
-
-    Returns a dict keyed by check URL.  Gated entries are retained in the
-    cache (so we don't re-fetch them) but are marked gated=True so
-    merge_into_csv can skip them.
-    """
     cache = {} if force else load_cache(CACHE_PATH)
     changed = False
 
@@ -325,10 +285,7 @@ def build_avd_dataset(force: bool = False) -> dict[str, dict]:
                 **detail,
             }
             changed = True
-            if detail.get("gated"):
-                print("GATED (skipped)")
-            else:
-                print("done" if detail else "EMPTY")
+            print("done" if detail else "EMPTY")
 
     if changed:
         save_cache(CACHE_PATH, cache)
@@ -341,14 +298,11 @@ def build_avd_dataset(force: bool = False) -> dict[str, dict]:
 # Step 5 – merge into trivy_enriched.csv
 # ---------------------------------------------------------------------------
 
-# Derive a pseudo check_id from the URL slug so new rows have a stable key.
-# Format: AVD-AWS-<SERVICE>-<slug>  (uppercased, hyphens preserved)
 def slug_to_check_id(service_slug: str, check_slug: str) -> str:
     return f"AVD-AWS-{service_slug}-{check_slug}".upper()
 
 
 def load_existing_csv(csv_path: Path) -> tuple[list[dict], list[str]]:
-    """Returns (rows, fieldnames)."""
     if not csv_path.exists():
         return [], []
     with csv_path.open(encoding="utf-8") as fh:
@@ -361,14 +315,12 @@ def load_existing_csv(csv_path: Path) -> tuple[list[dict], list[str]]:
 def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
     rows, fieldnames = load_existing_csv(csv_path)
 
-    # Build lookup: avd_url (normalised) → row index
     url_to_idx: dict[str, int] = {}
     for i, row in enumerate(rows):
         avd_url = row.get("avd_url", "").strip().rstrip("/")
         if avd_url:
             url_to_idx[avd_url] = i
 
-    # Ensure the CSV has all required columns
     extra_cols = ["avd_url", "title", "description", "remediation_console", "raw_text"]
     for col in extra_cols:
         if col not in fieldnames:
@@ -378,30 +330,34 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
 
     added = 0
     updated = 0
-    skipped_gated = 0
+    overwritten_stale = 0
 
     for url, item in avd_data.items():
-        # Skip enterprise/gated checks – they have no actionable data
-        if item.get("gated"):
-            skipped_gated += 1
-            continue
-
         normalised_url = url.rstrip("/")
+        scraped_desc = item.get("description", "")
         remediation_text = "\n".join(item.get("remediation_steps", []))
 
         if normalised_url in url_to_idx:
             idx = url_to_idx[normalised_url]
             row = rows[idx]
+
+            existing_desc = row.get("description", "")
+            # Overwrite if blank OR if it's a known stale/bad value from a
+            # prior headless-browser enrichment pass (e.g. "Get Demo").
+            if not existing_desc or is_bad_description(existing_desc):
+                if is_bad_description(existing_desc) and scraped_desc:
+                    overwritten_stale += 1
+                row["description"] = scraped_desc
+                updated += 1
+
             if not row.get("title"):
                 row["title"] = item.get("title", "")
-                updated += 1
-            if not row.get("description"):
-                row["description"] = item.get("description", "")
             if not row.get("remediation_console"):
                 row["remediation_console"] = remediation_text
             if not row.get("raw_text"):
                 row["raw_text"] = item.get("raw_text", "")
-            # Always clean impact placeholders on existing rows
+
+            # Always clean impact HTML comment placeholders
             if row.get("impact"):
                 row["impact"] = clean_impact(row["impact"])
         else:
@@ -410,7 +366,7 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
                 "check_id": slug_to_check_id(item["service_slug"], item["check_slug"]),
                 "check_name": item.get("check_name", ""),
                 "title": item.get("title", ""),
-                "description": item.get("description", ""),
+                "description": scraped_desc,
                 "service": item["service_slug"],
                 "framework": "cloudformation",
                 "avd_url": url,
@@ -430,7 +386,6 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
             url_to_idx[normalised_url] = len(rows) - 1
             added += 1
 
-    # Write back
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     with csv_path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=fieldnames, extrasaction="ignore")
@@ -438,11 +393,11 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
         writer.writerows(rows)
 
     print(f"\nCSV merge complete:")
-    print(f"  Updated existing rows : {updated}")
-    print(f"  Appended new rows     : {added}")
-    print(f"  Skipped gated rows    : {skipped_gated}")
-    print(f"  Total rows in CSV     : {len(rows)}")
-    print(f"  Output                : {csv_path}")
+    print(f"  Updated existing rows         : {updated}")
+    print(f"    of which overwritten stale  : {overwritten_stale}")
+    print(f"  Appended new rows             : {added}")
+    print(f"  Total rows in CSV             : {len(rows)}")
+    print(f"  Output                        : {csv_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -451,14 +406,10 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Scrape AVD AWS misconfig pages.")
-    parser.add_argument(
-        "--force", action="store_true",
-        help="Ignore the on-disk cache and re-fetch all pages."
-    )
-    parser.add_argument(
-        "--no-merge", action="store_true",
-        help="Skip merging into trivy_enriched.csv (just update the JSON cache)."
-    )
+    parser.add_argument("--force", action="store_true",
+                        help="Ignore the on-disk cache and re-fetch all pages.")
+    parser.add_argument("--no-merge", action="store_true",
+                        help="Skip merging into trivy_enriched.csv.")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -466,12 +417,7 @@ def main():
     print("=" * 60)
 
     avd_data = build_avd_dataset(force=args.force)
-
-    total = len(avd_data)
-    gated = sum(1 for v in avd_data.values() if v.get("gated"))
-    print(f"\nTotal checks scraped/cached : {total}")
-    print(f"  Gated (enterprise-only)   : {gated}")
-    print(f"  Actionable (public)        : {total - gated}")
+    print(f"\nTotal checks scraped/cached: {len(avd_data)}")
 
     if not args.no_merge:
         print(f"\nMerging into {CSV_PATH} …")

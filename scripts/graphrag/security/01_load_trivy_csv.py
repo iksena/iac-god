@@ -17,8 +17,16 @@ at runtime from two sources already in the repo:
   2. FALLBACK: data/trivy_cfn_policy_map.csv
      Some rows contain CFN YAML examples with 'Type: AWS::...' lines.
      We parse those to extract additional AWS:: prefixes for services
-     that might not be covered by the spec match above
-     (e.g. Trivy 'documentdb' → CFN 'AWS::DocDB::').
+     that might not be covered by the spec match above.
+
+Data quality filtering
+-----------------------
+Rows are skipped (with a printed warning count) if:
+  - description matches a known stale/paywall value ("Get Demo" etc.)
+    These were written by a prior headless-browser enrichment pass.
+    Run `python 00_scrape_avd_docs.py` first to clean them from the CSV.
+  - check_id does not match real AVD numeric format AND description is empty
+    (catches fully placeholder rows with no usable data)
 
 Output
 ------
@@ -29,11 +37,11 @@ import csv
 import json
 import re
 import sys
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
-# Paths (relative to repo root)
+# Paths
 # ---------------------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CSV_PATH = REPO_ROOT / "data" / "trivy_enriched.csv"
@@ -42,27 +50,65 @@ TRIVY_CFN_MAP_PATH = REPO_ROOT / "data" / "trivy_cfn_policy_map.csv"
 OUTPUT_PATH = REPO_ROOT / "data" / "security_checks.json"
 
 # ---------------------------------------------------------------------------
-# Build service → CFN prefix map from repo data
+# Data quality constants
+# ---------------------------------------------------------------------------
+
+# Descriptions that indicate stale paywall content from a prior enrichment pass.
+# Rows with these descriptions have no actionable security data.
+GATED_DESCRIPTIONS = frozenset({
+    "get demo",
+    "request a demo",
+    "get a demo",
+    "contact us",
+    "available in aqua",
+    "sign up to view",
+})
+
+# Real AVD check IDs follow AVD-AWS-NNNN (exactly 4 digits).
+# Slug-derived synthetic IDs (e.g. AVD-AWS-S3-S3-BUCKET-ENCRYPTION-ENFORCEMENT)
+# indicate either new open-source checks not yet assigned a number, or enterprise
+# checks; we keep them only if they have a non-empty, non-gated description.
+_REAL_AVD_ID_RE = re.compile(r'^AVD-AWS-\d{4}$')
+
+# HTML comment scaffold placeholder in impact fields
+_HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.DOTALL)
+
+
+def is_actionable_row(check_id: str, description: str) -> bool:
+    """
+    Return False for rows that have no actionable security data.
+
+    Rules (applied in order):
+      1. description is a known stale paywall value → skip
+      2. check_id is not a real numeric AVD ID AND description is empty → skip
+         (fully placeholder rows written by prior enrichment with no live data)
+    """
+    desc_lower = description.strip().lower()
+
+    if desc_lower in GATED_DESCRIPTIONS:
+        return False
+
+    if not _REAL_AVD_ID_RE.match(check_id) and not description.strip():
+        return False
+
+    return True
+
+
+def clean_impact(raw: str) -> str:
+    """Strip HTML comment placeholders from the impact field."""
+    if not raw:
+        return ""
+    return _HTML_COMMENT_RE.sub("", raw).strip()
+
+
+# ---------------------------------------------------------------------------
+# Build service → CFN prefix map
 # ---------------------------------------------------------------------------
 
 def build_service_to_cfn_prefix(cfn_spec_path: Path, trivy_map_path: Path) -> dict[str, str]:
     """
     Derive a {trivy_service_name: 'AWS::<Namespace>::'} mapping.
-
-    Step 1 – Parse cfn_spec.json ResourceTypes keys.
-      'AWS::S3::Bucket' → namespace='S3' → lowercase key 's3'
-      'AWS::ApiGateway::RestApi' → namespace='ApiGateway' → 'apigateway'
-
-    Step 2 – Scan trivy_cfn_policy_map.csv for 'Type: AWS::...' in YAML.
-      Covers cases where the CFN namespace token differs from the Trivy
-      service name (e.g. Trivy 'documentdb', YAML 'AWS::DocDB::').
-      If a service has multiple YAML prefixes, the one whose namespace
-      is closest (Levenshtein) to the service name wins.
-
-    Step 3 – Apply a small ALIASES dict for structurally different names
-      that the above steps cannot auto-resolve (vpc, elb, elbv2, msk, mq).
     """
-    # --- Step 1: CFN spec namespaces ---
     namespace_to_prefix: dict[str, str] = {}
 
     if cfn_spec_path.exists():
@@ -74,8 +120,6 @@ def build_service_to_cfn_prefix(cfn_spec_path: Path, trivy_map_path: Path) -> di
                 print(f"  WARNING: Could not parse cfn_spec.json: {e}")
                 spec = {}
 
-        # Handle both the official CloudFormation spec format (ResourceTypes at top-level)
-        # and the merged knowledge graph format (flat dict keyed by resource name).
         resource_types = (
             spec.get("ResourceTypes", {})
             or spec.get("resource_types", {})
@@ -85,7 +129,7 @@ def build_service_to_cfn_prefix(cfn_spec_path: Path, trivy_map_path: Path) -> di
         for key in resource_types:
             m = re.match(r'^AWS::([^:]+)::', str(key))
             if m:
-                namespace = m.group(1)          # e.g. 'ApiGateway'
+                namespace = m.group(1)
                 prefix = f"AWS::{namespace}::"
                 namespace_to_prefix[namespace.lower()] = prefix
 
@@ -93,7 +137,6 @@ def build_service_to_cfn_prefix(cfn_spec_path: Path, trivy_map_path: Path) -> di
     else:
         print(f"  WARNING: cfn_spec.json not found at {cfn_spec_path}. Skipping spec-based mapping.")
 
-    # --- Step 2: YAML-derived prefixes from trivy_cfn_policy_map.csv ---
     service_from_yaml: dict[str, set[str]] = defaultdict(set)
 
     if trivy_map_path.exists():
@@ -111,19 +154,15 @@ def build_service_to_cfn_prefix(cfn_spec_path: Path, trivy_map_path: Path) -> di
     else:
         print(f"  WARNING: trivy_cfn_policy_map.csv not found. Skipping YAML-derived mapping.")
 
-    # --- Step 3: merge ---
-    mapping: dict[str, str] = dict(namespace_to_prefix)  # copy
+    mapping: dict[str, str] = dict(namespace_to_prefix)
 
     for service, prefixes in service_from_yaml.items():
         if service not in mapping:
-            # Service not matched by namespace – pick closest prefix by Levenshtein
             best = min(prefixes, key=lambda p: _levenshtein(service, p.split("::")[1].lower()))
             mapping[service] = best
-        # If already mapped by namespace, keep the namespace-derived one (more reliable).
 
-    # --- Step 4: hand-coded aliases for structurally different names ---
     ALIASES = {
-        "vpc": "AWS::EC2::",           # VPC resources live under EC2 in CFN
+        "vpc": "AWS::EC2::",
         "elb": "AWS::ElasticLoadBalancing::",
         "elbv2": "AWS::ElasticLoadBalancingV2::",
         "msk": "AWS::MSK::",
@@ -139,7 +178,6 @@ def build_service_to_cfn_prefix(cfn_spec_path: Path, trivy_map_path: Path) -> di
 
 
 def _levenshtein(a: str, b: str) -> int:
-    """Simple Levenshtein distance for short strings."""
     if len(a) < len(b):
         return _levenshtein(b, a)
     if not b:
@@ -158,7 +196,6 @@ def _levenshtein(a: str, b: str) -> int:
 # ---------------------------------------------------------------------------
 
 def clean_list_field(raw: str) -> list[str]:
-    """Parse fields that look like Python list literals: "['a', 'b']" → ['a', 'b']."""
     if not raw or raw.strip() == "":
         return []
     inner = raw.strip().lstrip("[").rstrip("]")
@@ -167,7 +204,6 @@ def clean_list_field(raw: str) -> list[str]:
 
 
 def clean_links_field(raw: str) -> list[str]:
-    """Parse link fields that may be pipe-separated or list literals."""
     if not raw or raw.strip() == "":
         return []
     if raw.startswith("["):
@@ -175,14 +211,26 @@ def clean_links_field(raw: str) -> list[str]:
     return [u.strip() for u in raw.split("|") if u.strip()]
 
 
-def load_csv(csv_path: Path, service_map: dict) -> dict:
+def load_csv(csv_path: Path, service_map: dict) -> tuple[dict, int]:
+    """
+    Parse CSV into a dict keyed by check_id.
+    Returns (checks_dict, filtered_count).
+    """
     checks: dict = {}
+    filtered = 0
 
     with csv_path.open(encoding="utf-8") as fh:
         reader = csv.DictReader(fh)
         for row in reader:
             check_id = row.get("check_id", "").strip()
             if not check_id:
+                continue
+
+            description = row.get("description", "").strip()
+
+            # Filter out rows with no actionable data
+            if not is_actionable_row(check_id, description):
+                filtered += 1
                 continue
 
             service = row.get("service", "").strip().lower()
@@ -193,7 +241,7 @@ def load_csv(csv_path: Path, service_map: dict) -> dict:
                 "check_name": row.get("check_name", "").strip(),
                 "severity": row.get("severity", "").strip().upper(),
                 "short_code": row.get("short_code", "").strip(),
-                "description": row.get("description", "").strip(),
+                "description": description,
                 "service": service,
                 "cfn_resource_prefix": cfn_prefix,
                 "framework": row.get("framework", "").strip(),
@@ -201,7 +249,8 @@ def load_csv(csv_path: Path, service_map: dict) -> dict:
                 "source_code": row.get("source_code", "").strip(),
                 "avd_url": row.get("avd_url", "").strip(),
                 "title": row.get("title", "").strip(),
-                "impact": row.get("impact", "").strip(),
+                # Clean impact HTML placeholders at load time
+                "impact": clean_impact(row.get("impact", "")),
                 "remediation_cfn": clean_list_field(row.get("remediation_cfn", "")),
                 "remediation_tf": clean_list_field(row.get("remediation_tf", "")),
                 "cfn_good_example": row.get("cfn_good_example", "").strip(),
@@ -209,7 +258,7 @@ def load_csv(csv_path: Path, service_map: dict) -> dict:
                 "links": clean_links_field(row.get("links", "")),
             }
 
-    return checks
+    return checks, filtered
 
 
 def main():
@@ -226,20 +275,24 @@ def main():
         print(f"ERROR: CSV not found at {CSV_PATH}", file=sys.stderr)
         sys.exit(1)
 
-    checks = load_csv(CSV_PATH, service_map)
-    print(f"\nLoaded {len(checks)} unique security checks.")
+    checks, filtered = load_csv(CSV_PATH, service_map)
 
-    from collections import Counter
+    print(f"\nLoaded {len(checks)} unique security checks.")
+    if filtered:
+        print(
+            f"  WARNING: Filtered out {filtered} rows with stale/gated descriptions "
+            f"(e.g. 'Get Demo').\n"
+            f"  Run `python 00_scrape_avd_docs.py` to overwrite stale values "
+            f"with live AVD content, then re-run this script."
+        )
+
     severity_counts = Counter(c["severity"] for c in checks.values())
     for sev, count in sorted(severity_counts.items()):
-        print(f"  {sev}: {count}")
+        print(f"  {sev or '(empty)'}: {count}")
 
-    # Warn about any services that ended up with no CFN prefix
     unmapped = sorted({c["service"] for c in checks.values() if not c["cfn_resource_prefix"]})
     if unmapped:
-        print(f"\n  WARNING: {len(unmapped)} services have no CFN prefix resolved: {unmapped}")
-        print("  These checks will still be embedded; cfn_resource_prefix will be empty string.")
-        print("  Add them to the ALIASES dict in build_service_to_cfn_prefix() if needed.")
+        print(f"\n  WARNING: {len(unmapped)} services have no CFN prefix: {unmapped}")
 
     OUTPUT_PATH.parent.mkdir(parents=True, exist_ok=True)
     with OUTPUT_PATH.open("w", encoding="utf-8") as fh:
