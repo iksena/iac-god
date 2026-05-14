@@ -165,6 +165,19 @@ CHECKS_JSON = REPO_ROOT / "data" / "security_checks.json"
 CODE_MAX_CHARS = 4000
 TEXT_MAX_CHARS = 2000
 
+# ---------------------------------------------------------------------------
+# Plain indexes created by the old script that conflict with constraints.
+# We drop them first so CREATE CONSTRAINT can create the backing index itself.
+# This list must match exactly what the old 04_import_security_to_neo4j.py
+# created (see: CREATE INDEX security_check_id, aws_service_name, etc.)
+# ---------------------------------------------------------------------------
+_LEGACY_INDEXES = [
+    "security_check_id",
+    "aws_service_name",
+    "remediation_id",
+    "good_example_id",
+]
+
 
 # ---------------------------------------------------------------------------
 # Indexes & constraints
@@ -173,7 +186,19 @@ TEXT_MAX_CHARS = 2000
 def create_schema(session) -> None:
     print("Creating indexes and constraints...")
 
-    # Uniqueness constraints create an implicit index, so we use MERGE safely.
+    # Drop any plain indexes left by the previous script version that would
+    # block CREATE CONSTRAINT (Neo4j won't promote a plain index to a unique
+    # constraint — it requires the index to not exist at all first).
+    for index_name in _LEGACY_INDEXES:
+        try:
+            session.run(f"DROP INDEX {index_name} IF EXISTS")
+        except Exception as exc:  # noqa: BLE001
+            # Non-fatal: if the index doesn't exist the IF EXISTS clause
+            # already handles it; any other error is logged and skipped.
+            print(f"  WARNING: could not drop legacy index '{index_name}': {exc}")
+
+    # Uniqueness constraints create an implicit backing index.
+    # MERGE on the constrained property is then safe and efficient.
     constraints = [
         ("SecurityCheck", "check_id"),
         ("AwsService",    "name"),
@@ -321,10 +346,7 @@ def _import_one_check(session, check_id: str, check: dict) -> bool:
                 check_id   = check_id,
                 cfn_prefix = cfn_prefix,
             )
-            summary = result.consume()
-            created = summary.counters.relationships_created
-            if created:
-                pass  # Logged in bulk summary below.
+            result.consume()
 
         return True
 
@@ -392,13 +414,13 @@ def main() -> None:
     with CHECKS_JSON.open(encoding="utf-8") as fh:
         checks: dict = json.load(fh)
 
-    total    = len(checks)
+    total = len(checks)
     print(f"Loaded {total} security checks.")
 
     print(f"Connecting to Neo4j at {NEO4J_URI} as '{NEO4J_USER}'...")
     driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
 
-    succeeded = failed = cross_edges = 0
+    succeeded = failed = 0
 
     with driver.session() as session:
         create_schema(session)
