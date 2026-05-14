@@ -11,13 +11,35 @@ Both ChromaDB collections live in the same Docker container:
 Retrieval flow
 --------------
   User query
-      ├─ ChromaDB 'cfn_schema_properties'  (k=5)            → resource_names
+      ├─ ChromaDB 'cfn_schema_properties'  (k=5)            → candidate_resource_names
       └─ ChromaDB 'security_checks'         (k=10 + boost)  → check_ids
+           │
+           │  Cross-graph re-rank (Stage 2a):
+           │  security check_ids → Neo4j APPLIES_TO_RESOURCE → resource_names
+           │  Merge with candidate_resource_names, linked resources ranked first.
+           │
            ▼
-      Neo4j pass A: query_cfn_subgraph(resource_names)
+      Neo4j pass A: query_cfn_subgraph(ranked_resource_names)
       Neo4j pass B: query_security_subgraph(check_ids)
            ▼
       format_combined_context(cfn_result, security_result)
+           ▼
+      Token-budgeted output (security checks sorted HIGH/CRITICAL > MEDIUM > LOW > UNKNOWN)
+
+Design notes
+------------
+Cross-graph re-rank:
+  The CFN vector search embeds per-property, so "S3 bucket" matches any
+  resource with "S3" in the name (VectorBucket, DirectoryBucket, TableBucket,
+  etc.). The correct resource AWS::S3::Bucket has APPLIES_TO_RESOURCE edges
+  from the retrieved security checks; the noise resources do not. We use this
+  graph signal to rank linked resources first and cap at CFN_RESOURCE_LIMIT.
+
+Severity ordering:
+  Security checks are sorted CRITICAL > HIGH > MEDIUM > LOW > UNKNOWN before
+  formatting. UNKNOWN-severity checks (non-standard AVD IDs) are included but
+  placed last. A token budget (SECURITY_TOKEN_BUDGET) caps the total security
+  context so low-signal UNKNOWN checks are dropped if the budget is exceeded.
 
 Environment variables
 ---------------------
@@ -63,25 +85,34 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_URI      = os.getenv("NEO4J_URI",      "bolt://localhost:7687")
+NEO4J_USER     = os.getenv("NEO4J_USER",     "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 
-# ChromaDB Docker – same container used by scripts/graphrag/05_build_chromadb.py
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 
 EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 
-# Collection names – must match what was used at build time
-CFN_COLLECTION = "cfn_schema_properties"   # built by scripts/graphrag/05_build_chromadb.py
-SECURITY_COLLECTION = "security_checks"    # built by 03_build_security_chromadb.py
+CFN_COLLECTION      = "cfn_schema_properties"
+SECURITY_COLLECTION = "security_checks"
 
-SEMANTIC_K = 5       # CFN: 5 is sufficient (results are per-resource)
-SEMANTIC_K_SEC = 10  # Security: higher – one service can have 10-15 checks
+SEMANTIC_K     = 5   # CFN candidate resources from vector search
+SEMANTIC_K_SEC = 10  # security checks from vector search
 SEMANTIC_K_MAX = 15  # ceiling after service-hint boost
 
-# AWS service tokens used for service-hint boosting in security search
+# After cross-graph re-rank, include at most this many CFN resources in context.
+# Keeps the prompt focused; linked resources always appear first.
+CFN_RESOURCE_LIMIT = 2
+
+# Approximate token budget for the security context block.
+# avg token ~ 4 chars; 3000 tokens ~ 12 000 chars is a reasonable slice of a
+# 16k-token context window, leaving room for the CFN schema + prompt.
+SECURITY_TOKEN_BUDGET = 12_000  # characters
+
+# Severity sort order: lower number = higher priority
+_SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4}
+
 _AWS_SERVICE_TOKENS = {
     "s3", "ec2", "rds", "iam", "lambda", "cloudtrail", "cloudfront",
     "apigateway", "api", "dynamodb", "elasticache", "eks", "ecs",
@@ -93,7 +124,7 @@ _AWS_SERVICE_TOKENS = {
 _HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.DOTALL)
 
 
-def clean_impact(raw: str | None) -> str:
+def _clean_impact(raw: str | None) -> str:
     if not raw:
         return ""
     return _HTML_COMMENT_RE.sub("", raw).strip()
@@ -121,10 +152,11 @@ def get_chroma_client() -> chromadb.HttpClient:
 
 
 # ---------------------------------------------------------------------------
-# Stage 1a: CFN semantic search
+# Stage 1a: CFN semantic search → candidate resource names
 # ---------------------------------------------------------------------------
 
 def semantic_search_cfn(query: str, k: int = SEMANTIC_K) -> list[str]:
+    """Returns up to k unique CFN resource names ordered by vector similarity."""
     print(f"  [CFN ChromaDB] Semantic search: '{query[:60]}'")
     client = get_chroma_client()
 
@@ -155,7 +187,7 @@ def semantic_search_cfn(query: str, k: int = SEMANTIC_K) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Stage 1b: Security semantic search (two-pass with service-hint boost)
+# Stage 1b: Security semantic search → check_ids (two-pass with service boost)
 # ---------------------------------------------------------------------------
 
 def _extract_service_hint(query: str) -> str | None:
@@ -169,6 +201,7 @@ def semantic_search_security(
     k: int = SEMANTIC_K_SEC,
     k_max: int = SEMANTIC_K_MAX,
 ) -> list[str]:
+    """Returns check_ids ordered by relevance (vector similarity + service boost)."""
     print(f"  [Security ChromaDB] Semantic search: '{query[:60]}'")
     client = get_chroma_client()
 
@@ -184,7 +217,6 @@ def semantic_search_security(
         client=client,
     )
 
-    # Pass 1: full query
     results = vectorstore.similarity_search(query, k=k)
     check_ids: list[str] = []
     seen: set[str] = set()
@@ -194,7 +226,6 @@ def semantic_search_security(
             seen.add(cid)
             check_ids.append(cid)
 
-    # Pass 2: service-hint boost
     service_hint = _extract_service_hint(query)
     if service_hint and len(check_ids) < k_max:
         boost_results = vectorstore.similarity_search(
@@ -215,7 +246,59 @@ def semantic_search_security(
 
 
 # ---------------------------------------------------------------------------
-# Stage 2a: Neo4j – CFN schema subgraph
+# Stage 2a: Cross-graph CFN re-rank
+# ---------------------------------------------------------------------------
+
+_CFN_LINKED_RESOURCES_CYPHER = """
+UNWIND $check_ids AS cid
+MATCH (s:SecurityCheck {check_id: cid})-[:APPLIES_TO_RESOURCE]->(r:Resource)
+RETURN DISTINCT r.name AS resource_name
+"""
+
+
+def rerank_cfn_resources(
+    driver,
+    candidate_names: list[str],
+    check_ids: list[str],
+    limit: int = CFN_RESOURCE_LIMIT,
+) -> list[str]:
+    """
+    Re-rank CFN resource candidates using the cross-graph signal:
+      resources that have APPLIES_TO_RESOURCE edges from the retrieved
+      security checks are ranked first (graph-confirmed relevance).
+      Remaining candidates fill up to `limit` from the original vector order.
+
+    This solves the false-positive problem where the CFN vector search returns
+    AWS::S3Vectors::VectorBucket alongside AWS::S3::Bucket because both share
+    the 'S3' token, but only AWS::S3::Bucket has security check edges.
+    """
+    if not check_ids:
+        return candidate_names[:limit]
+
+    with driver.session() as session:
+        result = session.run(_CFN_LINKED_RESOURCES_CYPHER, check_ids=check_ids)
+        linked = {row["resource_name"] for row in result}
+
+    ranked: list[str] = []
+    # Linked resources first, preserving original vector order within the group
+    for name in candidate_names:
+        if name in linked:
+            ranked.append(name)
+    # Fill remaining slots from unlinked candidates in vector order
+    for name in candidate_names:
+        if name not in linked and len(ranked) < limit:
+            ranked.append(name)
+
+    final = ranked[:limit]
+    dropped = [n for n in candidate_names if n not in final]
+    if dropped:
+        print(f"  [Re-rank] Dropped {len(dropped)} unlinked CFN resources: {dropped}")
+    print(f"  [Re-rank] CFN resources after cross-graph re-rank: {final}")
+    return final
+
+
+# ---------------------------------------------------------------------------
+# Stage 2b: Neo4j – CFN schema subgraph
 # ---------------------------------------------------------------------------
 
 CFN_CYPHER = """
@@ -264,7 +347,7 @@ def query_cfn_subgraph(driver, resource_names: list[str]) -> list[dict[str, Any]
 
 
 # ---------------------------------------------------------------------------
-# Stage 2b: Neo4j – security subgraph
+# Stage 2c: Neo4j – security subgraph
 # ---------------------------------------------------------------------------
 
 SECURITY_CYPHER = """
@@ -277,18 +360,17 @@ SECURITY_CYPHER = """
     OPTIONAL MATCH (s)-[:ENFORCED_BY]->(rp:RegoPolicy)
     OPTIONAL MATCH (s)-[:APPLIES_TO_RESOURCE]->(cfn_r:Resource)
 
-    RETURN s.check_id     AS check_id,
-           s.check_name   AS check_name,
-           s.severity     AS severity,
-           s.description  AS description,
-           s.avd_url      AS avd_url,
-           s.title        AS title,
-           svc.name       AS service,
-           imp.text       AS impact,
+    RETURN s.check_id       AS check_id,
+           s.check_name     AS check_name,
+           s.severity       AS severity,
+           s.description    AS description,
+           svc.name         AS service,
+           imp.text         AS impact,
            collect(DISTINCT {framework: rem.framework,
                              instruction: rem.instruction}) AS remediations,
            collect(DISTINCT {framework: ex.framework,
                              code: ex.code})               AS examples,
+           rp.code                                         AS rego_code,
            rp.source_file_url                              AS rego_source_url,
            collect(DISTINCT cfn_r.name)                    AS cfn_resource_names
 """
@@ -301,17 +383,16 @@ def query_security_subgraph(driver, check_ids: list[str]) -> list[dict[str, Any]
             row = session.run(SECURITY_CYPHER, check_id=cid).single()
             if row:
                 results.append({
-                    "check_id": row["check_id"],
-                    "check_name": row["check_name"],
-                    "severity": row["severity"],
-                    "description": row["description"],
-                    "avd_url": row["avd_url"],
-                    "title": row["title"],
-                    "service": row["service"],
-                    "impact": row["impact"],
-                    "remediations": row["remediations"],
-                    "examples": row["examples"],
-                    "rego_source_url": row["rego_source_url"],
+                    "check_id":          row["check_id"],
+                    "check_name":        row["check_name"],
+                    "severity":          row["severity"],
+                    "description":       row["description"],
+                    "service":           row["service"],
+                    "impact":            row["impact"],
+                    "remediations":      row["remediations"],
+                    "examples":          row["examples"],
+                    "rego_code":         row["rego_code"],
+                    "rego_source_url":   row["rego_source_url"],
                     "cfn_resource_names": row["cfn_resource_names"],
                 })
     return results
@@ -327,7 +408,9 @@ def format_cfn_context(resources: list[dict]) -> str:
     lines = []
     for res in resources:
         lines.append(f"Resource: {res['name']}")
-        lines.append(f"Description: {res.get('description', '')}")
+        desc = (res.get("description") or "").strip()
+        if desc:
+            lines.append(f"Description: {desc}")
         req = [p for p in (res.get("required_properties") or []) if p.get("name")]
         if req:
             lines.append("Required Properties:")
@@ -350,41 +433,101 @@ def format_cfn_context(resources: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def format_security_context(checks: list[dict]) -> str:
+def _sort_checks_by_severity(checks: list[dict]) -> list[dict]:
+    """Sort security checks CRITICAL > HIGH > MEDIUM > LOW > UNKNOWN."""
+    return sorted(
+        checks,
+        key=lambda c: _SEVERITY_RANK.get((c.get("severity") or "UNKNOWN").upper(), 4),
+    )
+
+
+def _format_one_check(chk: dict) -> str:
+    """Format a single security check for the LLM prompt context block."""
+    lines = []
+    severity = (chk.get("severity") or "UNKNOWN").upper()
+    lines.append(f"[{chk['check_id']}] {chk['check_name']} (Severity: {severity})")
+
+    desc = (chk.get("description") or "").strip()
+    if desc:
+        lines.append(f"Description: {desc}")
+
+    impact = _clean_impact(chk.get("impact"))
+    if impact:
+        lines.append(f"Impact: {impact}")
+
+    cfn_rems = [
+        r["instruction"] for r in (chk.get("remediations") or [])
+        if r.get("framework") in ("cfn", "cloudformation") and r.get("instruction")
+    ]
+    if cfn_rems:
+        lines.append("CloudFormation Remediation:")
+        for rem in cfn_rems:
+            lines.append(f"  - {rem}")
+
+    cfn_exs = [
+        e["code"] for e in (chk.get("examples") or [])
+        if e.get("framework") in ("cfn", "cloudformation") and e.get("code")
+    ]
+    if cfn_exs:
+        lines.append(f"CloudFormation Good Example:\n```yaml\n{cfn_exs[0]}\n```")
+
+    # Rego policy source URL is more useful than avd_url as a research reference
+    # because it points directly to the machine-readable policy that Trivy enforces.
+    rego_url = (chk.get("rego_source_url") or "").strip()
+    if rego_url:
+        lines.append(f"Policy Source: {rego_url}")
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def format_security_context(
+    checks: list[dict],
+    token_budget: int = SECURITY_TOKEN_BUDGET,
+) -> str:
     """
     Format security remediation block for the LLM prompt.
-    No filtering – all 723 checks are public AVD data.
-    Only data cleaning: strip HTML comment scaffolding from impact field.
+
+    Checks are sorted CRITICAL > HIGH > MEDIUM > LOW > UNKNOWN.
+    The formatted output is truncated to `token_budget` characters so that
+    low-signal UNKNOWN-severity checks (e.g., lifecycle config, transfer
+    acceleration) are dropped before they consume prompt context.
     """
     if not checks:
         return "No security constraints found for this query."
+
+    sorted_checks = _sort_checks_by_severity(checks)
     lines = []
-    for chk in checks:
-        severity = chk.get("severity") or "UNKNOWN"
-        lines.append(f"[{chk['check_id']}] {chk['check_name']} (Severity: {severity})")
-        if chk.get("description"):
-            lines.append(f"Description: {chk['description']}")
-        impact = clean_impact(chk.get("impact"))
-        if impact:
-            lines.append(f"Impact: {impact}")
-        cfn_rems = [
-            r["instruction"] for r in (chk.get("remediations") or [])
-            if r.get("framework") == "cfn" and r.get("instruction")
-        ]
-        if cfn_rems:
-            lines.append("CloudFormation Remediation:")
-            for rem in cfn_rems:
-                lines.append(f"  - {rem}")
-        cfn_exs = [
-            e["code"] for e in (chk.get("examples") or [])
-            if e.get("framework") == "cfn" and e.get("code")
-        ]
-        if cfn_exs:
-            lines.append(f"CloudFormation Good Example:\n```yaml\n{cfn_exs[0]}\n```")
-        if chk.get("avd_url"):
-            lines.append(f"Reference: {chk['avd_url']}")
-        lines.append("")
-    return "\n".join(lines)
+    total_chars = 0
+    included = 0
+    skipped_unknown = 0
+
+    for chk in sorted_checks:
+        block = _format_one_check(chk)
+        if total_chars + len(block) > token_budget:
+            severity = (chk.get("severity") or "UNKNOWN").upper()
+            if severity == "UNKNOWN":
+                skipped_unknown += 1
+                continue  # drop UNKNOWN checks that exceed budget
+            # For non-UNKNOWN checks we still include but warn
+            print(
+                f"  WARNING: token budget exceeded at check {chk['check_id']} "
+                f"(severity={severity}). Truncating security context."
+            )
+            break
+        lines.append(block)
+        total_chars += len(block)
+        included += 1
+
+    if skipped_unknown:
+        print(
+            f"  [Context] Dropped {skipped_unknown} UNKNOWN-severity checks "
+            f"(token budget). Included {included}/{len(checks)} checks."
+        )
+    else:
+        print(f"  [Context] Included {included}/{len(checks)} security checks.")
+
+    return "\n".join(lines) if lines else "No security constraints found for this query."
 
 
 def format_combined_context(cfn_results: list[dict], security_results: list[dict]) -> str:
@@ -403,13 +546,19 @@ def format_combined_context(cfn_results: list[dict], security_results: list[dict
 def retrieve_combined_context(query: str) -> str:
     print(f"\n[G-Retrieval] Query: '{query}'")
     print("Stage 1: Semantic search in ChromaDB...")
-    cfn_names = semantic_search_cfn(query)
+    candidate_cfn_names = semantic_search_cfn(query)
     check_ids = semantic_search_security(query)
 
-    print("Stage 2: Graph traversal in Neo4j...")
     driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
     try:
-        cfn_results = query_cfn_subgraph(driver, cfn_names)
+        print("Stage 2: Graph traversal in Neo4j...")
+
+        # Cross-graph re-rank: keep only CFN resources that have
+        # APPLIES_TO_RESOURCE edges from the retrieved security checks.
+        # Linked resources are ranked first; unlinked fill remaining slots.
+        ranked_cfn_names = rerank_cfn_resources(driver, candidate_cfn_names, check_ids)
+
+        cfn_results      = query_cfn_subgraph(driver, ranked_cfn_names)
         security_results = query_security_subgraph(driver, check_ids)
     finally:
         driver.close()
