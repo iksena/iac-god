@@ -1,3 +1,4 @@
+# benchmark.py
 import argparse
 import csv
 import json
@@ -18,7 +19,7 @@ class BenchmarkConfig:
     start_row: int
     max_rows: int | None
     max_iterations: int
-    provider: str
+    provider: str           # "openrouter" | "claude" | "openai"
     model: str | None
     deploy_target: str
     openrouter_provider_only: str | None
@@ -154,7 +155,6 @@ def _extract_policy_metrics(validation_results: list[dict[str, Any]]) -> dict[st
         filtered_failed_policies += _safe_int(stats.get("filtered_failed_policies"), 0)
 
     if total_policies > 0 and failed_policies_all_severity == 0 and passed_policies > 0:
-        # Backward-compatible fallback for older records that may not include failed_policies.
         failed_policies_all_severity = max(total_policies - passed_policies, 0)
 
     if total_policies > 0:
@@ -301,7 +301,6 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
     jsonl_path = config.output_dir / "results.jsonl"
     csv_path = config.output_dir / "results.csv"
 
-    # Initialize incremental output files.
     jsonl_path.write_text("", encoding="utf-8")
     with csv_path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=CSV_RESULT_FIELDS)
@@ -337,10 +336,9 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
     }
 
     print(f"\n{'=' * 80}")
-    print(f"Benchmark start | rows={len(selected_rows)} | dataset={config.dataset_path}")
+    print(f"Benchmark start | provider={config.provider} | model={config.model or 'env default'} | rows={len(selected_rows)} | dataset={config.dataset_path}")
     print(f"{'=' * 80}")
 
-    # Write an initial empty summary so dashboards can start polling immediately.
     initial_summary = _build_summary(
         config=config,
         selected_row_count=len(selected_rows),
@@ -472,12 +470,10 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
             total_policy_count += _safe_int(policy_metrics.get("total_policies"), 0)
             total_passed_policy_count += _safe_int(policy_metrics.get("passed_policies"), 0)
             total_failed_policy_count += _safe_int(
-                policy_metrics.get("failed_policies_all_severity"),
-                0,
+                policy_metrics.get("failed_policies_all_severity"), 0,
             )
             total_filtered_failed_policy_count += _safe_int(
-                policy_metrics.get("filtered_failed_policies"),
-                0,
+                policy_metrics.get("filtered_failed_policies"), 0,
             )
 
             scenario_ppr_sum += float(policy_metrics.get("scenario_policy_pass_rate", 0.0) or 0.0)
@@ -503,7 +499,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 "policy_metrics": policy_metrics,
                 "duration_seconds": round(time.time() - row_started, 3),
             }
-        except Exception as exc:  # Keep benchmark running even if one row fails.
+        except Exception as exc:
             status = "runtime_error"
             error_message = str(exc)
             error_traceback = traceback.format_exc()
@@ -523,7 +519,6 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
 
         rows_out.append(result_payload)
 
-        # Incremental persistence after every finished row.
         _append_jsonl(jsonl_path, result_payload)
         _append_csv(csv_path, result_payload)
         interim_summary = _build_summary(
@@ -575,12 +570,10 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         elapsed=elapsed,
     )
 
-    # Persist benchmark outputs.
     (config.output_dir / "results.json").write_text(
         json.dumps({"summary": summary, "rows": rows_out}, indent=2),
         encoding="utf-8",
     )
-
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     print(f"\n[Benchmark] Finished in {elapsed}s")
@@ -603,37 +596,52 @@ def parse_args() -> argparse.Namespace:
         "--dataset",
         type=Path,
         default=Path("data") / "iac_basic.csv",
-        help="Path to CSV file containing columns: row_number, prompt, ground_truth_path",
+        help="Path to CSV file with columns: row_number, prompt, ground_truth_path",
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory to write benchmark artifacts (default: benchmark_runs/<timestamp>)",
+        help="Directory for benchmark artifacts (default: benchmark_runs/<timestamp>)",
     )
     parser.add_argument("--start-row", type=int, default=0)
     parser.add_argument("--max-rows", type=int, default=None)
     parser.add_argument("--max-iterations", type=int, default=30)
-    parser.add_argument("--provider", choices=["openrouter", "claude"], default="openrouter")
-    parser.add_argument("--model", type=str, default=None)
+    parser.add_argument(
+        "--provider",
+        choices=["openrouter", "claude", "openai"],
+        default="openrouter",
+        help=(
+            "LLM provider. "
+            "'openai' reads OPENAI_API_KEY + OPENAI_MODEL from .env; "
+            "use --model to override the model for this run."
+        ),
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default=None,
+        help=(
+            "Override the model for this benchmark run. "
+            "openai examples: o3-mini, o3, o4-mini, gpt-4o, codex-mini-latest"
+        ),
+    )
     parser.add_argument(
         "--openrouter-provider-only",
         type=str,
         default=None,
-        help="Comma-separated OpenRouter provider slugs to allow (maps to provider.only)",
+        help="Comma-separated OpenRouter provider slugs to allow",
     )
     parser.add_argument(
         "--openrouter-min-quantization",
         type=str,
         choices=["int4", "int8", "fp4", "fp6", "fp8", "fp16", "bf16", "fp32", "unknown"],
         default=None,
-        help="Minimum quantization level for OpenRouter provider filtering",
     )
     parser.add_argument(
         "--deploy-target",
         choices=["none", "localstack", "aws"],
         default="localstack",
-        help="Deploy target passed through to main.run_pipeline",
     )
     return parser.parse_args()
 

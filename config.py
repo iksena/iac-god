@@ -89,7 +89,8 @@ class DeployTarget(Enum):
 
 @dataclass
 class LLMConfig:
-    provider: LLMProvider = LLMProvider.OPENROUTER
+    # provider: LLMProvider = LLMProvider.OPENROUTER
+    provider: LLMProvider = LLMProvider.OPENAI
     model: str = "x-ai/grok-4.1-fast"
     temperature: float = 0.0
     max_tokens: int = 8192
