@@ -21,4 +21,5 @@ chromadb
 langchain-chroma
 langchain-huggingface
 langchain-core
+langchain-ollama
 beautifulsoup4

@@ -287,6 +287,13 @@ query so you can inspect raw cosine distance scores.
 
 ## Volume Lifecycle
 
+| Scenario                             | Command                                                                                      |
+| ------------------------------------ | -------------------------------------------------------------------------------------------- |
+| Normal restart, data preserved       | docker compose down && docker compose up -d                                                  |
+| Wipe everything, full rebuild        | docker compose down -v                                                                       |
+| Rebuild only ChromaDB (model switch) | docker volume rm iac-god_chromadb_data then re-run 05_build_chromadb.py                      |
+| Rebuild only Neo4j (CFN spec update) | docker volume rm iac-god_neo4j_data iac-god_neo4j_logs then re-run 04_import_cfn_to_neo4j.py |
+
 ```bash
 # Normal restart (data preserved)
 docker compose down

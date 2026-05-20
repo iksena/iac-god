@@ -76,7 +76,7 @@ def run_pipeline(
         "validation_results": [],
         "validation_passed": False,
         "remediation_history": [],
-        "current_iteration": 1,
+        "current_iteration": 0,
         "max_iterations": max_iterations,
         "llm_call_log": [],
         "planner_history":    [],
