@@ -1,3 +1,19 @@
+# docker-compose.yml
+#
+# Starts Neo4j and ChromaDB with named Docker volumes so data survives
+# container restarts.  Scripts 04 and 05 only need to be re-run when the
+# CFN spec changes, not on every restart.
+#
+# Volumes are managed by Docker (not host bind-mounts) so they work
+# identically on macOS, Linux, and Windows without path issues.
+#
+# Quick reference:
+#   docker compose up -d          # start (creates volumes on first run)
+#   docker compose down           # stop  (volumes are KEPT)
+#   docker compose down -v        # stop  + DELETE all volume data
+#   docker volume ls              # list volumes
+#   docker volume inspect iac-god_neo4j_data
+
 services:
   neo4j:
     image: neo4j:5.20-community
@@ -7,13 +23,18 @@ services:
       - "7687:7687"   # Bolt protocol (used by scripts)
     environment:
       NEO4J_AUTH: neo4j/password
-      NEO4J_PLUGINS: '["apoc"]'        # optional but useful for debugging
-      NEO4J_dbms_memory_heap_max__size: 1G
+      NEO4J_PLUGINS: '["apoc"]'
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512M
+    volumes:
+      - neo4j_data:/data          # graph store (nodes, relationships, indexes)
+      - neo4j_logs:/logs          # server logs
     healthcheck:
       test: ["CMD", "neo4j", "status"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 12
+      start_period: 30s
 
   chromadb:
     image: chromadb/chroma:latest
@@ -21,10 +42,23 @@ services:
     ports:
       - "8000:8000"
     environment:
-      IS_PERSISTENT: "FALSE"           # in-memory only, no volume mount
+      IS_PERSISTENT: "TRUE"                    # persist to /chroma/chroma
+      PERSIST_DIRECTORY: /chroma/chroma        # explicit path inside container
       ANONYMIZED_TELEMETRY: "FALSE"
+      CHROMA_SERVER_CORS_ALLOW_ORIGINS: "[\"*\"]"
+    volumes:
+      - chromadb_data:/chroma/chroma           # vector index + metadata
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/api/v1/heartbeat || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 10s
+
+volumes:
+  neo4j_data:
+    name: iac-god_neo4j_data
+  neo4j_logs:
+    name: iac-god_neo4j_logs
+  chromadb_data:
+    name: iac-god_chromadb_data

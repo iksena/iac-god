@@ -1,8 +1,11 @@
 # GraphRAG Setup: CFN Knowledge Graph
 
 This guide sets up the full CFN GraphRAG pipeline from scratch — spinning up
-Neo4j and ChromaDB as ephemeral Docker containers (no host volume mounts),
-running all five build scripts in order, and verifying retrieval works.
+Neo4j and ChromaDB with **persistent Docker named volumes**, running all five
+build scripts in order, and verifying retrieval works.
+
+Data survives container restarts.  Steps 3.1–3.5 only need to be re-run
+when the CFN spec changes, not on every `docker compose up`.
 
 ---
 
@@ -22,6 +25,7 @@ running all five build scripts in order, and verifying retrieval works.
 │           ▼                        ▼                │
 │     Neo4j :7687              ChromaDB :8000         │
 │   (bolt + browser)         (HTTP REST API)          │
+│   volume: neo4j_data        volume: chromadb_data   │
 │                                                     │
 │           └──────── execute_g_retrieval.py ─────────│
 └─────────────────────────────────────────────────────┘
@@ -44,11 +48,6 @@ running all five build scripts in order, and verifying retrieval works.
 | Python | 3.11+ | `python --version` |
 | pip | 23+ | `pip --version` |
 
-> **Note:** The build scripts run on your host machine and connect to the
-> containers over `localhost`. No data is persisted to host volumes — all
-> graph and vector data lives inside the containers. Restart the containers
-> after rebuilding to get a clean state.
-
 ---
 
 ## Step 0 — Install Python Dependencies
@@ -62,7 +61,9 @@ pip install \
   langchain-chroma \
   langchain-huggingface \
   langchain-core \
+  langchain-ollama \
   sentence-transformers \
+  numpy \
   requests \
   beautifulsoup4
 ```
@@ -77,74 +78,60 @@ pip install -r requirements.txt
 
 ## Step 1 — Start Docker Containers
 
-Create a `docker-compose.yml` in the **repo root** (not inside `scripts/graphrag/`):
-
-```yaml
-# docker-compose.yml
-services:
-  neo4j:
-    image: neo4j:5.20-community
-    container_name: iac-god-neo4j
-    ports:
-      - "7474:7474"   # Neo4j Browser (HTTP)
-      - "7687:7687"   # Bolt protocol (used by scripts)
-    environment:
-      NEO4J_AUTH: neo4j/password
-      NEO4J_PLUGINS: '["apoc"]'        # optional but useful for debugging
-      NEO4J_dbms_memory_heap_max__size: 1G
-    healthcheck:
-      test: ["CMD", "neo4j", "status"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  chromadb:
-    image: chromadb/chroma:latest
-    container_name: iac-god-chromadb
-    ports:
-      - "8000:8000"
-    environment:
-      IS_PERSISTENT: "FALSE"           # in-memory only, no volume mount
-      ANONYMIZED_TELEMETRY: "FALSE"
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-```
-
-Start both containers:
+The `docker-compose.yml` at the **repo root** defines both services with
+persistent named volumes.  Volumes are managed by Docker (not host
+bind-mounts) so they work identically on macOS, Linux, and Windows.
 
 ```bash
 docker compose up -d
 ```
 
-Wait for both to pass their health checks (~20 seconds):
+Wait for both to pass their health checks (~30 seconds on first boot,
+~10 seconds on subsequent starts when volumes already exist):
 
 ```bash
 docker compose ps
 # Both STATUS should show "healthy"
 ```
 
-> **ChromaDB data is in-memory only.** If the container restarts you must
-> re-run `05_build_chromadb.py` to repopulate the collection. This is
-> intentional — the collection is rebuilt from the deterministic knowledge
-> graph JSON so no volume is needed.
+### Volume reference
+
+| Volume | Container path | Stores |
+|---|---|---|
+| `iac-god_neo4j_data` | `/data` | Graph store: nodes, relationships, indexes |
+| `iac-god_neo4j_logs` | `/logs` | Server logs |
+| `iac-god_chromadb_data` | `/chroma/chroma` | Vector index + collection metadata |
+
+Volumes persist across `docker compose down`.  Use `docker compose down -v`
+only when you want to **wipe all data** and start from scratch.
 
 ---
 
 ## Step 2 — Set Environment Variables
 
 The scripts read connection details from environment variables with
-fallback defaults that match the `docker-compose.yml` above. You only
-need to export these if you change the defaults:
+fallback defaults that match `docker-compose.yml`. You only need to export
+these if you change the defaults:
 
 ```bash
 export NEO4J_URI="bolt://localhost:7687"
 export NEO4J_USER="neo4j"
 export NEO4J_PASSWORD="password"
-# ChromaDB host/port are hardcoded to localhost:8000 in the scripts
+export CHROMA_HOST="localhost"
+export CHROMA_PORT="8000"
+
+# Embedding provider (default: huggingface)
+export EMBEDDING_PROVIDER=ollama        # or: huggingface
+export OLLAMA_BASE_URL=http://localhost:11434
+
+# Optional: tune the cosine distance threshold (default: 0.40)
+export CHROMA_DISTANCE_THRESHOLD=0.40
 ```
+
+> **Embedding model parity:** the `EMBEDDING_PROVIDER` and `EMBEDDING_MODEL`
+> used when running `05_build_chromadb.py` must exactly match what the RAG
+> tools use at query time.  Mismatches silently return wrong results.  See
+> `tools/embedding_provider.py` for full details.
 
 ---
 
@@ -185,9 +172,7 @@ python 02_scrape_cfn_docs.py
 **Output:** `scraped_html/` directory (~1100 HTML files)
 
 > This step makes HTTP requests to `docs.aws.amazon.com`. It takes
-> **10–20 minutes** depending on your connection. AWS rate-limits are
-> gentle — the script does not require a delay but you may add one if you
-> see 429 errors.
+> **10–20 minutes** depending on your connection.
 
 ---
 
@@ -198,10 +183,6 @@ python 03_parse_and_merge.py
 ```
 
 **Output:** `cfn_knowledge_graph.json`
-
-This merges the spec JSON (structural data) with the scraped HTML
-(descriptions + YAML examples) into a single flat dictionary keyed by
-resource name (e.g. `AWS::S3::Bucket`).
 
 ---
 
@@ -222,16 +203,11 @@ Import complete!
 This creates four node labels and three relationship types:
 
 ```
-(Resource)-[:HAS_PROPERTY]   →(Property)
-(Resource)-[:HAS_NESTED_TYPE]→(NestedType)
-(NestedType)-[:REFERENCES_TYPE]→(NestedType)
-(Resource)-[:HAS_EXAMPLE]    →(Example)
+(Resource)-[:HAS_PROPERTY]    → (Property)
+(Resource)-[:HAS_NESTED_TYPE] → (NestedType)
+(NestedType)-[:REFERENCES_TYPE]→ (NestedType)
+(Resource)-[:HAS_EXAMPLE]     → (Example)
 ```
-
-And three indexes:
-- `resource_name` on `Resource.name`
-- `property_id` on `Property.id`
-- `nested_type_id` on `NestedType.id`
 
 **Verify in Neo4j Browser** (`http://localhost:7474`, login `neo4j/password`):
 
@@ -249,30 +225,36 @@ RETURN r.name, p.name, p.type LIMIT 10;
 ### 3.5 Build ChromaDB Vector Index
 
 ```bash
+# HuggingFace (default)
 python 05_build_chromadb.py
+
+# Ollama (mxbai-embed-large)
+EMBEDDING_PROVIDER=ollama python 05_build_chromadb.py
 ```
 
 Expected log:
 ```
-Loading embedding model: sentence-transformers/all-mpnet-base-v2...
+[Build] Embedding provider: Ollama  model: mxbai-embed-large  url: http://localhost:11434
 Chunking CloudFormation data...
-Created 28000+ document chunks. Ingesting into ChromaDB Docker container...
-Vector database successfully built inside Docker!
+Created 28000+ document chunks. Ingesting into ChromaDB...
+Vector database successfully built!
+  Provider   : ollama
+  Model      : mxbai-embed-large
+  Chunks     : 28312
+  Collection : cfn_schema_properties @ localhost:8000
+  Distance   : cosine (hnsw:space=cosine)
+  Normalised : True
 ```
 
-> **First run downloads the embedding model** (~420 MB) from HuggingFace
-> into the local `sentence-transformers` cache. Subsequent runs reuse the
-> cache. This step takes **5–15 minutes** on first run (mostly embedding
-> inference).
+> **First run:** HuggingFace downloads the embedding model (~420 MB, 5–15 min).
+> Ollama models must be pulled first: `ollama pull mxbai-embed-large`.
+> Subsequent runs skip the download and only re-embed (3–5 min).
 
-The script connects to `chromadb` at `localhost:8000` and writes all chunks
-into the `cfn_schema_properties` collection.
-
-**Verify the collection exists:**
+**Verify the collection:**
 
 ```bash
 curl -s http://localhost:8000/api/v1/collections | python -m json.tool
-# Should list cfn_schema_properties with a document count > 0
+# Should list cfn_schema_properties with document count > 0
 ```
 
 ---
@@ -280,56 +262,60 @@ curl -s http://localhost:8000/api/v1/collections | python -m json.tool
 ## Step 4 — Test G-Retrieval
 
 ```bash
-python execute_g_retrieval.py
+# Default test query
+python 06_execute_g_retrieval.py
+
+# Custom query
+python 06_execute_g_retrieval.py "Create an RDS MySQL instance with Multi-AZ"
+
+# With Ollama
+EMBEDDING_PROVIDER=ollama python 06_execute_g_retrieval.py "S3 bucket with KMS encryption"
 ```
-
-This runs a sample query end-to-end:
-1. Semantic search in ChromaDB (`k=5`).
-2. Graph traversal in Neo4j for the matched resource names.
-3. Prints the assembled context block that would be injected into the LLM prompt.
-
-For stage-by-stage test coverage:
-
-```bash
-python 07_test_g_retrieval_by_stage.py
-```
-
-Results are saved to `g_retrieval_test_results/`.
 
 ---
 
 ## Step 5 — Debug ChromaDB
 
-If retrieval returns no results, run the debug script to inspect the
-collection directly:
-
 ```bash
 python debug_chroma.py
 ```
 
-This lists all collections, their document counts, and runs a sample
-similarity query so you can inspect raw distance scores.
+This lists all collections, document counts, and runs a sample similarity
+query so you can inspect raw cosine distance scores.
 
 ---
 
-## Teardown
-
-Stop and remove both containers (all in-memory data is lost):
+## Volume Lifecycle
 
 ```bash
+# Normal restart (data preserved)
 docker compose down
-```
+docker compose up -d
 
-To rebuild from scratch after a teardown, restart containers and re-run
-steps 3.4 and 3.5 only (the JSON artefacts from steps 3.1–3.3 are cached
-locally and do not need to be regenerated unless the CFN spec changes):
+# Inspect volume sizes on disk
+docker system df -v
 
-```bash
+# Wipe ALL data and start from scratch
+docker compose down -v
 docker compose up -d
 cd scripts/graphrag
 python 04_import_cfn_to_neo4j.py
-python 05_build_chromadb.py
+EMBEDDING_PROVIDER=ollama python 05_build_chromadb.py
+
+# Rebuild only ChromaDB (e.g. after switching embedding model)
+docker volume rm iac-god_chromadb_data
+docker compose up -d chromadb
+EMBEDDING_PROVIDER=ollama python 05_build_chromadb.py
+
+# Rebuild only Neo4j (e.g. after CFN spec update)
+docker volume rm iac-god_neo4j_data iac-god_neo4j_logs
+docker compose up -d neo4j
+python 04_import_cfn_to_neo4j.py
 ```
+
+> **Warning:** `docker compose down -v` and `docker volume rm` are
+> irreversible.  The data can be fully rebuilt from the JSON artefacts
+> in `scripts/graphrag/`, but the embedding step takes 3–15 minutes.
 
 ---
 
@@ -342,11 +328,11 @@ python 05_build_chromadb.py
 | `NEO4J_PASSWORD` | `password` | same as above |
 | `CHROMA_HOST` | `localhost` | `cfn_hybrid_rag.py`, `security_hybrid_rag.py` |
 | `CHROMA_PORT` | `8000` | same as above |
-| `SECURITY_DISTANCE_THRESHOLD` | `0.55` | `security_hybrid_rag.py` |
+| `EMBEDDING_PROVIDER` | `huggingface` | `embedding_provider.py`, build scripts |
+| `EMBEDDING_MODEL` | provider default | override model name |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | `embedding_provider.py` |
+| `CHROMA_DISTANCE_THRESHOLD` | `0.40` | `cfn_hybrid_rag.py`, `security_hybrid_rag.py` |
 | `SECURITY_CHAR_BUDGET` | `12000` | `security_hybrid_rag.py` |
-
-All variables have working defaults that match the `docker-compose.yml` in
-this guide. Export overrides only when deploying outside of local Docker.
 
 ---
 
@@ -355,29 +341,42 @@ this guide. Export overrides only when deploying outside of local Docker.
 **`neo4j.exceptions.ServiceUnavailable: Failed to establish connection`**
 
 The container is not yet ready. Wait for `docker compose ps` to show
-`healthy`, then retry. Neo4j takes ~15 seconds to start.
+`healthy`, then retry. Neo4j takes ~15–30 seconds to start.
 
 **`chromadb.errors.InvalidCollectionException` or empty results from ChromaDB**
 
-The `cfn_schema_properties` collection is lost on container restart because
-`IS_PERSISTENT=FALSE`. Re-run `05_build_chromadb.py` after every container
-restart.
+If the container was previously run without `IS_PERSISTENT=TRUE`, the old
+in-memory collection is gone. Rebuild:
 
-**`OSError: [Errno 28] No space left on device` during ChromaDB ingestion**
+```bash
+EMBEDDING_PROVIDER=ollama python scripts/graphrag/05_build_chromadb.py
+```
 
-The embedding model cache and ~28k vectors require ~2 GB of working memory.
-Ensure Docker Desktop has at least **4 GB RAM** allocated
-(Docker Desktop → Settings → Resources → Memory).
+**`ValueError: Collection cfn_schema_properties already exists with different metadata`**
+
+The existing collection was created with a different `hnsw:space`. The build
+script drops and recreates it automatically, but if you see this at query
+time it means the collection was built without the cosine fix. Rebuild:
+
+```bash
+docker volume rm iac-god_chromadb_data
+docker compose up -d chromadb
+EMBEDDING_PROVIDER=ollama python scripts/graphrag/05_build_chromadb.py
+```
+
+**`OSError: [Errno 28] No space left on device`**
+
+Ensure Docker Desktop has at least **4 GB RAM** and **10 GB disk** allocated
+(Docker Desktop → Settings → Resources). Neo4j data + ChromaDB vectors +
+embedding model cache total ~3–4 GB.
 
 **`AuthError: {code: Neo.ClientError.Security.Unauthorized}`**
 
 The `NEO4J_AUTH` env var in `docker-compose.yml` sets `username/password`.
-If you changed the password, export `NEO4J_PASSWORD` to match before
-running the scripts.
+If you changed it, export `NEO4J_PASSWORD` to match.
 
 **Slow scraping in step 3.2**
 
-The AWS docs CDN occasionally throttles. If you see many timeout errors,
-add a `time.sleep(0.5)` inside the scrape loop in `02_scrape_cfn_docs.py`.
-Alternatively, the scrape only needs to be done once — commit the
-`scraped_html/` output and re-use it across environments.
+Add `time.sleep(0.5)` inside the scrape loop in `02_scrape_cfn_docs.py`
+if you see 429 errors from the AWS docs CDN. The scrape only needs to run
+once — commit `scraped_html/` to avoid repeating it.
