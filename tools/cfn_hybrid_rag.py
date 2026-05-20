@@ -18,6 +18,15 @@ Retrieval runs in two sequential stages:
   Final   — _assemble_retrieval_context(): merges both sets into the single context
                                         string consumed by the remediator prompt.
 
+Context verbosity is controlled by CHROMA_CONTEXT_MODE:
+  compact (default) — ChromaDB chunks grouped per resource; description printed
+                      once; each property rendered as a single summary line.
+                      Neo4j example YAML omitted for resources already covered
+                      by ChromaDB semantic hits (saves ~45% tokens).
+  raw               — Original behaviour: full chunk text per property, no
+                      deduplication of resource descriptions. Useful for
+                      debugging retrieval quality.
+
 Dependency direction (strictly unidirectional, no cycles):
   retriever_agent  →  cfn_hybrid_rag       →  template_annotator (type hints only)
   retriever_agent  →  retriever_helpers    (no DB deps)
@@ -29,6 +38,7 @@ import os
 import re
 from collections import defaultdict
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 
 import chromadb
 from langchain_chroma import Chroma
@@ -82,30 +92,153 @@ CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 # Override at runtime: CHROMA_DISTANCE_THRESHOLD=0.50 python main.py
 CHROMA_DISTANCE_THRESHOLD: float = DEFAULT_DISTANCE_THRESHOLD
 
+# Context verbosity mode.
+# "compact" (default): group chunks per resource, deduplicate description,
+#                      render each property as a single summary line.
+# "raw":               legacy full-chunk text, one block per property.
+# Override: CHROMA_CONTEXT_MODE=raw python main.py
+_CONTEXT_MODE: str = os.getenv("CHROMA_CONTEXT_MODE", "compact").lower().strip()
+
 # Maximum number of optional properties shown per resource in the Neo4j block.
 _MAX_OPTIONAL_PROPS = 10
 
 
 # ---------------------------------------------------------------------------
-# Chroma chunk cleaner
+# Chunk parsing — structured property data extracted from raw chunk text
 # ---------------------------------------------------------------------------
-_DOC_LINK_RE    = re.compile(r"https?://docs\.aws\.amazon\.com\S*", re.IGNORECASE)
-_DESCRIPTION_RE = re.compile(r"(?:^|\n)Description:\s*.+?(?=\n[A-Z]|\Z)", re.DOTALL)
+
+@dataclass
+class _PropertyChunk:
+    """Parsed representation of one CFN property chunk from ChromaDB."""
+    resource_name: str = ""
+    resource_description: str = ""
+    property_name: str = ""
+    property_type: str = ""
+    required: str = ""
+    update_type: str = ""
+    is_example: bool = False
+    raw_text: str = ""  # fallback for unparseable chunks
 
 
-def _clean_chroma_chunk(content: str) -> str:
-    """Remove AWS doc links and Description fields from a Chroma property chunk."""
-    content = _DOC_LINK_RE.sub("", content)
-    content = _DESCRIPTION_RE.sub("", content)
-    return re.sub(r"\n{3,}", "\n\n", content).strip()
+_FIELD_RE = re.compile(
+    r"^(?P<key>Resource|Resource Description|Property|Type|Required|Update Type)"
+    r":\s*(?P<value>.+)$",
+    re.MULTILINE,
+)
+_DOC_LINK_RE = re.compile(r"https?://docs\.aws\.amazon\.com\S*", re.IGNORECASE)
+
+
+def _parse_chunk(content: str, meta: dict) -> _PropertyChunk:
+    """Parse a raw ChromaDB chunk text into a structured _PropertyChunk.
+
+    Falls back to storing raw_text when the chunk doesn't match the
+    standard property format (e.g. example code chunks).
+    """
+    # Example chunks have a distinct prefix
+    if content.lstrip().startswith("CloudFormation example for"):
+        resource = meta.get("resource_name", "") or ""
+        return _PropertyChunk(resource_name=resource, is_example=True, raw_text=content)
+
+    fields: dict[str, str] = {}
+    for m in _FIELD_RE.finditer(content):
+        fields[m.group("key")] = m.group("value").strip()
+
+    if not fields.get("Property"):
+        # Not a structured property chunk — keep as raw
+        return _PropertyChunk(
+            resource_name=meta.get("resource_name", ""),
+            raw_text=_DOC_LINK_RE.sub("", content).strip(),
+        )
+
+    return _PropertyChunk(
+        resource_name=fields.get("Resource", meta.get("resource_name", "")),
+        resource_description=fields.get("Resource Description", ""),
+        property_name=fields.get("Property", ""),
+        property_type=fields.get("Type", ""),
+        required=fields.get("Required", ""),
+        update_type=fields.get("Update Type", ""),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Grouped resource data — accumulates all property chunks for one resource
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _ResourceChunks:
+    name: str
+    description: str = ""
+    properties: list[_PropertyChunk] = field(default_factory=list)
+    examples: list[str] = field(default_factory=list)
+    raw_chunks: list[str] = field(default_factory=list)  # unparseable fallbacks
+
+
+def _format_resource_block_compact(rc: _ResourceChunks) -> str:
+    """Render one resource's ChromaDB hits as a compact grouped block.
+
+    Format:
+        #### AWS::RDS::DBCluster
+        > Creates an Amazon Aurora DB cluster or Multi-AZ DB cluster.
+
+        - EngineVersion (String, Mutable)
+        - Engine (String, Conditional)
+        - MasterUserPassword (String, Mutable)  [required]
+    """
+    lines: list[str] = []
+    header = f"#### {rc.name}" if rc.name and rc.name != "_unknown" \
+        else "#### (resource type unknown)"
+    lines.append(header)
+
+    # Resource description — once, stripped of embedded links
+    desc = _DOC_LINK_RE.sub("", rc.description).strip()
+    # Also strip boilerplate "see X in Y" cross-references
+    desc = re.sub(r"\s+see[^.]+\.", ".", desc, flags=re.IGNORECASE)
+    desc = re.sub(r"\s{2,}", " ", desc).strip()
+    if desc:
+        lines.append(f"> {desc}")
+
+    # Property summary lines
+    for p in rc.properties:
+        parts = [p.property_name]
+        type_update = ""
+        if p.property_type:
+            type_update = p.property_type
+            if p.update_type and p.update_type.lower() not in ("unknown", ""):
+                type_update += f", {p.update_type}"
+        if type_update:
+            parts.append(f"({type_update})")
+        req_flag = "  [required]" if str(p.required).lower() == "true" else ""
+        lines.append(f"- {'  '.join(parts)}{req_flag}")
+
+    # Fallback raw lines (unparseable chunks)
+    for raw in rc.raw_chunks:
+        lines.append(raw)
+
+    return "\n".join(lines)
+
+
+def _format_resource_block_raw(chunks: list[str]) -> str:
+    """Legacy: join raw cleaned chunks with separators (original behaviour)."""
+    return "\n---\n".join(chunks)
 
 
 # ---------------------------------------------------------------------------
 # Neo4j helpers
 # ---------------------------------------------------------------------------
 
-def format_prompt_from_neo4j_result(resource_data: dict) -> str:
-    """Format Neo4j schema data into a concise single-block prompt section."""
+def format_prompt_from_neo4j_result(
+    resource_data: dict,
+    include_example: bool = True,
+) -> str:
+    """Format Neo4j schema data into a concise single-block prompt section.
+
+    Args:
+        resource_data:   Dict returned by query_knowledge_graph().
+        include_example: When False the YAML example block is omitted.
+                         Callers set this to False when ChromaDB already
+                         provided semantic context for this resource,
+                         avoiding ~50–80 lines of redundant YAML skeleton.
+    """
     if "error" in resource_data:
         return f"# {resource_data['error']}"
 
@@ -133,7 +266,9 @@ def format_prompt_from_neo4j_result(resource_data: dict) -> str:
         )
         lines.append(f"NestedTypes: {nt_list}")
 
-    if resource_data.get("example"):
+    # Only include the full YAML example when the caller requests it
+    # (i.e. this resource has no ChromaDB semantic context).
+    if include_example and resource_data.get("example"):
         lines.append(f"Example:\n```yaml\n{resource_data['example']['code']}\n```")
 
     return "\n".join(lines)
@@ -197,23 +332,27 @@ def _neo4j_driver():
 
 def _semantic_search(
     retrieval_queries: list[str],
-) -> tuple[dict[str, list[str]], set[str]]:
+) -> tuple[dict[str, _ResourceChunks], set[str]]:
     """Run ChromaDB similarity search for all retrieval queries.
 
-    Uses similarity_search_with_score() which returns the raw cosine distance
-    (hnsw:space=cosine, unit-normalised vectors).  Lower = more similar.
-    Chunks are KEPT when score <= CHROMA_DISTANCE_THRESHOLD.
+    In compact mode, parses each chunk into structured _PropertyChunk data
+    and accumulates them into per-resource _ResourceChunks groups so the
+    resource description is deduplicated at render time.
+
+    In raw mode, stores cleaned full chunk text as before.
 
     Returns:
-        chunks_by_resource: Dict mapping resource_name → list of cleaned
-                            property text chunks that passed the threshold.
-        found_resources:    Set of AWS resource type names from passing chunks.
+        resource_chunks:  Dict mapping resource_name → _ResourceChunks (compact)
+                          or resource_name → list[str] (raw, stored in raw_chunks).
+        found_resources:  Set of AWS resource type names from passing chunks.
     """
-    chunks_by_resource: dict[str, list[str]] = defaultdict(list)
+    resource_chunks: dict[str, _ResourceChunks] = defaultdict(
+        lambda: _ResourceChunks(name="")
+    )
     found_resources: set[str] = set()
 
     if not retrieval_queries:
-        return chunks_by_resource, found_resources
+        return dict(resource_chunks), found_resources
 
     try:
         chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
@@ -246,31 +385,65 @@ def _semantic_search(
                     continue
                 seen_prop_keys.add(prop_key)
 
-                cleaned = _clean_chroma_chunk(chunk.page_content)
-                if cleaned:
-                    chunks_by_resource[res].append(cleaned)
-                    kept += 1
+                rc = resource_chunks[res]
+                rc.name = rc.name or res
+
+                if _CONTEXT_MODE == "compact":
+                    parsed = _parse_chunk(chunk.page_content, meta)
+                    if parsed.is_example:
+                        rc.examples.append(parsed.raw_text)
+                    elif parsed.property_name:
+                        # Capture description from first chunk seen for this resource
+                        if not rc.description and parsed.resource_description:
+                            rc.description = parsed.resource_description
+                        rc.properties.append(parsed)
+                    else:
+                        rc.raw_chunks.append(parsed.raw_text)
+                else:
+                    # raw mode: store cleaned text as before
+                    cleaned = _clean_chunk_raw(chunk.page_content)
+                    if cleaned:
+                        rc.raw_chunks.append(cleaned)
+
+                kept += 1
                 if res and res != "_unknown":
                     found_resources.add(res)
 
         print(
             f"[RAG Tool] Stage 1: {kept + dropped} chunks retrieved, "
             f"{dropped} dropped (cosine distance > {CHROMA_DISTANCE_THRESHOLD}), "
-            f"{kept} kept."
+            f"{kept} kept  [mode={_CONTEXT_MODE}]."
         )
 
     except Exception as exc:
         print(f"[RAG Tool] Warning: ChromaDB Semantic Search failed. {exc}")
 
-    return dict(chunks_by_resource), found_resources
+    return dict(resource_chunks), found_resources
+
+
+def _clean_chunk_raw(content: str) -> str:
+    """Legacy raw-mode cleaner: strip doc links and Description fields."""
+    content = _DOC_LINK_RE.sub("", content)
+    content = re.sub(r"(?:^|\n)Description:\s*.+?(?=\n[A-Z]|\Z)", "", content, flags=re.DOTALL)
+    return re.sub(r"\n{3,}", "\n\n", content).strip()
 
 
 # ---------------------------------------------------------------------------
 # Stage 2 — Knowledge-graph schema lookup (Neo4j)
 # ---------------------------------------------------------------------------
 
-def _graph_schema_lookup(resources: set[str]) -> list[str]:
-    """Fetch full schema blocks for each resource from Neo4j."""
+def _graph_schema_lookup(
+    resources: set[str],
+    chroma_covered: set[str],
+) -> list[str]:
+    """Fetch full schema blocks for each resource from Neo4j.
+
+    Args:
+        resources:       All identified AWS resource type names.
+        chroma_covered:  Resources that already have ChromaDB semantic context.
+                         For these, the Neo4j YAML example is omitted in
+                         compact mode to avoid redundant tokens.
+    """
     schema_blocks: list[str] = []
 
     if not resources:
@@ -286,7 +459,14 @@ def _graph_schema_lookup(resources: set[str]) -> list[str]:
                 seen.add(resource)
                 res_data = query_knowledge_graph(driver, resource)
                 if "error" not in res_data:
-                    schema_blocks.append(format_prompt_from_neo4j_result(res_data))
+                    # Omit the YAML example when compact mode is active AND
+                    # ChromaDB already returned semantic hits for this resource.
+                    include_ex = not (
+                        _CONTEXT_MODE == "compact" and resource in chroma_covered
+                    )
+                    schema_blocks.append(
+                        format_prompt_from_neo4j_result(res_data, include_example=include_ex)
+                    )
     except Exception as exc:
         print(f"[RAG Tool] Warning: Neo4j retrieval failed. {exc}")
 
@@ -298,22 +478,28 @@ def _graph_schema_lookup(resources: set[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _assemble_retrieval_context(
-    chunks_by_resource: dict[str, list[str]],
+    resource_chunks: dict[str, _ResourceChunks],
     schema_blocks: list[str],
 ) -> str:
-    """Merge grouped Chroma chunks and Neo4j schema blocks into a single
-    context string for the remediator prompt.
+    """Merge grouped ChromaDB resource blocks and Neo4j schema blocks into a
+    single context string for the remediator prompt.
     """
     final_blocks: list[str] = ["## Official AWS CloudFormation Schema Context\n"]
 
-    if chunks_by_resource:
+    if resource_chunks:
         resource_sections: list[str] = []
-        for resource_name, chunks in sorted(chunks_by_resource.items()):
-            header = (
-                f"#### {resource_name}" if resource_name != "_unknown"
-                else "#### (resource type unknown)"
-            )
-            resource_sections.append(header + "\n" + "\n---\n".join(chunks))
+        for resource_name, rc in sorted(resource_chunks.items()):
+            if _CONTEXT_MODE == "compact":
+                block = _format_resource_block_compact(rc)
+            else:
+                # raw mode: rc.raw_chunks holds the cleaned text strings
+                header = (
+                    f"#### {resource_name}" if resource_name != "_unknown"
+                    else "#### (resource type unknown)"
+                )
+                block = header + "\n" + _format_resource_block_raw(rc.raw_chunks)
+            resource_sections.append(block)
+
         final_blocks.append(
             "### Semantically Matched Properties\n"
             + "\n\n".join(resource_sections)
@@ -343,14 +529,14 @@ def execute_hybrid_retrieval(
         A multi-section context string for the remediator, or a short fallback
         message when no resources could be identified.
     """
-    chunks_by_resource, chroma_resources = _semantic_search(retrieval_queries)
+    resource_chunks, chroma_resources = _semantic_search(retrieval_queries)
     identified_resources = seed_resources | chroma_resources
 
     if not identified_resources:
         return "No specific AWS resources identified in template or retrieval context."
 
-    schema_blocks = _graph_schema_lookup(identified_resources)
-    if not schema_blocks and not chunks_by_resource:
+    schema_blocks = _graph_schema_lookup(identified_resources, chroma_covered=chroma_resources)
+    if not schema_blocks and not resource_chunks:
         return "Failed to connect to Knowledge Graph."
 
-    return _assemble_retrieval_context(chunks_by_resource, schema_blocks)
+    return _assemble_retrieval_context(resource_chunks, schema_blocks)
