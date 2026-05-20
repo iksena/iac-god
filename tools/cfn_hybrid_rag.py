@@ -7,8 +7,9 @@ Retrieval runs in two sequential stages:
                                         CFN property chunks. Only chunks whose
                                         raw distance score is AT OR BELOW
                                         CHROMA_DISTANCE_THRESHOLD are kept.
-                                        Lower score = more similar (raw cosine/L2
-                                        distance space — no LangChain normalisation).
+                                        Lower score = more similar (cosine distance
+                                        in [0, 2] — explicit hnsw:space=cosine,
+                                        unit-normalised vectors).
                                         Results are grouped by resource name.
   Stage 2 — _graph_schema_lookup():    Neo4j Cypher traversal for each identified
                                         resource. Returns structured schema blocks
@@ -33,7 +34,11 @@ import chromadb
 from langchain_chroma import Chroma
 from neo4j import GraphDatabase
 
-from tools.embedding_provider import get_embeddings
+from tools.embedding_provider import (
+    get_embeddings,
+    CHROMA_COLLECTION_METADATA,
+    DEFAULT_DISTANCE_THRESHOLD,
+)
 
 # Re-export for back-compat: existing callers of
 #   from tools.cfn_hybrid_rag import QUERY_GEN_SYSTEM
@@ -51,35 +56,31 @@ CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 # Tuneable constants
 # ---------------------------------------------------------------------------
 
-# Raw distance floor for Chroma property chunks.
+# Raw cosine distance floor for Chroma property chunks.
 #
-# similarity_search_with_score() returns the raw underlying distance (cosine
-# or L2 depending on the collection's distance function), NOT a normalised
-# relevance score. The relationship is: LOWER score = MORE similar.
+# The collection is created with hnsw:space="cosine" and all vectors are
+# unit-normalised, so scores are true cosine distances in [0, 2]:
+#   0 = identical direction, 1 = orthogonal, 2 = opposite direction.
+# LOWER score = MORE similar.  Chunks ABOVE the threshold are discarded.
 #
-# Using raw distance avoids the LangChain UserWarning:
-#   "Relevance scores must be between 0 and 1, got [...]"
-# which fires when similarity_search_with_relevance_scores() normalises values
-# outside [0, 1] for certain distance configurations.
+# Model-specific calibration (cosine distance, normalised vectors):
 #
-# Rationale for 0.55 (cosine distance space):
-#   - all-mpnet-base-v2 cosine distances for CloudFormation property text:
-#       0.0–0.3  → near-exact match (same resource, same property)
-#       0.3–0.55 → topically related (correct resource, adjacent property)
-#       0.55–0.8 → loosely related  (same service area, different resource)
-#       0.8+     → unrelated
-#   - 0.55 keeps the top two bands and discards peripheral chunks.
-#   - Tune DOWNWARD (e.g. 0.40) for higher precision (fewer, more exact chunks).
-#   - Tune UPWARD   (e.g. 0.70) for higher recall   (more chunks, more noise).
+#   mxbai-embed-large (1024-dim, Ollama):
+#     0.00 – 0.20  near-exact match
+#     0.20 – 0.40  topically related   ← default threshold keeps these
+#     0.40 – 0.65  loosely related     ← default threshold drops these
+#     0.65+        unrelated
 #
-# mxbai-embed-large uses cosine similarity internally; distances are
-# comparable in magnitude to all-mpnet-base-v2 so 0.55 is a safe starting
-# point. Tune after rebuilding the index with the new model.
+#   all-mpnet-base-v2 (768-dim, HuggingFace):
+#     0.00 – 0.30  near-exact match
+#     0.30 – 0.55  topically related
+#     0.55 – 0.80  loosely related
+#     0.80+        unrelated
 #
+# Default is 0.40 (conservative for mxbai-embed-large).
+# Raise toward 0.55 for higher recall; lower toward 0.25 for higher precision.
 # Override at runtime: CHROMA_DISTANCE_THRESHOLD=0.50 python main.py
-CHROMA_DISTANCE_THRESHOLD: float = float(
-    os.getenv("CHROMA_DISTANCE_THRESHOLD", "0.55")
-)
+CHROMA_DISTANCE_THRESHOLD: float = DEFAULT_DISTANCE_THRESHOLD
 
 # Maximum number of optional properties shown per resource in the Neo4j block.
 _MAX_OPTIONAL_PROPS = 10
@@ -199,13 +200,9 @@ def _semantic_search(
 ) -> tuple[dict[str, list[str]], set[str]]:
     """Run ChromaDB similarity search for all retrieval queries.
 
-    Uses similarity_search_with_score() which returns the raw underlying
-    distance (cosine or L2) without LangChain normalisation. This avoids the
-    UserWarning fired by similarity_search_with_relevance_scores() when the
-    collection's distance metric produces values outside [0, 1].
-
-    Chunks are KEPT when their score is AT OR BELOW CHROMA_DISTANCE_THRESHOLD
-    (lower score = more similar in distance space).
+    Uses similarity_search_with_score() which returns the raw cosine distance
+    (hnsw:space=cosine, unit-normalised vectors).  Lower = more similar.
+    Chunks are KEPT when score <= CHROMA_DISTANCE_THRESHOLD.
 
     Returns:
         chunks_by_resource: Dict mapping resource_name → list of cleaned
@@ -224,6 +221,7 @@ def _semantic_search(
             client=chroma_client,
             collection_name="cfn_schema_properties",
             embedding_function=get_embeddings(),
+            collection_metadata=CHROMA_COLLECTION_METADATA,
         )
 
         seen_prop_keys: set[str] = set()
@@ -231,8 +229,6 @@ def _semantic_search(
         dropped = 0
 
         for query in retrieval_queries:
-            # similarity_search_with_score returns (Document, raw_distance).
-            # Lower raw_distance → closer match. Keep chunks <= threshold.
             scored_chunks = vectorstore.similarity_search_with_score(query, k=3)
             for chunk, score in scored_chunks:
                 if score > CHROMA_DISTANCE_THRESHOLD:
@@ -259,7 +255,7 @@ def _semantic_search(
 
         print(
             f"[RAG Tool] Stage 1: {kept + dropped} chunks retrieved, "
-            f"{dropped} dropped (distance > {CHROMA_DISTANCE_THRESHOLD}), "
+            f"{dropped} dropped (cosine distance > {CHROMA_DISTANCE_THRESHOLD}), "
             f"{kept} kept."
         )
 
