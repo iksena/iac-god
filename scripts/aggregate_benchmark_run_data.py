@@ -338,17 +338,19 @@ def move_run_folders_from_csv(
 
 if __name__ == "__main__":
     # move_run_folders_from_csv(
-    #     input_csv='benchmark_runs/20260519_140132 o3mini Security GraphRAG/results.csv',
+    #     input_csv='benchmark_runs/20260515_010830 o3mini deploy/results_merged.csv',
     #     runs_dir='runs',
-    #     target_subfolder_name='O3mini_security_graph_rag',
+    #     target_subfolder_name='O3mini_deployability_runs',
     #     run_id_col='run_id',
     #     dry_run=False,
     # )
-    # merge_results_with_reports(
-    #     input_csv="./benchmark_runs/20260427_163601 Grok Hybrid 15-Itr 0-29/results_merged.csv", 
-    #     base_dir="runs/", 
-    #     output_csv="./benchmark_runs/20260427_163601 Grok Hybrid 15-Itr 0-29/grok_hybrid_15_all_results_agg.csv"
-    # )
+
+    merge_results_with_reports(
+        input_csv="benchmark_runs/20260515_010830 o3mini deploy/results_merged.csv", 
+        base_dir="runs/O3mini_deployability_runs", 
+        output_csv="benchmark_runs/20260515_010830 o3mini deploy/O3mini_deployability.csv"
+    )
+
     # merge_results(
     #     csv_paths=[
     #         './benchmark_runs/20260508_013226 Retriever + Security/results.csv', 
@@ -375,32 +377,38 @@ if __name__ == "__main__":
     #     ],
     #     merged_jsonl_path='./benchmark_runs/20260508_013226 Retriever + Security/results_merged.jsonl'
     # )
-    merge_results(
-        csv_paths=[
-            'benchmark_runs/20260515_010830 o3mini deploy/results.csv', 
-            'benchmark_runs/20260515_010830 o3mini deploy/20260515_115058 o3mini deploy/results.csv',
-            'benchmark_runs/20260515_010830 o3mini deploy/20260515_170603 o3mini deploy/results.csv',
-            'benchmark_runs/20260515_010830 o3mini deploy/20260515_212014 o3mini deploy/results.csv',
-            'benchmark_runs/20260515_010830 o3mini deploy/20260516_004211 o3mini deploy/results.csv',
-            'benchmark_runs/20260515_010830 o3mini deploy/20260516_130833 o3mini deploy/results.csv',
-            'benchmark_runs/20260515_010830 o3mini deploy/20260516_230459 o3mini deploy/results.csv',
-            'benchmark_runs/20260515_010830 o3mini deploy/20260517_140710 o3mini deploy/results.csv',
-            'benchmark_runs/20260515_010830 o3mini deploy/20260517_200045 o3mini deploy/results.csv',
-        ], 
-        merged_csv_path='./benchmark_runs/20260515_010830 o3mini deploy/results_merged.csv',
-        jsonl_paths=[
-            'benchmark_runs/20260515_010830 o3mini deploy/results.jsonl', 
-            'benchmark_runs/20260515_010830 o3mini deploy/20260515_115058 o3mini deploy/results.jsonl',
-            'benchmark_runs/20260515_010830 o3mini deploy/20260515_170603 o3mini deploy/results.jsonl',
-            'benchmark_runs/20260515_010830 o3mini deploy/20260515_212014 o3mini deploy/results.jsonl',
-            'benchmark_runs/20260515_010830 o3mini deploy/20260516_004211 o3mini deploy/results.jsonl',
-            'benchmark_runs/20260515_010830 o3mini deploy/20260516_130833 o3mini deploy/results.jsonl',
-            'benchmark_runs/20260515_010830 o3mini deploy/20260516_230459 o3mini deploy/results.jsonl',
-            'benchmark_runs/20260515_010830 o3mini deploy/20260517_140710 o3mini deploy/results.jsonl',
-            'benchmark_runs/20260515_010830 o3mini deploy/20260517_200045 o3mini deploy/results.jsonl',
-        ],
-        merged_jsonl_path='./benchmark_runs/20260515_010830 o3mini deploy/results_merged.jsonl'
-    )
+
+    # merge_results(
+    #     csv_paths=[
+    #         'benchmark_runs/20260515_010830 o3mini deploy/results.csv', 
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260515_115058 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260515_170603 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260515_212014 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260516_004211 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260516_130833 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260516_230459 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260517_140710 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260517_200045 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260519_234526 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260520_003217 o3mini deploy/results.csv',
+    #     ], 
+    #     merged_csv_path='./benchmark_runs/20260515_010830 o3mini deploy/results_merged.csv',
+    #     jsonl_paths=[
+    #         'benchmark_runs/20260515_010830 o3mini deploy/results.jsonl', 
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260515_115058 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260515_170603 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260515_212014 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260516_004211 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260516_130833 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260516_230459 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260517_140710 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260517_200045 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260519_234526 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260520_003217 o3mini deploy/results.jsonl',
+    #     ],
+    #     merged_jsonl_path='./benchmark_runs/20260515_010830 o3mini deploy/results_merged.jsonl'
+    # )
+
     # merge_results(
     #     csv_paths=[
     #         './benchmark_runs/20260430_025759 RAG Tool/results.csv', 

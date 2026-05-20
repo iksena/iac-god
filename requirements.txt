@@ -20,3 +20,5 @@ neo4j
 chromadb
 langchain-chroma
 langchain-huggingface
+langchain-core
+beautifulsoup4
