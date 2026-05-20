@@ -7,14 +7,19 @@ Retrieval runs in two sequential stages:
                                         CFN property chunks. Only chunks whose
                                         raw distance score is AT OR BELOW
                                         CHROMA_DISTANCE_THRESHOLD are kept.
-                                        Lower score = more similar (cosine distance
-                                        in [0, 2] — explicit hnsw:space=cosine,
-                                        unit-normalised vectors).
-                                        Results are grouped by resource name.
+                                        Results are filtered to seed_resources so
+                                        that unrelated resource types (e.g. Lambda,
+                                        Redshift) cannot leak in via coincidental
+                                        semantic similarity.
+                                        Results are grouped by resource name;
+                                        the resource description is printed once
+                                        and properties are deduplicated.
   Stage 2 — _graph_schema_lookup():    Neo4j Cypher traversal for each identified
-                                        resource. Returns structured schema blocks
-                                        (required properties, capped optional
-                                        properties, nested types, examples).
+                                        resource. When error_resources is supplied,
+                                        only those resources (plus any chroma-covered
+                                        ones) are fetched — avoiding full-template
+                                        schema dumps when only 1-2 resources have
+                                        active errors.
   Final   — _assemble_retrieval_context(): merges both sets into the single context
                                         string consumed by the remediator prompt.
 
@@ -176,28 +181,31 @@ class _ResourceChunks:
 def _format_resource_block_compact(rc: _ResourceChunks) -> str:
     """Render one resource's ChromaDB hits as a compact grouped block.
 
-    Format:
-        #### AWS::RDS::DBCluster
-        > Creates an Amazon Aurora DB cluster or Multi-AZ DB cluster.
+    The resource description is printed once (deduplicated across all chunks
+    for the same resource). Each property is a single summary line.
 
-        - EngineVersion (String, Mutable)
-        - Engine (String, Conditional)
-        - MasterUserPassword (String, Mutable)  [required]
+    Format:
+        #### AWS::EC2::SecurityGroup
+        > Specifies a security group.
+
+        - IpProtocol (String, Immutable)  [required]
+        - FromPort (Integer, Immutable)
+        - ToPort (Integer, Immutable)
     """
     lines: list[str] = []
     header = f"#### {rc.name}" if rc.name and rc.name != "_unknown" \
         else "#### (resource type unknown)"
     lines.append(header)
 
-    # Resource description — once, stripped of embedded links
+    # Resource description — printed once, stripped of embedded links and
+    # boilerplate cross-references.
     desc = _DOC_LINK_RE.sub("", rc.description).strip()
-    # Also strip boilerplate "see X in Y" cross-references
     desc = re.sub(r"\s+see[^.]+\.", ".", desc, flags=re.IGNORECASE)
     desc = re.sub(r"\s{2,}", " ", desc).strip()
     if desc:
         lines.append(f"> {desc}")
 
-    # Property summary lines
+    # Property summary lines — one line per unique property
     for p in rc.properties:
         parts = [p.property_name]
         type_update = ""
@@ -332,8 +340,14 @@ def _neo4j_driver():
 
 def _semantic_search(
     retrieval_queries: list[str],
+    resource_filter: set[str] | None = None,
 ) -> tuple[dict[str, _ResourceChunks], set[str]]:
     """Run ChromaDB similarity search for all retrieval queries.
+
+    Chunks are filtered to resource_filter (when provided) so that only
+    resources present in the template can appear in the output. This prevents
+    unrelated resource types from leaking in via coincidental semantic
+    similarity (e.g. Lambda or Redshift appearing for an EC2-only template).
 
     In compact mode, parses each chunk into structured _PropertyChunk data
     and accumulates them into per-resource _ResourceChunks groups so the
@@ -341,9 +355,13 @@ def _semantic_search(
 
     In raw mode, stores cleaned full chunk text as before.
 
+    Args:
+        retrieval_queries: HyDE queries from the retriever agent.
+        resource_filter:   When provided, only chunks whose resource_name is
+                           in this set are kept. Pass seed_resources here.
+
     Returns:
-        resource_chunks:  Dict mapping resource_name → _ResourceChunks (compact)
-                          or resource_name → list[str] (raw, stored in raw_chunks).
+        resource_chunks:  Dict mapping resource_name → _ResourceChunks.
         found_resources:  Set of AWS resource type names from passing chunks.
     """
     resource_chunks: dict[str, _ResourceChunks] = defaultdict(
@@ -366,6 +384,7 @@ def _semantic_search(
         seen_prop_keys: set[str] = set()
         kept = 0
         dropped = 0
+        filtered_out = 0
 
         for query in retrieval_queries:
             scored_chunks = vectorstore.similarity_search_with_score(query, k=3)
@@ -376,6 +395,14 @@ def _semantic_search(
 
                 meta = chunk.metadata
                 res  = meta.get("resource_name", "") or "_unknown"
+
+                # Drop chunks for resources not present in the template.
+                # This prevents unrelated resources from polluting the context
+                # via coincidental semantic similarity.
+                if resource_filter and res not in resource_filter:
+                    filtered_out += 1
+                    continue
+
                 prop = meta.get("property_name", "") or meta.get("property_path", "")
                 prop_key = (
                     f"{res}.{prop}" if prop
@@ -393,7 +420,8 @@ def _semantic_search(
                     if parsed.is_example:
                         rc.examples.append(parsed.raw_text)
                     elif parsed.property_name:
-                        # Capture description from first chunk seen for this resource
+                        # Capture description from first chunk seen for this resource;
+                        # subsequent chunks for the same resource are deduplicated here.
                         if not rc.description and parsed.resource_description:
                             rc.description = parsed.resource_description
                         rc.properties.append(parsed)
@@ -410,8 +438,9 @@ def _semantic_search(
                     found_resources.add(res)
 
         print(
-            f"[RAG Tool] Stage 1: {kept + dropped} chunks retrieved, "
-            f"{dropped} dropped (cosine distance > {CHROMA_DISTANCE_THRESHOLD}), "
+            f"[RAG Tool] Stage 1: {kept + dropped + filtered_out} chunks retrieved, "
+            f"{dropped} dropped (distance > {CHROMA_DISTANCE_THRESHOLD}), "
+            f"{filtered_out} filtered (not in template), "
             f"{kept} kept  [mode={_CONTEXT_MODE}]."
         )
 
@@ -435,25 +464,50 @@ def _clean_chunk_raw(content: str) -> str:
 def _graph_schema_lookup(
     resources: set[str],
     chroma_covered: set[str],
+    error_resources: set[str] | None = None,
 ) -> list[str]:
     """Fetch full schema blocks for each resource from Neo4j.
 
+    When error_resources is provided, only those resources are fetched from
+    Neo4j (plus any chroma-covered resources that already have semantic hits).
+    This avoids dumping full schema blocks for every resource in a large
+    template when only 1-2 resources have active validation errors.
+
+    When error_resources is None (no error signal), falls back to fetching
+    all resources — preserving the original behaviour for initial generation.
+
     Args:
-        resources:       All identified AWS resource type names.
+        resources:       All identified AWS resource type names (seed + chroma).
         chroma_covered:  Resources that already have ChromaDB semantic context.
                          For these, the Neo4j YAML example is omitted in
                          compact mode to avoid redundant tokens.
+        error_resources: Resource types extracted from active cfn-lint / deploy
+                         errors. When supplied, Neo4j lookups are scoped to
+                         these plus chroma_covered resources only.
     """
     schema_blocks: list[str] = []
 
     if not resources:
         return schema_blocks
 
-    print(f"[RAG Tool] Stage 2: Querying Neo4j for {len(resources)} resources...")
+    # Determine the target set for Neo4j lookups.
+    # - If error_resources is given: fetch only erroring resources + those
+    #   that have chroma semantic hits (they may have relevant property context).
+    # - Otherwise: fetch all identified resources (original behaviour).
+    if error_resources:
+        target_resources = error_resources | (resources & chroma_covered)
+        print(
+            f"[RAG Tool] Stage 2: Scoped to {len(target_resources)} error/chroma resources "
+            f"(skipping {len(resources) - len(target_resources)} non-erroring resources)."
+        )
+    else:
+        target_resources = resources
+        print(f"[RAG Tool] Stage 2: Querying Neo4j for {len(target_resources)} resources...")
+
     try:
         with _neo4j_driver() as driver:
             seen: set[str] = set()
-            for resource in sorted(resources):
+            for resource in sorted(target_resources):
                 if resource in seen:
                     continue
                 seen.add(resource)
@@ -516,6 +570,7 @@ def _assemble_retrieval_context(
 def execute_hybrid_retrieval(
     retrieval_queries: list[str],
     seed_resources: set[str],
+    error_resources: set[str] | None = None,
 ) -> str:
     """Execute full hybrid retrieval: ChromaDB semantic search → Neo4j schema lookup.
 
@@ -523,19 +578,39 @@ def execute_hybrid_retrieval(
         retrieval_queries: HyDE queries generated upstream by the retriever agent.
         seed_resources:    AWS resource type names pre-extracted from the template
                            annotation by the caller (via extract_resource_types()).
-                           Chroma results may augment this set further.
+                           Used as an allowlist for ChromaDB results — only chunks
+                           belonging to these resource types are kept, preventing
+                           unrelated resources from polluting the context.
+        error_resources:   AWS resource type names extracted from active cfn-lint
+                           or deployment validation errors (e.g. {"AWS::EC2::SecurityGroup",
+                           "AWS::EC2::Instance"}). When provided, Neo4j schema lookups
+                           are scoped to these resources only (plus any chroma-covered
+                           ones), avoiding full-template schema dumps when only a
+                           subset of resources have active errors.
+                           Pass None (default) for initial generation where no prior
+                           error signal exists.
 
     Returns:
         A multi-section context string for the remediator, or a short fallback
         message when no resources could be identified.
     """
-    resource_chunks, chroma_resources = _semantic_search(retrieval_queries)
+    # Stage 1: semantic search scoped to template resources only
+    resource_chunks, chroma_resources = _semantic_search(
+        retrieval_queries,
+        resource_filter=seed_resources,
+    )
+
     identified_resources = seed_resources | chroma_resources
 
     if not identified_resources:
         return "No specific AWS resources identified in template or retrieval context."
 
-    schema_blocks = _graph_schema_lookup(identified_resources, chroma_covered=chroma_resources)
+    # Stage 2: Neo4j lookup scoped to error resources (when provided)
+    schema_blocks = _graph_schema_lookup(
+        identified_resources,
+        chroma_covered=chroma_resources,
+        error_resources=error_resources,
+    )
     if not schema_blocks and not resource_chunks:
         return "Failed to connect to Knowledge Graph."
 
