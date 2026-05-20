@@ -30,7 +30,7 @@ def route_after_validator(state: GraphState) -> str:
         print(f"\n\u2705 All validations passed at iteration {state['current_iteration']}!")
         return "end"
 
-    if state["current_iteration"] >= state["max_iterations"]:
+    if state["current_iteration"] > state["max_iterations"]:
         print(f"\n\u26a0\ufe0f  Max iterations ({state['max_iterations']}) reached. Stopping.")
         return "end"
 
