@@ -28,19 +28,17 @@ import os
 import re
 from collections import defaultdict
 from contextlib import contextmanager
-from functools import lru_cache
 
 import chromadb
 from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
 from neo4j import GraphDatabase
+
+from tools.embedding_provider import get_embeddings
 
 # Re-export for back-compat: existing callers of
 #   from tools.cfn_hybrid_rag import QUERY_GEN_SYSTEM
 # continue to work without modification.
 from prompts.retriever_prompt import QUERY_GEN_SYSTEM  # noqa: F401
-
-EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
 
 NEO4J_URI      = os.getenv("NEO4J_URI",      "bolt://localhost:7687")
 NEO4J_USER     = os.getenv("NEO4J_USER",     "neo4j")
@@ -74,6 +72,10 @@ CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 #   - Tune DOWNWARD (e.g. 0.40) for higher precision (fewer, more exact chunks).
 #   - Tune UPWARD   (e.g. 0.70) for higher recall   (more chunks, more noise).
 #
+# mxbai-embed-large uses cosine similarity internally; distances are
+# comparable in magnitude to all-mpnet-base-v2 so 0.55 is a safe starting
+# point. Tune after rebuilding the index with the new model.
+#
 # Override at runtime: CHROMA_DISTANCE_THRESHOLD=0.50 python main.py
 CHROMA_DISTANCE_THRESHOLD: float = float(
     os.getenv("CHROMA_DISTANCE_THRESHOLD", "0.55")
@@ -81,15 +83,6 @@ CHROMA_DISTANCE_THRESHOLD: float = float(
 
 # Maximum number of optional properties shown per resource in the Neo4j block.
 _MAX_OPTIONAL_PROPS = 10
-
-
-@lru_cache(maxsize=1)
-def _get_global_embeddings() -> HuggingFaceEmbeddings:
-    """Lazy-load the embedding model once and cache it for the process lifetime."""
-    return HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL,
-        model_kwargs={"device": "cpu"},
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -230,7 +223,7 @@ def _semantic_search(
         vectorstore = Chroma(
             client=chroma_client,
             collection_name="cfn_schema_properties",
-            embedding_function=_get_global_embeddings(),
+            embedding_function=get_embeddings(),
         )
 
         seen_prop_keys: set[str] = set()
