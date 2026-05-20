@@ -58,6 +58,10 @@ def format_cfn_lint_errors(errors: list[str]) -> str:
 def format_deploy_errors(deploy_result: dict) -> str:
     """Format a deploy_validation_result dict into a structured error block.
 
+    Each entry in failed_resources uses the canonical FailedResource shape:
+      {"logical_name": str, "status_reason": str}
+    as emitted by deploy_validator.py in every code path.
+
     Renders (in order):
       1. Deployment target (e.g. LOCALSTACK, AWS).
       2. Failed resources with logical ID + status reason.
@@ -78,8 +82,8 @@ def format_deploy_errors(deploy_result: dict) -> str:
     if failed:
         lines.append("**Failed resources:**")
         for fr in failed:
-            name   = fr.get("logical_name") or fr.get("resource") or "unknown"
-            reason = fr.get("status_reason") or fr.get("reason") or "no reason provided"
+            name   = fr.get("logical_name") or "unknown"
+            reason = fr.get("status_reason") or "no reason provided"
             lines.append(f"  - `{name}`: {reason}")
     elif deploy_result.get("error_message"):
         lines.append(f"**Error:** {deploy_result['error_message']}")

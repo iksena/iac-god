@@ -54,7 +54,9 @@ def _extract_error_resources(
 
     Parses logical resource IDs from:
       - cfn-lint error strings: "Resource: <LogicalId>"
-      - deploy failed_resources: [{"logical_name": "..."}] or [{"resource": "..."}]
+      - deploy failed_resources: [{"logical_name": "...", "status_reason": "..."}]
+        Uses only the canonical "logical_name" key (FailedResource shape from
+        state.py) — deploy_validator.py always emits this key in every path.
 
     Then maps each logical ID to its AWS type (e.g. "AWS::EC2::SecurityGroup")
     using the template annotation's resource_id field.  Logical IDs that cannot
@@ -87,10 +89,11 @@ def _extract_error_resources(
         if m:
             error_logical_ids.add(m.group(1).strip())
 
-    # Parse deploy failed_resources for logical IDs
+    # Parse deploy failed_resources for logical IDs.
+    # Uses only the canonical "logical_name" key (FailedResource in state.py).
     if deploy_validation_result and not deploy_validation_result.get("passed"):
         for fr in deploy_validation_result.get("failed_resources", []):
-            logical_id = fr.get("logical_name") or fr.get("resource") or ""
+            logical_id = fr.get("logical_name") or ""
             if logical_id:
                 error_logical_ids.add(logical_id.strip())
 
@@ -194,9 +197,15 @@ def build_retrieval_prompt(
 
 def _call_query_generator(
     user_content: str,
-    history: list[Message],
 ) -> tuple[str, str, dict | None]:
-    """Send the retrieval prompt to the LLM with conversation history.
+    """Send the retrieval prompt to the LLM without conversation history.
+
+    The retriever is intentionally stateless across iterations: all context
+    needed to generate non-redundant queries is already embedded in
+    user_content via the '## Prior Retrieval Queries' section built from
+    remediation_history.  Carrying a rolling LLM conversation history added
+    no value and risked stale prior-iteration reasoning leaking into the
+    current query set.
 
     Returns (model, raw_response, token_usage).
     """
@@ -205,7 +214,7 @@ def _call_query_generator(
         client,
         model,
         system=QUERY_GEN_SYSTEM,
-        messages=history + [{"role": "user", "content": user_content}],
+        messages=[{"role": "user", "content": user_content}],
     )
     return model, raw_response, usage
 
@@ -217,7 +226,9 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
       1. Extract cfn-lint + deploy errors (security stages excluded).
       2. Annotate the template to seed resource types for Neo4j.
       3. Build the retrieval prompt (pure, no I/O).
-      4. Call the LLM (with rolling retriever_history) to generate queries.
+      4. Call the LLM (stateless — no rolling history passed) to generate queries.
+         All deduplication context is supplied via the '## Prior Retrieval Queries'
+         section in the prompt, which is sourced from remediation_history.
       5. Execute ChromaDB (semantic) + Neo4j (graph) hybrid retrieval.
          - ChromaDB results are filtered to seed_resources only.
          - Neo4j lookups are scoped to error_resources when errors are present,
@@ -256,9 +267,11 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         remediation_history=state.get("remediation_history", []),
     )
 
+    # Stateless LLM call — no rolling history passed.
+    # Prior-query deduplication is handled by the prompt itself via
+    # the '## Prior Retrieval Queries' section from remediation_history.
     model, raw_response, usage = _call_query_generator(
         user_content=user_content,
-        history=state.get("retriever_history", []),
     )
     retrieval_queries = parse_query_response(raw_response) or errors[:8]
 
@@ -305,6 +318,8 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         f"{len(retrieval_queries)} queries used."
     )
 
+    # Write back to retriever_history for audit / recorder purposes only.
+    # This history is NOT forwarded to the LLM on subsequent calls.
     return {
         "retriever_context":  cfn_context,
         "retriever_queries":  retrieval_queries,
