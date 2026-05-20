@@ -27,6 +27,9 @@ _COLON_LINE_RE = re.compile(r":\d+(:\d+)?")
 # Defensive fallback for any remaining raw-dict repr (should no longer appear).
 _DICT_LINE_RE  = re.compile(r"'LineNumber'\s*:\s*\d+")
 
+# cfn-lint error format: "[W3687] | line 109 | Resource: WebServerSecurityGroup | ..."
+_CFN_LINT_RESOURCE_RE = re.compile(r"Resource:\s*([\w-]+)", re.IGNORECASE)
+
 
 def _errors_have_line_numbers(errors: list[str]) -> bool:
     """Return True if at least one error string contains a line number reference.
@@ -40,6 +43,70 @@ def _errors_have_line_numbers(errors: list[str]) -> bool:
         if _WORD_LINE_RE.search(e) or _COLON_LINE_RE.search(e) or _DICT_LINE_RE.search(e):
             return True
     return False
+
+
+def _extract_error_resources(
+    errors: list[str],
+    annotation: TemplateAnnotation | None,
+    deploy_validation_result: dict | None,
+) -> set[str]:
+    """Extract AWS resource type names for resources that have active errors.
+
+    Parses logical resource IDs from:
+      - cfn-lint error strings: "Resource: <LogicalId>"
+      - deploy failed_resources: [{"logical_name": "..."}] or [{"resource": "..."}]
+
+    Then maps each logical ID to its AWS type (e.g. "AWS::EC2::SecurityGroup")
+    using the template annotation.  Logical IDs that cannot be resolved are
+    silently skipped so the caller always gets a clean set of type strings.
+
+    Returns an empty set when annotation is unavailable or no logical IDs are
+    found, which causes execute_hybrid_retrieval() to fall back to fetching
+    schema for all seed resources (the original behaviour).
+    """
+    if not annotation:
+        return set()
+
+    # Build a lookup: logical_id -> AWS resource type from annotation
+    logical_to_type: dict[str, str] = {
+        r.logical_id: r.resource_type
+        for r in annotation.resources
+        if r.logical_id and r.resource_type
+    }
+
+    if not logical_to_type:
+        return set()
+
+    error_logical_ids: set[str] = set()
+
+    # Parse cfn-lint error strings for "Resource: <LogicalId>"
+    for error_str in errors:
+        m = _CFN_LINT_RESOURCE_RE.search(error_str)
+        if m:
+            error_logical_ids.add(m.group(1).strip())
+
+    # Parse deploy failed_resources for logical IDs
+    if deploy_validation_result and not deploy_validation_result.get("passed"):
+        for fr in deploy_validation_result.get("failed_resources", []):
+            logical_id = fr.get("logical_name") or fr.get("resource") or ""
+            if logical_id:
+                error_logical_ids.add(logical_id.strip())
+
+    # Map logical IDs to resource types; skip any that aren't in the annotation
+    error_resource_types: set[str] = set()
+    for logical_id in error_logical_ids:
+        resource_type = logical_to_type.get(logical_id)
+        if resource_type:
+            error_resource_types.add(resource_type)
+
+    if error_resource_types:
+        print(
+            f"[Retriever] Error resources scoped to: {sorted(error_resource_types)}"
+        )
+    else:
+        print("[Retriever] No error resources resolved — Neo4j will use full seed set.")
+
+    return error_resource_types
 
 
 def _annotate_safely(
@@ -150,6 +217,9 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
       3. Build the retrieval prompt (pure, no I/O).
       4. Call the LLM (with rolling retriever_history) to generate queries.
       5. Execute ChromaDB (semantic) + Neo4j (graph) hybrid retrieval.
+         - ChromaDB results are filtered to seed_resources only.
+         - Neo4j lookups are scoped to error_resources when errors are present,
+           avoiding full-template schema dumps on repair iterations.
       6. Persist prompt, response, queries, and full schema context to
          retriever_history.txt via the recorder.
       7. Return retriever_context, retriever_queries, and updated
@@ -158,9 +228,11 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     iteration = state["current_iteration"]
     print(f"\n[Retriever] Building CFN context (iteration {iteration})...")
 
+    deploy_validation_result = state.get("deploy_validation_result")
+
     errors = extract_errors(
         state.get("validation_results", []),
-        state.get("deploy_validation_result"),
+        deploy_validation_result,
     )
 
     template_yaml = state.get("cloudformation_template", "")
@@ -201,9 +273,20 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     )
 
     seed_resources = extract_resource_types(annotation)
+
+    # Resolve which resource *types* have active errors so Neo4j lookups can
+    # be scoped to only those resources on repair iterations.  Falls back to
+    # None (full seed set) when no errors can be resolved to types.
+    error_resources = _extract_error_resources(
+        errors=errors,
+        annotation=annotation,
+        deploy_validation_result=deploy_validation_result,
+    ) or None
+
     cfn_context = execute_hybrid_retrieval(
         retrieval_queries=retrieval_queries,
         seed_resources=seed_resources,
+        error_resources=error_resources,
     )
 
     recorder.append_retriever_history_entry(
