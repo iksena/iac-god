@@ -1,0 +1,30 @@
+services:
+  neo4j:
+    image: neo4j:5.20-community
+    container_name: iac-god-neo4j
+    ports:
+      - "7474:7474"   # Neo4j Browser (HTTP)
+      - "7687:7687"   # Bolt protocol (used by scripts)
+    environment:
+      NEO4J_AUTH: neo4j/password
+      NEO4J_PLUGINS: '["apoc"]'        # optional but useful for debugging
+      NEO4J_dbms_memory_heap_max__size: 1G
+    healthcheck:
+      test: ["CMD", "neo4j", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: iac-god-chromadb
+    ports:
+      - "8000:8000"
+    environment:
+      IS_PERSISTENT: "FALSE"           # in-memory only, no volume mount
+      ANONYMIZED_TELEMETRY: "FALSE"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
