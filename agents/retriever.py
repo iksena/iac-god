@@ -57,8 +57,9 @@ def _extract_error_resources(
       - deploy failed_resources: [{"logical_name": "..."}] or [{"resource": "..."}]
 
     Then maps each logical ID to its AWS type (e.g. "AWS::EC2::SecurityGroup")
-    using the template annotation.  Logical IDs that cannot be resolved are
-    silently skipped so the caller always gets a clean set of type strings.
+    using the template annotation's resource_id field.  Logical IDs that cannot
+    be resolved are silently skipped so the caller always gets a clean set of
+    type strings.
 
     Returns an empty set when annotation is unavailable or no logical IDs are
     found, which causes execute_hybrid_retrieval() to fall back to fetching
@@ -67,11 +68,12 @@ def _extract_error_resources(
     if not annotation:
         return set()
 
-    # Build a lookup: logical_id -> AWS resource type from annotation
+    # Build a lookup: resource_id (logical ID) -> AWS resource type
+    # ResourceAnnotation uses resource_id for the logical name, not logical_id.
     logical_to_type: dict[str, str] = {
-        r.logical_id: r.resource_type
+        r.resource_id: r.resource_type
         for r in annotation.resources
-        if r.logical_id and r.resource_type
+        if r.resource_id and r.resource_type
     }
 
     if not logical_to_type:
