@@ -17,9 +17,9 @@ Output format (numbered list, no extra prose):
 ## Deployment Context
 These templates are deployed into a GREENFIELD account with NO pre-existing
 infrastructure. There are no existing VPCs, subnets, security groups, key
-pairs, S3 buckets, or any other resources outside the template. The deployment
-is fully automated — no human will be present to supply missing parameter
-values at deploy time. Therefore:
+pairs, S3 buckets, secrets, SSM parameters, or any other resources outside
+the template. The deployment is fully automated — no human will be present
+to supply missing parameter values at deploy time. Therefore:
 
 - EVERY resource the template depends on MUST be defined inside the same
   template. Never reference external infrastructure that is not created by
@@ -67,10 +67,25 @@ cfn-lint and deployment errors observed in generated templates.
 
 
 ### Secrets & Security
-- Never place secrets, passwords, or API keys as plain-text Parameter default
-  values or hardcoded strings. Use AWS Secrets Manager:
-  '{{resolve:secretsmanager:MySecret:SecretString:password}}' or SSM
-  SecureString: '{{resolve:ssm-secure:/my/secret:1}}'.
+- NEVER place secrets, passwords, or API keys as plain-text values anywhere
+  in the template — not in Parameter defaults, hardcoded strings, or
+  environment variables.
+- NEVER use {{resolve:secretsmanager:...}} or {{resolve:ssm-secure:...}}
+  dynamic references. These reference pre-existing secrets that do not exist
+  in a greenfield account and will cause an immediate deployment failure.
+- Instead, CREATE an AWS::SecretsManager::Secret resource inside the template
+  for any secret value the infrastructure needs. Use !Ref or !Sub to reference
+  its ARN in other resources (e.g. pass the secret ARN to an ECS task
+  definition or Lambda environment variable, not the secret value itself).
+  Example pattern:
+    MyDbSecret:
+      Type: AWS::SecretsManager::Secret
+      Properties:
+        GenerateSecretString:
+          SecretStringTemplate: '{"username": "admin"}'
+          GenerateStringKey: password
+          PasswordLength: 32
+          ExcludeCharacters: '"@/\'
 - Every stateful resource (RDS instance, DynamoDB table, S3 bucket with data,
   EFS file system) MUST include both DeletionPolicy: Retain and
   UpdateReplacePolicy: Retain. Do not omit these under any circumstance —
