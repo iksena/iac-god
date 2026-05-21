@@ -98,6 +98,10 @@ def build_vector_db():
             required    = prop_details.get("Required", False)
             update_type = prop_details.get("UpdateType", "Unknown")
             doc_url     = prop_details.get("Documentation", "")
+            # Description is now populated for properties that have a matching
+            # HTML doc section (merged by 03_parse_and_merge.py).  Including it
+            # in the embedded text significantly improves semantic recall for
+            # complex/nested property queries (e.g. RetentionProperties, Schema).
             description = prop_details.get("Description", "")
 
             text_content = (
@@ -108,8 +112,8 @@ def build_vector_db():
                 f"Type: {prop_type}\n"
                 f"Required: {required}\n"
                 f"Update Type: {update_type}\n"
-                f"Description: {description}\n"
-                f"Documentation: {doc_url}\n"
+                + (f"Description: {description}\n" if description else "")
+                + f"Documentation: {doc_url}\n"
             )
 
             documents.append(Document(
