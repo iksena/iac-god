@@ -391,6 +391,8 @@ if __name__ == "__main__":
     #         'benchmark_runs/20260515_010830 o3mini deploy/20260517_200045 o3mini deploy/results.csv',
     #         'benchmark_runs/20260515_010830 o3mini deploy/20260519_234526 o3mini deploy/results.csv',
     #         'benchmark_runs/20260515_010830 o3mini deploy/20260520_003217 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260520_183435 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260520_225840 o3mini deploy/results.csv',
     #     ], 
     #     merged_csv_path='./benchmark_runs/20260515_010830 o3mini deploy/results_merged.csv',
     #     jsonl_paths=[
@@ -405,6 +407,8 @@ if __name__ == "__main__":
     #         'benchmark_runs/20260515_010830 o3mini deploy/20260517_200045 o3mini deploy/results.jsonl',
     #         'benchmark_runs/20260515_010830 o3mini deploy/20260519_234526 o3mini deploy/results.jsonl',
     #         'benchmark_runs/20260515_010830 o3mini deploy/20260520_003217 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260520_183435 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260520_225840 o3mini deploy/results.jsonl',
     #     ],
     #     merged_jsonl_path='./benchmark_runs/20260515_010830 o3mini deploy/results_merged.jsonl'
     # )
