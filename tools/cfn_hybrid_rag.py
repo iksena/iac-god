@@ -240,37 +240,64 @@ def format_prompt_from_neo4j_result(
 ) -> str:
     """Format Neo4j schema data into a concise single-block prompt section.
 
+    Returns an empty string (rather than an error/stub block) when:
+      - The resource was not found in the graph (error key present), or
+      - The resource node exists but has no properties, nested types, or
+        examples — indicating a stale or partially-indexed stub. A ⚠ warning
+        is printed to stderr in this case so gaps are visible in logs.
+
     Args:
         resource_data:   Dict returned by query_knowledge_graph().
         include_example: When False the YAML example block is omitted.
                          Callers set this to False when ChromaDB already
                          provided semantic context for this resource,
-                         avoiding ~50–80 lines of redundant YAML skeleton.
+                         avoiding ~50-80 lines of redundant YAML skeleton.
     """
     if "error" in resource_data:
-        return f"# {resource_data['error']}"
+        # Not found in graph — return empty so callers skip silently.
+        print(f"[RAG Tool] ⚠ Neo4j: {resource_data['error']}")
+        return ""
+
+    req    = resource_data.get("required_properties") or []
+    opt    = resource_data.get("optional_properties") or []
+    nested = resource_data.get("nested_types") or []
+
+    # Stub node: exists in graph but has no schema data attached.
+    # This happens when the knowledge graph was built from an incomplete
+    # scrape run and the resource was never fully populated in Neo4j.
+    # Emit a warning and skip — prevents 'Required: None(None)' noise.
+    if not req and not opt and not nested:
+        print(
+            f"[RAG Tool] ⚠ {resource_data['name']}: node exists in Neo4j but has "
+            f"no properties/nested types. Index may be stale — rerun 03→05 pipeline."
+        )
+        return ""
 
     lines = [f"### {resource_data['name']}"]
 
-    req = resource_data.get("required_properties") or []
-    opt = resource_data.get("optional_properties") or []
+    if resource_data.get("description"):
+        desc = _DOC_LINK_RE.sub("", resource_data["description"]).strip()
+        if desc:
+            lines.append(f"> {desc}")
+
+    def _fmt_prop(p: dict) -> str:
+        """Render a single property entry with optional inline description."""
+        base = f"{p['name']}({p['type']})"
+        desc = (p.get("description") or "").strip()
+        return f"{base} — {desc}" if desc else base
 
     if req:
-        lines.append("Required: " + ", ".join(
-            f"{p['name']}({p['type']})" for p in req
-        ))
+        lines.append("Required: " + ", ".join(_fmt_prop(p) for p in req))
     if opt:
         shown = opt[:_MAX_OPTIONAL_PROPS]
-        lines.append("Optional: " + ", ".join(
-            f"{p['name']}({p['type']})" for p in shown
-        ))
+        lines.append("Optional: " + ", ".join(_fmt_prop(p) for p in shown))
         if len(opt) > _MAX_OPTIONAL_PROPS:
             lines.append(f"  ... and {len(opt) - _MAX_OPTIONAL_PROPS} more optional properties")
 
-    if resource_data.get("nested_types"):
+    if nested:
         nt_list = ", ".join(
             f"{nt['name']}({'req' if nt['required'] else 'opt'})"
-            for nt in resource_data["nested_types"]
+            for nt in nested
         )
         lines.append(f"NestedTypes: {nt_list}")
 
@@ -283,18 +310,31 @@ def format_prompt_from_neo4j_result(
 
 
 def query_knowledge_graph(driver, resource_name: str) -> dict:
-    """Execute the Cypher traversal to pull the schema structure for a resource."""
+    """Execute the Cypher traversal to pull the schema structure for a resource.
+
+    Property descriptions (populated by 03_parse_and_merge.py from HTML docs)
+    are now included in the collect() projections so they flow through to the
+    prompt renderer in format_prompt_from_neo4j_result().
+    """
     CYPHER_QUERY = """
         MATCH (r:Resource {name: $resource_name})
 
         OPTIONAL MATCH (r)-[:HAS_PROPERTY]->(prop:Property)
         WHERE prop.required = true
-        WITH r, collect(DISTINCT {name: prop.name, type: prop.type}) AS required_properties
+        WITH r, collect(DISTINCT {
+            name: prop.name,
+            type: prop.type,
+            description: prop.description
+        }) AS required_properties
 
         OPTIONAL MATCH (r)-[:HAS_PROPERTY]->(opt_prop:Property)
         WHERE opt_prop.required = false
         WITH r, required_properties,
-             collect(DISTINCT {name: opt_prop.name, type: opt_prop.type}) AS optional_properties
+             collect(DISTINCT {
+                 name: opt_prop.name,
+                 type: opt_prop.type,
+                 description: opt_prop.description
+             }) AS optional_properties
 
         OPTIONAL MATCH (r)-[:HAS_NESTED_TYPE]->(nt:NestedType)
         WITH r, required_properties, optional_properties,
@@ -512,15 +552,14 @@ def _graph_schema_lookup(
                     continue
                 seen.add(resource)
                 res_data = query_knowledge_graph(driver, resource)
-                if "error" not in res_data:
-                    # Omit the YAML example when compact mode is active AND
-                    # ChromaDB already returned semantic hits for this resource.
-                    include_ex = not (
-                        _CONTEXT_MODE == "compact" and resource in chroma_covered
-                    )
-                    schema_blocks.append(
-                        format_prompt_from_neo4j_result(res_data, include_example=include_ex)
-                    )
+                # format_prompt_from_neo4j_result() returns "" for error/stub
+                # nodes — skip empty strings to keep the context clean.
+                include_ex = not (
+                    _CONTEXT_MODE == "compact" and resource in chroma_covered
+                )
+                block = format_prompt_from_neo4j_result(res_data, include_example=include_ex)
+                if block:
+                    schema_blocks.append(block)
     except Exception as exc:
         print(f"[RAG Tool] Warning: Neo4j retrieval failed. {exc}")
 
