@@ -30,6 +30,13 @@ You will be given:
    error messages to identify which Resource types and property names are
    implicated.
 
+## Deployment Context
+These templates target a GREENFIELD account with NO pre-existing infrastructure.
+There are no existing VPCs, subnets, security groups, key pairs, secrets, SSM
+parameters, AMIs, or external stacks. Every retrieval query you generate MUST
+lead toward self-contained fixes — creating missing resources inside the
+template, not referencing external ones.
+
 Rules for generating queries:
 - Each query must name a specific AWS resource type AND a property or concept,
   e.g. "AWS::RDS::DBInstance StorageEncrypted required value".
@@ -45,7 +52,7 @@ Rules for generating queries:
 
 Deployment errors require a different retrieval strategy than cfn-lint schema
 errors. Before generating queries for any deployment failure, classify the
-error into one of the four categories below, then apply only the retrieval
+error into one of the five categories below, then apply only the retrieval
 strategy for that category.
 
 **Category 1 — Parameter validation failure**
@@ -57,17 +64,24 @@ strategy for that category.
               AWS::EC2::Subnet::Id, AWS::EC2::Image::Id, etc.) with a
               hardcoded Default: value that does not exist in the target
               account, OR the caller did not supply the parameter.
+              In a GREENFIELD deployment the correct fix is NEVER to supply
+              a different value — it is to replace the Parameter entirely
+              with a resource defined inside the same template.
   Retrieval strategy:
-    - Generate queries about CloudFormation Parameter type semantics and
-      account-agnostic patterns, NOT about the resource that uses the
-      parameter (its schema is irrelevant to this fix).
+    - Generate queries about how to CREATE the missing resource type inside
+      CloudFormation and reference it with !Ref or !GetAtt.
     - Useful query targets:
-        "CloudFormation parameter AWS-specific type account-agnostic default"
-        "CloudFormation parameter SSM dynamic reference resolve runtime value"
-        "CloudFormation parameter NoEcho AllowedValues constraints"
-  Queries to AVOID: schema queries for resources that merely reference the
-    invalid parameter (e.g. AWS::EC2::Instance KeyName) — their schema is
-    correct, the problem is the parameter value.
+        "AWS::EC2::VPC required properties CidrBlock resource definition"
+        "AWS::EC2::Subnet VpcId Ref CloudFormation inline resource"
+        "AWS::EC2::KeyPair resource type CloudFormation create"
+  Queries to AVOID:
+    - SSM dynamic references ({{resolve:ssm:...}}) — SSM parameters do not
+      exist in a greenfield account.
+    - Parameter default value patterns — there is no safe default for
+      account-specific resource IDs.
+    - Schema queries for resources that merely reference the invalid parameter
+      (e.g. AWS::EC2::Instance KeyName) — their schema is correct, the
+      problem is the missing resource.
 
 **Category 2 — Resource creation / update failure**
   Signal phrases: "CREATE_FAILED", "UPDATE_FAILED" with a specific resource
@@ -94,15 +108,37 @@ strategy for that category.
     - Also query for the resource type that triggered the AccessDenied if known.
 
 **Category 4 — Dependency / reference failure**
-  Signal phrases: "does not exist", "No export named", "circular dependency",
+  Signal phrases: "does not exist", "circular dependency",
                   "resource X is in a failed state".
-  Root cause: A Ref, GetAtt, or ImportValue points to a resource or cross-stack
-              export that does not exist, or a DependsOn is missing/incorrect.
+  Root cause: A Ref or GetAtt points to a resource that does not exist in
+              THIS template, or a DependsOn is missing/incorrect.
+              NOTE: "No export named" in a greenfield deployment means a
+              cross-stack ImportValue was used — this is not allowed. The
+              resource must be defined in the same template.
   Retrieval strategy:
-    - Generate queries about DependsOn ordering, Ref and GetAtt resolution, or
-      cross-stack export/import patterns for the resource types involved.
+    - Generate queries about DependsOn ordering and Ref/GetAtt resolution
+      for the resource types involved.
+    - Do NOT generate queries about cross-stack ImportValue/export patterns —
+      all dependencies must be self-contained in a single template.
     - Example: "CloudFormation DependsOn resource creation order Ref GetAtt"
-    - Example: "CloudFormation cross-stack ImportValue export output pattern"
+
+**Category 5 — Greenfield missing dependency**
+  Signal phrases: "vpc-xxxxxxxx does not exist", "subnet-xxxxxxxx not found",
+                  "sg-xxxxxxxx does not exist", "ami-xxxxxxxx does not exist",
+                  "key pair does not exist", any fabricated ID literal
+                  (vpc-*, subnet-*, sg-*, ami-*, account ID digits) appearing
+                  in a deployment error.
+  Root cause: The template hardcoded or defaulted an account-specific resource
+              ID that does not exist in this greenfield account. The fix is to
+              CREATE the referenced resource as a CloudFormation resource in
+              the same template and replace the hardcoded value with !Ref or
+              !GetAtt.
+  Retrieval strategy:
+    - Generate queries about the CloudFormation resource type that owns the
+      missing ID, its required properties, and how to reference it inline.
+    - Example: "AWS::EC2::VPC resource type required properties CidrBlock"
+    - Example: "AWS::EC2::InternetGateway VPC attachment VPCGatewayAttachment"
+    - Example: "AWS::EC2::SecurityGroup VpcId required properties inline"
 
 Output format — respond with ONLY a JSON object, no prose, no markdown fence:
 {
