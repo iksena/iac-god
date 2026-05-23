@@ -1,5 +1,7 @@
 import os
 import json
+import shutil
+import time
 import pandas as pd
 
 
@@ -257,13 +259,98 @@ def merge_results(csv_paths, merged_csv_path, jsonl_paths=None, merged_jsonl_pat
                             outfile.write(line)
             print(f"Merged {len(valid_jsonls)} JSONLs into {merged_jsonl_path}")
 
+
+def move_run_folders_from_csv(
+    input_csv="results_merged.csv",
+    runs_dir="runs",
+    target_subfolder_name="moved_runs",
+    run_id_col="run_id",
+    dry_run=True,
+):
+    """Move folders under ``runs_dir`` whose folder name exactly matches any
+    value in the ``run_id_col`` column of ``input_csv`` into a single
+    subfolder named ``target_subfolder_name``.
+
+    Parameters:
+    - input_csv: path to CSV that contains a column with run IDs.
+    - runs_dir: base directory to search for run folders (searched recursively).
+    - target_subfolder_name: name of the subfolder inside runs_dir to move matches into.
+    - run_id_col: column name in the CSV containing run IDs.
+    - dry_run: if True, only print planned moves and do not perform them.
+
+    Returns a list of (src_path, dest_path) for folders that would be / were moved.
+    """
+    if not os.path.exists(input_csv):
+        raise FileNotFoundError(f"Input CSV not found: {input_csv}")
+
+    df = pd.read_csv(input_csv, dtype=str)
+    if run_id_col not in df.columns:
+        raise ValueError(f"Column '{run_id_col}' not found in {input_csv}")
+
+    run_ids = set(df[run_id_col].dropna().astype(str).str.strip())
+    if not run_ids:
+        return []
+
+    if not os.path.isdir(runs_dir):
+        raise FileNotFoundError(f"Runs directory not found: {runs_dir}")
+
+    target_dir = os.path.join(runs_dir, target_subfolder_name)
+    os.makedirs(target_dir, exist_ok=True)
+
+    moved = []
+
+    # Walk the runs directory tree looking for directories whose basename matches a run_id
+    for root, dirs, files in os.walk(runs_dir):
+        # Skip descending into the target folder itself
+        if os.path.abspath(root).startswith(os.path.abspath(target_dir)):
+            continue
+
+        # iterate over a copy because we may modify dirs in-place
+        for d in list(dirs):
+            if d in run_ids:
+                src = os.path.join(root, d)
+                dest = os.path.join(target_dir, d)
+
+                # If already in target directory, skip
+                if os.path.abspath(src) == os.path.abspath(dest):
+                    dirs.remove(d)
+                    continue
+
+                # Avoid overwriting an existing folder in the target
+                if os.path.exists(dest):
+                    dest = dest + f".dup_{int(time.time())}"
+
+                if dry_run:
+                    print(f"[DRY RUN] Would move: '{src}' -> '{dest}'")
+                else:
+                    shutil.move(src, dest)
+                    print(f"Moved: '{src}' -> '{dest}'")
+
+                moved.append((src, dest))
+
+                # Prevent os.walk from descending into the moved directory
+                try:
+                    dirs.remove(d)
+                except ValueError:
+                    pass
+
+    return moved
+
 if __name__ == "__main__":
-    # You can change input_csv, base_dir, and output_csv as needed
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/20260515_010830 o3mini deploy/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='O3mini_deployability_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+
     merge_results_with_reports(
-        input_csv="./benchmark_runs/20260427_163601 Grok Hybrid 15-Itr 0-29/results_merged.csv", 
-        base_dir="runs/", 
-        output_csv="./benchmark_runs/20260427_163601 Grok Hybrid 15-Itr 0-29/grok_hybrid_15_all_results_agg.csv"
+        input_csv="benchmark_runs/20260515_010830 o3mini deploy/results_merged.csv", 
+        base_dir="runs/O3mini_deployability_runs", 
+        output_csv="benchmark_runs/20260515_010830 o3mini deploy/O3mini_deployability.csv"
     )
+
     # merge_results(
     #     csv_paths=[
     #         './benchmark_runs/20260508_013226 Retriever + Security/results.csv', 
@@ -290,6 +377,42 @@ if __name__ == "__main__":
     #     ],
     #     merged_jsonl_path='./benchmark_runs/20260508_013226 Retriever + Security/results_merged.jsonl'
     # )
+
+    # merge_results(
+    #     csv_paths=[
+    #         'benchmark_runs/20260515_010830 o3mini deploy/results.csv', 
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260515_115058 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260515_170603 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260515_212014 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260516_004211 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260516_130833 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260516_230459 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260517_140710 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260517_200045 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260519_234526 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260520_003217 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260520_183435 o3mini deploy/results.csv',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260520_225840 o3mini deploy/results.csv',
+    #     ], 
+    #     merged_csv_path='./benchmark_runs/20260515_010830 o3mini deploy/results_merged.csv',
+    #     jsonl_paths=[
+    #         'benchmark_runs/20260515_010830 o3mini deploy/results.jsonl', 
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260515_115058 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260515_170603 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260515_212014 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260516_004211 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260516_130833 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260516_230459 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260517_140710 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260517_200045 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260519_234526 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260520_003217 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260520_183435 o3mini deploy/results.jsonl',
+    #         'benchmark_runs/20260515_010830 o3mini deploy/20260520_225840 o3mini deploy/results.jsonl',
+    #     ],
+    #     merged_jsonl_path='./benchmark_runs/20260515_010830 o3mini deploy/results_merged.jsonl'
+    # )
+
     # merge_results(
     #     csv_paths=[
     #         './benchmark_runs/20260430_025759 RAG Tool/results.csv', 

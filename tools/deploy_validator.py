@@ -1,4 +1,4 @@
-# tools/deploy_validator.py
+import re
 import time
 import uuid
 import boto3
@@ -190,6 +190,10 @@ def _wait_for_stack_deletion(cfn_client, stack_id: str, stack_name: str, timeout
     """
     Block until the stack reaches DELETE_COMPLETE or the timeout elapses.
     Critical for LocalStack where resource cleanup is asynchronous.
+
+    On timeout, attempts a force-delete (RetainResources=[]) for stacks stuck
+    in DELETE_FAILED, then logs the final status so the caller is aware of any
+    surviving resources that may consume quota on subsequent runs.
     """
     start = time.time()
     while time.time() - start < timeout:
@@ -208,7 +212,133 @@ def _wait_for_stack_deletion(cfn_client, stack_id: str, stack_name: str, timeout
                 return
             raise
         time.sleep(3)
+
+    # Change 3 — Force-delete on stack deletion timeout
     print(f"[Deploy] ⚠️  Stack deletion timed out after {timeout}s")
+    try:
+        current_status = cfn_client.describe_stacks(StackName=stack_id)["Stacks"][0]["StackStatus"]
+        print(f"[Deploy] Stack '{stack_name}' left in status: {current_status}")
+        if current_status == "DELETE_FAILED":
+            cfn_client.delete_stack(StackName=stack_id, RetainResources=[])
+            print(f"[Deploy] Issued force-delete for '{stack_name}'")
+    except ClientError as e:
+        if "does not exist" in str(e):
+            return
+        print(f"[Deploy] Could not force-delete '{stack_name}': {e}")
+
+
+# ---------------------------------------------------------------------------
+# VPC quota pre-flight (Change 2)
+# ---------------------------------------------------------------------------
+
+def _delete_all_non_default_vpcs(deploy_config: DeployConfig) -> None:
+    """
+    Delete all non-default VPCs in the target region before deployment.
+
+    Each VPC's dependent resources (subnets, internet gateways, route table
+    associations, security groups) are detached/deleted first so the VPC
+    itself can be removed.  The default VPC is always preserved.
+
+    Only runs against real AWS (not LocalStack).
+    """
+    if deploy_config.target != DeployTarget.AWS:
+        return
+
+    session = boto3.Session(profile_name=deploy_config.aws_profile)
+    ec2 = session.client("ec2", region_name=deploy_config.aws_region)
+
+    try:
+        vpcs = ec2.describe_vpcs()["Vpcs"]
+    except Exception as e:
+        print(f"[Deploy] VPC pre-flight: could not list VPCs: {e}")
+        return
+
+    non_default = [v for v in vpcs if not v.get("IsDefault", False)]
+    if not non_default:
+        return
+
+    print(f"[Deploy] VPC pre-flight: deleting {len(non_default)} non-default VPC(s) to free quota...")
+
+    for vpc in non_default:
+        vpc_id = vpc["VpcId"]
+        try:
+            # Detach and delete internet gateways
+            igws = ec2.describe_internet_gateways(
+                Filters=[{"Name": "attachment.vpc-id", "Values": [vpc_id]}]
+            )["InternetGateways"]
+            for igw in igws:
+                igw_id = igw["InternetGatewayId"]
+                ec2.detach_internet_gateway(InternetGatewayId=igw_id, VpcId=vpc_id)
+                ec2.delete_internet_gateway(InternetGatewayId=igw_id)
+
+            # Delete subnets
+            subnets = ec2.describe_subnets(
+                Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+            )["Subnets"]
+            for subnet in subnets:
+                ec2.delete_subnet(SubnetId=subnet["SubnetId"])
+
+            # Delete non-main route tables
+            rts = ec2.describe_route_tables(
+                Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+            )["RouteTables"]
+            for rt in rts:
+                is_main = any(
+                    assoc.get("Main") for assoc in rt.get("Associations", [])
+                )
+                if not is_main:
+                    ec2.delete_route_table(RouteTableId=rt["RouteTableId"])
+
+            # Delete non-default security groups
+            sgs = ec2.describe_security_groups(
+                Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
+            )["SecurityGroups"]
+            for sg in sgs:
+                if sg["GroupName"] != "default":
+                    ec2.delete_security_group(GroupId=sg["GroupId"])
+
+            # Delete the VPC itself
+            ec2.delete_vpc(VpcId=vpc_id)
+            print(f"[Deploy] VPC pre-flight: deleted {vpc_id} ✓")
+
+        except Exception as e:
+            print(f"[Deploy] VPC pre-flight: could not fully delete {vpc_id}: {e}")
+
+
+def _check_vpc_quota(deploy_config: DeployConfig) -> str | None:
+    """
+    Return an error string if the account is still at VPC quota after the
+    cleanup pass, else None.  Queries the Service Quotas API for the actual
+    limit so the check is accurate even after quota increase requests.
+    """
+    if deploy_config.target != DeployTarget.AWS:
+        return None
+
+    session = boto3.Session(profile_name=deploy_config.aws_profile)
+    ec2 = session.client("ec2", region_name=deploy_config.aws_region)
+
+    try:
+        vpcs = ec2.describe_vpcs()["Vpcs"]
+        quota = 5  # safe default
+        try:
+            sq = session.client("service-quotas", region_name=deploy_config.aws_region)
+            quota = int(
+                sq.get_service_quota(
+                    ServiceCode="vpc", QuotaCode="L-F678F1CE"
+                )["Quota"]["Value"]
+            )
+        except Exception:
+            pass  # fall back to default quota of 5
+
+        if len(vpcs) >= quota:
+            return (
+                f"VPC_QUOTA_EXHAUSTED: {len(vpcs)}/{quota} VPCs in use in "
+                f"{deploy_config.aws_region} — free VPC quota before deploying"
+            )
+    except Exception:
+        pass  # fail open; let CloudFormation surface the error naturally
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +404,21 @@ def _drain_stack_events(
 
 
 # ---------------------------------------------------------------------------
+# Custom resource type helper (Change 1)
+# ---------------------------------------------------------------------------
+
+def _get_resource_type(cfn_client, stack_id: str, logical_id: str) -> str:
+    """Return the CloudFormation resource type for a logical ID, or '' on error."""
+    try:
+        resp = cfn_client.describe_stack_resource(
+            StackName=stack_id, LogicalResourceId=logical_id
+        )
+        return resp["StackResourceDetail"].get("ResourceType", "")
+    except Exception:
+        return ""
+
+
+# ---------------------------------------------------------------------------
 # Main deploy validator
 # ---------------------------------------------------------------------------
 
@@ -287,7 +432,8 @@ def validate_deployment(
     Greenfield guarantee:
       - LocalStack: HTTP state reset + explicit deletion of any surviving
         iac-god-eval-* stacks via the CloudFormation API.
-      - AWS: deletion of any surviving iac-god-eval-* stacks.
+      - AWS: deletion of any surviving iac-god-eval-* stacks, then deletion
+        of all non-default VPCs to free quota (Change 2).
 
     Error messages always identify the responsible resource(s) by logical ID
     so the remediator prompt contains actionable context.
@@ -310,6 +456,23 @@ def validate_deployment(
 
     # Greenfield reset (LocalStack: HTTP reset + stack sweep; AWS: stack sweep)
     _reset_target_state(deploy_config)
+
+    # Change 2 — VPC quota pre-flight: delete all non-default VPCs then check
+    _delete_all_non_default_vpcs(deploy_config)
+    vpc_error = _check_vpc_quota(deploy_config)
+    if vpc_error:
+        deploy_logs.append(vpc_error)
+        failed = [{"logical_name": "VPC", "status_reason": vpc_error}]
+        return DeployValidationResult(
+            target=target_name,
+            passed=False,
+            stack_id=None,
+            completed_resources=[],
+            failed_resources=failed,
+            error_message=_format_failed_resources(failed),
+            duration_seconds=round(time.time() - start_time, 2),
+            deployment_logs=deploy_logs,
+        )
 
     cfn_client = _build_cfn_client(deploy_config)
     stack_name = f"iac-god-eval-{uuid.uuid4().hex[:8]}"
@@ -374,6 +537,12 @@ def validate_deployment(
         completed_resources: list[str] = []
         deadline = time.time() + deploy_config.stack_creation_timeout
 
+        # Change 1 — Custom resource stall detection state
+        STALL_TIMEOUT = 120  # seconds of event silence before declaring stall
+        last_event_time = time.time()
+        last_active_resource: str | None = None
+        prev_seen_count = 0
+
         # ------------------------------------------------------------------
         # Poll loop
         # ------------------------------------------------------------------
@@ -382,6 +551,18 @@ def validate_deployment(
                 cfn_client, stack_id, seen_events, last_timestamp,
                 failed_resources, completed_resources, deploy_logs,
             )
+
+            # Track last active resource for stall detection and timeout enrichment
+            if len(seen_events) > prev_seen_count:
+                last_event_time = time.time()
+                prev_seen_count = len(seen_events)
+                # Derive last active resource from the most recent deploy_log entry
+                if deploy_logs:
+                    last_log = deploy_logs[-1]
+                    # Format: "LogicalId: STATUS - reason"
+                    colon_idx = last_log.find(":")
+                    if colon_idx > 0:
+                        last_active_resource = last_log[:colon_idx].strip()
 
             stack = cfn_client.describe_stacks(StackName=stack_id)["Stacks"][0]
             stack_status = stack["StackStatus"]
@@ -440,22 +621,116 @@ def validate_deployment(
                     deployment_logs=deploy_logs,
                 )
 
+            # Change 1 — Custom resource stall detection
+            stall_elapsed = time.time() - last_event_time
+            if (
+                last_active_resource
+                and stall_elapsed > STALL_TIMEOUT
+                and stack_status == "CREATE_IN_PROGRESS"
+            ):
+                resource_type = _get_resource_type(cfn_client, stack_id, last_active_resource)
+                is_custom = bool(
+                    re.match(r"^Custom::|^AWS::CloudFormation::CustomResource$", resource_type)
+                )
+                stall_reason = (
+                    f"Stalled in CREATE_IN_PROGRESS for >{int(stall_elapsed)}s"
+                    + (
+                        " — Lambda-backed custom resource likely failed to send cfn-response "
+                        "(add ServiceTimeout, ensure Lambda can reach the CloudFormation "
+                        "response URL, or replace with a native CloudFormation resource)"
+                        if is_custom
+                        else " — resource has not progressed; possible dependency or quota issue"
+                    )
+                )
+                stall_failed = [{"logical_name": last_active_resource, "status_reason": stall_reason}]
+                stall_msg = _format_failed_resources(stall_failed)
+                deploy_logs.append(f"STALL_DETECTED: {stall_msg}")
+                print(f"[Deploy] ⚠️  Stall detected: {stall_msg}")
+
+                # Change 5 — Cancel in-progress stack on stall/timeout
+                try:
+                    cfn_client.delete_stack(StackName=stack_id)
+                    print(f"[Deploy] Cancellation requested for stalled stack '{stack_name}'")
+                    if deploy_config.target == DeployTarget.AWS:
+                        _wait_for_stack_deletion(
+                            cfn_client, stack_id, stack_name,
+                            deploy_config.stack_deletion_timeout,
+                        )
+                except Exception as e:
+                    print(f"[Deploy] Could not cancel stalled stack: {e}")
+
+                return DeployValidationResult(
+                    target=target_name,
+                    passed=False,
+                    stack_id=stack_id,
+                    completed_resources=completed_resources,
+                    failed_resources=stall_failed,
+                    error_message=stall_msg,
+                    duration_seconds=round(time.time() - start_time, 2),
+                    deployment_logs=deploy_logs,
+                )
+
             time.sleep(2)
 
         # ------------------------------------------------------------------
-        # Timeout
+        # Change 4 — Enrich timeout message with last resource context
+        # Change 5 — Cancel in-progress stack on timeout
         # ------------------------------------------------------------------
+        stall_elapsed = round(time.time() - last_event_time)
+        stall_context = (
+            f" | Last active resource: {last_active_resource} "
+            f"(no new events for {stall_elapsed}s)"
+            if last_active_resource
+            else ""
+        )
         timeout_msg = (
-            f"Stack creation timed out after {deploy_config.stack_creation_timeout}s"
+            f"Stack creation timed out after {deploy_config.stack_creation_timeout}s "
+            f"({round(time.time() - start_time, 2)}s elapsed)"
+            + stall_context
         )
         deploy_logs.append(timeout_msg)
+
+        # Build failed_resources so remediator/retriever/engineer can act on it
+        timeout_failed: list[dict] = list(failed_resources)
+        if last_active_resource and not any(
+            r["logical_name"] == last_active_resource for r in timeout_failed
+        ):
+            resource_type = _get_resource_type(cfn_client, stack_id, last_active_resource)
+            is_custom = bool(
+                re.match(r"^Custom::|^AWS::CloudFormation::CustomResource$", resource_type)
+            )
+            timeout_reason = (
+                f"Stack creation timed out — resource stalled in CREATE_IN_PROGRESS "
+                f"for {stall_elapsed}s"
+                + (
+                    " (custom resource — add ServiceTimeout or replace with native resource)"
+                    if is_custom
+                    else ""
+                )
+            )
+            timeout_failed.append({"logical_name": last_active_resource, "status_reason": timeout_reason})
+
+        print(f"[Deploy] ❌ {timeout_msg}")
+
+        # Cancel the still-running stack to free resources / quota
+        try:
+            cfn_client.delete_stack(StackName=stack_id)
+            print(f"[Deploy] Cancellation requested for timed-out stack '{stack_name}'")
+            if deploy_config.target == DeployTarget.AWS:
+                _wait_for_stack_deletion(
+                    cfn_client, stack_id, stack_name,
+                    deploy_config.stack_deletion_timeout,
+                )
+        except Exception as e:
+            print(f"[Deploy] Could not cancel timed-out stack: {e}")
+
         return DeployValidationResult(
             target=target_name,
             passed=False,
-            stack_id=None,
+            stack_id=stack_id,
             completed_resources=completed_resources,
-            failed_resources=failed_resources,
-            error_message=timeout_msg,
+            failed_resources=timeout_failed,
+            error_message=_format_failed_resources(timeout_failed) if timeout_failed else timeout_msg,
             duration_seconds=round(time.time() - start_time, 2),
             deployment_logs=deploy_logs,
         )

@@ -1596,6 +1596,14 @@
                 "Required": true,
                 "PrimitiveType": "String"
             },
+            "Tags": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-cloudfront-function.html#cfn-cloudfront-function-tags",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "Tag",
+                "DuplicatesAllowed": true
+            },
             "Name": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-cloudfront-function.html#cfn-cloudfront-function-name",
                 "UpdateType": "Immutable",
@@ -5025,12 +5033,6 @@
                 "Required": false,
                 "PrimitiveType": "String"
             },
-            "DatabaseInstallationFilesS3BucketName": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-customdbengineversion.html#cfn-rds-customdbengineversion-databaseinstallationfiless3bucketname",
-                "UpdateType": "Immutable",
-                "Required": false,
-                "PrimitiveType": "String"
-            },
             "Description": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-customdbengineversion.html#cfn-rds-customdbengineversion-description",
                 "UpdateType": "Mutable",
@@ -5049,18 +5051,6 @@
                 "Required": false,
                 "PrimitiveType": "String"
             },
-            "UseAwsProvidedLatestImage": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-customdbengineversion.html#cfn-rds-customdbengineversion-useawsprovidedlatestimage",
-                "UpdateType": "Immutable",
-                "Required": false,
-                "PrimitiveType": "Boolean"
-            },
-            "ImageId": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-customdbengineversion.html#cfn-rds-customdbengineversion-imageid",
-                "UpdateType": "Immutable",
-                "Required": false,
-                "PrimitiveType": "String"
-            },
             "DatabaseInstallationFilesS3Prefix": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-customdbengineversion.html#cfn-rds-customdbengineversion-databaseinstallationfiless3prefix",
                 "UpdateType": "Immutable",
@@ -5069,6 +5059,32 @@
             },
             "Manifest": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-customdbengineversion.html#cfn-rds-customdbengineversion-manifest",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "DatabaseInstallationFiles": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-customdbengineversion.html#cfn-rds-customdbengineversion-databaseinstallationfiles",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "Type": "List",
+                "PrimitiveItemType": "String",
+                "DuplicatesAllowed": true
+            },
+            "DatabaseInstallationFilesS3BucketName": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-customdbengineversion.html#cfn-rds-customdbengineversion-databaseinstallationfiless3bucketname",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "UseAwsProvidedLatestImage": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-customdbengineversion.html#cfn-rds-customdbengineversion-useawsprovidedlatestimage",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "PrimitiveType": "Boolean"
+            },
+            "ImageId": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rds-customdbengineversion.html#cfn-rds-customdbengineversion-imageid",
                 "UpdateType": "Immutable",
                 "Required": false,
                 "PrimitiveType": "String"
@@ -5242,7 +5258,7 @@
             },
             "Tags": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-batch-schedulingpolicy.html#cfn-batch-schedulingpolicy-tags",
-                "UpdateType": "Immutable",
+                "UpdateType": "Mutable",
                 "Required": false,
                 "Type": "Map",
                 "PrimitiveItemType": "String"
@@ -6575,7 +6591,7 @@
             },
             "Regions": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53globalresolver-globalresolver.html#cfn-route53globalresolver-globalresolver-regions",
-                "UpdateType": "Immutable",
+                "UpdateType": "Mutable",
                 "Required": true,
                 "Type": "List",
                 "PrimitiveItemType": "String",
@@ -7150,6 +7166,12 @@
             "UserType": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-userprofile.html#cfn-datazone-userprofile-usertype",
                 "UpdateType": "Immutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "SessionName": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-userprofile.html#cfn-datazone-userprofile-sessionname",
+                "UpdateType": "Mutable",
                 "Required": false,
                 "PrimitiveType": "String"
             },
@@ -9138,6 +9160,12 @@
         "name": "AWS::DevOpsAgent::AgentSpace",
         "description": "TheAWS::DevOpsAgent::AgentSpaceresource specifies an Agent Space for the AWS\n   DevOps Agent Service. To declare this entity in your CloudFormation template, use the following syntax: When you pass the logical ID of this resource to the intrinsicReffunction,Refreturns the AgentSpaceId.",
         "properties": {
+            "Locale": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-devopsagent-agentspace.html#cfn-devopsagent-agentspace-locale",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
             "Description": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-devopsagent-agentspace.html#cfn-devopsagent-agentspace-description",
                 "UpdateType": "Mutable",
@@ -11068,7 +11096,7 @@
         "properties": {
             "ServiceDetails": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-devopsagent-service.html#cfn-devopsagent-service-servicedetails",
-                "UpdateType": "Immutable",
+                "UpdateType": "Mutable",
                 "Required": false,
                 "Type": "ServiceDetails"
             },
@@ -12418,6 +12446,12 @@
                 "UpdateType": "Mutable",
                 "Required": false,
                 "Type": "CaCertificatesBundleSource"
+            },
+            "UseClientCertificateOCSPEndpoint": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-cloudfront-truststore.html#cfn-cloudfront-truststore-useclientcertificateocspendpoint",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "Boolean"
             },
             "Tags": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-cloudfront-truststore.html#cfn-cloudfront-truststore-tags",
@@ -14555,6 +14589,14 @@
                 "Required": false,
                 "Type": "ConnectionPropertiesInput"
             },
+            "Configurations": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-connection.html#cfn-datazone-connection-configurations",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "ConnectionConfiguration",
+                "DuplicatesAllowed": true
+            },
             "AwsLocation": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-connection.html#cfn-datazone-connection-awslocation",
                 "UpdateType": "Mutable",
@@ -15121,6 +15163,33 @@
             "AWSTemplateFormatVersion: 2010-09-09\nDescription: Specifies a Lex V2 Bot integration for an Amazon Connect instance\nResources:\n  IntegrationAssociation:\n    Type: AWS::Connect::IntegrationAssociation\n    Properties:\n      InstanceId: arn:aws:connect:region-name:aws-account-id:instance/instance-id\n      IntegrationType: LEX_BOT\n      IntegrationArn: arn:aws:lex:region-name:aws-account-id:bot-alias/bot-id/alias-id",
             "AWSTemplateFormatVersion: 2010-09-09\nDescription: Specifies a Lambda Function integration for an Amazon Connect instance\nResources:\n  IntegrationAssociation:\n    Type: AWS::Connect::IntegrationAssociation\n    Properties:\n      InstanceId: arn:aws:connect:region-name:aws-account-id:instance/instance-id\n      IntegrationType: LAMBDA_FUNCTION\n      IntegrationArn: arn:aws:lambda:region-name:aws-account-id:function:function-arn"
         ]
+    },
+    "AWS::Chime::AppInstance": {
+        "name": "AWS::Chime::AppInstance",
+        "description": "",
+        "properties": {
+            "Metadata": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-chime-appinstance.html#cfn-chime-appinstance-metadata",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "Tags": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-chime-appinstance.html#cfn-chime-appinstance-tags",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "Tag",
+                "DuplicatesAllowed": true
+            },
+            "Name": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-chime-appinstance.html#cfn-chime-appinstance-name",
+                "UpdateType": "Mutable",
+                "Required": true,
+                "PrimitiveType": "String"
+            }
+        },
+        "examples": []
     },
     "AWS::DataZone::DomainUnit": {
         "name": "AWS::DataZone::DomainUnit",
@@ -16874,6 +16943,14 @@
         "name": "AWS::S3Express::DirectoryBucket",
         "description": "TheAWS::S3Express::DirectoryBucketresource defines an Amazon S3 directory\n         bucket in the same AWS Region where you create the AWS\n         CloudFormation stack. To control how AWS CloudFormation handles the bucket when the stack is\n         deleted, you can set a deletion policy for your bucket. You can choose toretainthe bucket or todeletethe bucket. For\n         more information, seeDeletionPolicy attribute. The following operations are related toAWS::S3Express::DirectoryBucket:",
         "properties": {
+            "InventoryConfigurations": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-s3express-directorybucket.html#cfn-s3express-directorybucket-inventoryconfigurations",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "InventoryConfiguration",
+                "DuplicatesAllowed": false
+            },
             "BucketName": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-s3express-directorybucket.html#cfn-s3express-directorybucket-bucketname",
                 "UpdateType": "Immutable",
@@ -17225,6 +17302,12 @@
                 "Required": false,
                 "PrimitiveType": "String"
             },
+            "WebAuthnFactorConfiguration": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-cognito-userpool.html#cfn-cognito-userpool-webauthnfactorconfiguration",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
             "SmsAuthenticationMessage": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-cognito-userpool.html#cfn-cognito-userpool-smsauthenticationmessage",
                 "UpdateType": "Mutable",
@@ -17396,7 +17479,7 @@
             },
             "Tags": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-sagemaker-domain.html#cfn-sagemaker-domain-tags",
-                "UpdateType": "Immutable",
+                "UpdateType": "Mutable",
                 "Required": false,
                 "Type": "List",
                 "ItemType": "Tag",
@@ -21655,6 +21738,22 @@
                 "Required": false,
                 "Type": "RecordingConfig"
             },
+            "Certificates": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-bedrockagentcore-browsercustom.html#cfn-bedrockagentcore-browsercustom-certificates",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "Certificate",
+                "DuplicatesAllowed": true
+            },
+            "EnterprisePolicies": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-bedrockagentcore-browsercustom.html#cfn-bedrockagentcore-browsercustom-enterprisepolicies",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "BrowserEnterprisePolicy",
+                "DuplicatesAllowed": true
+            },
             "NetworkConfiguration": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-bedrockagentcore-browsercustom.html#cfn-bedrockagentcore-browsercustom-networkconfiguration",
                 "UpdateType": "Immutable",
@@ -21795,6 +21894,12 @@
                 "UpdateType": "Mutable",
                 "Required": false,
                 "PrimitiveType": "Boolean"
+            },
+            "KmsKeyIdentifier": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-neptunegraph-graph.html#cfn-neptunegraph-graph-kmskeyidentifier",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "PrimitiveType": "String"
             },
             "GraphName": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-neptunegraph-graph.html#cfn-neptunegraph-graph-graphname",
@@ -23810,7 +23915,7 @@
         "properties": {
             "TableInput": {
                 "Type": "TableInput",
-                "Required": true,
+                "Required": false,
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-glue-table.html#cfn-glue-table-tableinput",
                 "UpdateType": "Mutable"
             },
@@ -23829,6 +23934,12 @@
             "CatalogId": {
                 "Required": true,
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-glue-table.html#cfn-glue-table-catalogid",
+                "PrimitiveType": "String",
+                "UpdateType": "Immutable"
+            },
+            "Name": {
+                "Required": false,
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-glue-table.html#cfn-glue-table-name",
                 "PrimitiveType": "String",
                 "UpdateType": "Immutable"
             }
@@ -24256,6 +24367,14 @@
         },
         "examples": [
             "Type: AWS::ElasticLoadBalancingV2::ListenerRule\nProperties:\n  Actions: \n    - Action\n  Conditions: \n    - RuleCondition\n  ListenerArn: String\n  Priority: Integer\n  Transforms: \n    - Transform"
+        ]
+    },
+    "AWS::CloudWatch::OTelEnrichment": {
+        "name": "AWS::CloudWatch::OTelEnrichment",
+        "description": "Enables OpenTelemetry (OTel) metric enrichment in Amazon CloudWatch, allowing CloudWatch vended metrics to be available for PromQL querying enriched with AWS resource tags and metadata. This is a singleton resource \u00e2\u0080\u0094 only oneOTelEnrichmentresource can exist per AWS account. The resource has no configurable properties. Creating the resource starts enrichment, and deleting it stops enrichment. Before creating this resource, you must enable resource tags on telemetry for your account. For more information, seeSupported AWS infrastructure metricsin theAmazon CloudWatch User Guide.",
+        "properties": {},
+        "examples": [
+            "Type: AWS::CloudWatch::OTelEnrichment"
         ]
     },
     "AWS::CodeStar::GitHubRepository": {
@@ -26066,6 +26185,45 @@
         "examples": [
             "Type: AWS::SecurityAgent::AgentSpace\nProperties:\n  AwsResources: \n    AWSResources\n  CodeReviewSettings: \n    CodeReviewSettings\n  Description: String\n  IntegratedResources: \n    - IntegratedResource\n  KmsKeyId: String\n  Name: String\n  Tags: \n    - Tag\n  TargetDomainIds: \n    - String"
         ]
+    },
+    "AWS::Chime::AppInstanceBot": {
+        "name": "AWS::Chime::AppInstanceBot",
+        "description": "",
+        "properties": {
+            "Configuration": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-chime-appinstancebot.html#cfn-chime-appinstancebot-configuration",
+                "UpdateType": "Mutable",
+                "Required": true,
+                "Type": "Configuration"
+            },
+            "Metadata": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-chime-appinstancebot.html#cfn-chime-appinstancebot-metadata",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "AppInstanceArn": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-chime-appinstancebot.html#cfn-chime-appinstancebot-appinstancearn",
+                "UpdateType": "Immutable",
+                "Required": true,
+                "PrimitiveType": "String"
+            },
+            "Tags": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-chime-appinstancebot.html#cfn-chime-appinstancebot-tags",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "Tag",
+                "DuplicatesAllowed": true
+            },
+            "Name": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-chime-appinstancebot.html#cfn-chime-appinstancebot-name",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            }
+        },
+        "examples": []
     },
     "AWS::Signer::ProfilePermission": {
         "name": "AWS::Signer::ProfilePermission",
@@ -29500,6 +29658,12 @@
                 "Required": true,
                 "PrimitiveType": "String"
             },
+            "ZookeeperAccess": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-msk-cluster.html#cfn-msk-cluster-zookeeperaccess",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "Type": "ZookeeperAccess"
+            },
             "ClientAuthentication": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-msk-cluster.html#cfn-msk-cluster-clientauthentication",
                 "UpdateType": "Mutable",
@@ -30147,167 +30311,159 @@
         "name": "AWS::ElastiCache::CacheCluster",
         "description": "TheAWS::ElastiCache::CacheClustertype creates an Amazon ElastiCache cache cluster. To declare this entity in your CloudFormation template, use the following syntax: When the logical ID of this resource is provided to theRefintrinsic function,Refreturns the resource name.",
         "properties": {
-            "AZMode": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-azmode",
-                "PrimitiveType": "String",
-                "Required": false,
-                "UpdateType": "Conditional"
-            },
-            "AutoMinorVersionUpgrade": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-autominorversionupgrade",
-                "PrimitiveType": "Boolean",
-                "Required": false,
-                "UpdateType": "Mutable"
-            },
-            "CacheNodeType": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-cachenodetype",
-                "PrimitiveType": "String",
-                "Required": true,
-                "UpdateType": "Mutable"
-            },
-            "CacheParameterGroupName": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-cacheparametergroupname",
-                "PrimitiveType": "String",
-                "Required": false,
-                "UpdateType": "Mutable"
-            },
-            "CacheSecurityGroupNames": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-cachesecuritygroupnames",
-                "DuplicatesAllowed": true,
-                "PrimitiveItemType": "String",
-                "Required": false,
-                "Type": "List",
-                "UpdateType": "Mutable"
-            },
-            "CacheSubnetGroupName": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-cachesubnetgroupname",
-                "PrimitiveType": "String",
-                "Required": false,
-                "UpdateType": "Immutable"
-            },
-            "ClusterName": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-clustername",
-                "PrimitiveType": "String",
-                "Required": false,
-                "UpdateType": "Immutable"
-            },
-            "Engine": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-engine",
-                "PrimitiveType": "String",
-                "Required": true,
-                "UpdateType": "Immutable"
-            },
             "EngineVersion": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-engineversion",
-                "PrimitiveType": "String",
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-engineversion",
+                "UpdateType": "Mutable",
                 "Required": false,
-                "UpdateType": "Mutable"
-            },
-            "IpDiscovery": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-ipdiscovery",
-                "PrimitiveType": "String",
-                "Required": false,
-                "UpdateType": "Mutable"
-            },
-            "LogDeliveryConfigurations": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-logdeliveryconfigurations",
-                "DuplicatesAllowed": false,
-                "ItemType": "LogDeliveryConfigurationRequest",
-                "Required": false,
-                "Type": "List",
-                "UpdateType": "Mutable"
-            },
-            "NetworkType": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-networktype",
-                "PrimitiveType": "String",
-                "Required": false,
-                "UpdateType": "Immutable"
-            },
-            "NotificationTopicArn": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-notificationtopicarn",
-                "PrimitiveType": "String",
-                "Required": false,
-                "UpdateType": "Mutable"
-            },
-            "NumCacheNodes": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-numcachenodes",
-                "PrimitiveType": "Integer",
-                "Required": true,
-                "UpdateType": "Conditional"
-            },
-            "Port": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-port",
-                "PrimitiveType": "Integer",
-                "Required": false,
-                "UpdateType": "Immutable"
-            },
-            "PreferredAvailabilityZone": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-preferredavailabilityzone",
-                "PrimitiveType": "String",
-                "Required": false,
-                "UpdateType": "Conditional"
-            },
-            "PreferredAvailabilityZones": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-preferredavailabilityzones",
-                "DuplicatesAllowed": false,
-                "PrimitiveItemType": "String",
-                "Required": false,
-                "Type": "List",
-                "UpdateType": "Conditional"
-            },
-            "PreferredMaintenanceWindow": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-preferredmaintenancewindow",
-                "PrimitiveType": "String",
-                "Required": false,
-                "UpdateType": "Mutable"
+                "PrimitiveType": "String"
             },
             "SnapshotArns": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-snapshotarns",
-                "DuplicatesAllowed": false,
-                "PrimitiveItemType": "String",
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-snapshotarns",
+                "UpdateType": "Immutable",
                 "Required": false,
                 "Type": "List",
-                "UpdateType": "Immutable"
+                "PrimitiveItemType": "String",
+                "DuplicatesAllowed": false
+            },
+            "CacheSubnetGroupName": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-cachesubnetgroupname",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "Port": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-port",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "PrimitiveType": "Integer"
+            },
+            "CacheParameterGroupName": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-cacheparametergroupname",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "PreferredMaintenanceWindow": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-preferredmaintenancewindow",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "AutoMinorVersionUpgrade": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-autominorversionupgrade",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "Boolean"
+            },
+            "NotificationTopicArn": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-notificationtopicarn",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "NumCacheNodes": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-numcachenodes",
+                "UpdateType": "Mutable",
+                "Required": true,
+                "PrimitiveType": "Integer"
             },
             "SnapshotName": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-snapshotname",
-                "PrimitiveType": "String",
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-snapshotname",
+                "UpdateType": "Immutable",
                 "Required": false,
-                "UpdateType": "Immutable"
+                "PrimitiveType": "String"
             },
-            "SnapshotRetentionLimit": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-snapshotretentionlimit",
-                "PrimitiveType": "Integer",
+            "PreferredAvailabilityZone": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-preferredavailabilityzone",
+                "UpdateType": "Mutable",
                 "Required": false,
-                "UpdateType": "Mutable"
+                "PrimitiveType": "String"
             },
             "SnapshotWindow": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-snapshotwindow",
-                "PrimitiveType": "String",
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-snapshotwindow",
+                "UpdateType": "Mutable",
                 "Required": false,
-                "UpdateType": "Mutable"
+                "PrimitiveType": "String"
             },
-            "Tags": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-tags",
-                "DuplicatesAllowed": true,
-                "ItemType": "Tag",
+            "CacheNodeType": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-cachenodetype",
+                "UpdateType": "Mutable",
+                "Required": true,
+                "PrimitiveType": "String"
+            },
+            "SnapshotRetentionLimit": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-snapshotretentionlimit",
+                "UpdateType": "Mutable",
                 "Required": false,
-                "Type": "List",
-                "UpdateType": "Mutable"
+                "PrimitiveType": "Integer"
             },
             "TransitEncryptionEnabled": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-transitencryptionenabled",
-                "PrimitiveType": "Boolean",
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-transitencryptionenabled",
+                "UpdateType": "Mutable",
                 "Required": false,
-                "UpdateType": "Mutable"
+                "PrimitiveType": "Boolean"
             },
-            "VpcSecurityGroupIds": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-properties-elasticache-cache-cluster.html#cfn-elasticache-cachecluster-vpcsecuritygroupids",
-                "DuplicatesAllowed": true,
-                "PrimitiveItemType": "String",
+            "PreferredAvailabilityZones": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-preferredavailabilityzones",
+                "UpdateType": "Conditional",
                 "Required": false,
                 "Type": "List",
-                "UpdateType": "Mutable"
+                "PrimitiveItemType": "String",
+                "DuplicatesAllowed": true
+            },
+            "VpcSecurityGroupIds": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-vpcsecuritygroupids",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "Type": "List",
+                "PrimitiveItemType": "String",
+                "DuplicatesAllowed": true
+            },
+            "NetworkType": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-networktype",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "IpDiscovery": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-ipdiscovery",
+                "UpdateType": "Conditional",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "ClusterName": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-clustername",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "LogDeliveryConfigurations": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-logdeliveryconfigurations",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "LogDeliveryConfigurationRequest",
+                "DuplicatesAllowed": true
+            },
+            "Engine": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-engine",
+                "UpdateType": "Immutable",
+                "Required": true,
+                "PrimitiveType": "String"
+            },
+            "Tags": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-tags",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "Tag",
+                "DuplicatesAllowed": true
+            },
+            "AZMode": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-cachecluster.html#cfn-elasticache-cachecluster-azmode",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "String"
             }
         },
         "examples": [
@@ -31171,6 +31327,12 @@
                 "PrimitiveType": "String",
                 "UpdateType": "Mutable"
             },
+            "TransitGatewayConfiguration": {
+                "Type": "TransitGatewayConfiguration",
+                "Required": false,
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-clientvpnendpoint.html#cfn-ec2-clientvpnendpoint-transitgatewayconfiguration",
+                "UpdateType": "Immutable"
+            },
             "TransportProtocol": {
                 "Required": false,
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-clientvpnendpoint.html#cfn-ec2-clientvpnendpoint-transportprotocol",
@@ -31636,6 +31798,14 @@
                 "UpdateType": "Mutable",
                 "Required": false,
                 "PrimitiveType": "String"
+            },
+            "IndexedKeys": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-bedrockagentcore-memory.html#cfn-bedrockagentcore-memory-indexedkeys",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "IndexedKey",
+                "DuplicatesAllowed": true
             },
             "EncryptionKeyArn": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-bedrockagentcore-memory.html#cfn-bedrockagentcore-memory-encryptionkeyarn",
@@ -32204,7 +32374,7 @@
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-logs-resourcepolicy.html#cfn-logs-resourcepolicy-policydocument",
                 "UpdateType": "Mutable",
                 "Required": true,
-                "PrimitiveType": "String"
+                "PrimitiveType": "Json"
             }
         },
         "examples": [
@@ -39015,6 +39185,12 @@
                 "UpdateType": "Mutable",
                 "Required": false,
                 "PrimitiveType": "String"
+            },
+            "RemoteAccount": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-interconnect-connection.html#cfn-interconnect-connection-remoteaccount",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "Type": "RemoteAccount"
             },
             "ActivationKey": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-interconnect-connection.html#cfn-interconnect-connection-activationkey",
@@ -47792,14 +47968,6 @@
         "name": "AWS::Route53Resolver::ResolverEndpoint",
         "description": "Creates a Resolver endpoint. There are two types of Resolver endpoints, inbound and outbound: To declare this entity in your CloudFormation template, use the following syntax: When you pass the logical ID of this resource to the intrinsicReffunction,Refreturns theResolverEndpointobject.",
         "properties": {
-            "IpAddresses": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-ipaddresses",
-                "UpdateType": "Mutable",
-                "Required": true,
-                "Type": "List",
-                "ItemType": "IpAddressRequest",
-                "DuplicatesAllowed": true
-            },
             "Protocols": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-protocols",
                 "UpdateType": "Mutable",
@@ -47808,26 +47976,8 @@
                 "PrimitiveItemType": "String",
                 "DuplicatesAllowed": true
             },
-            "TargetNameServerMetricsEnabled": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-targetnameservermetricsenabled",
-                "UpdateType": "Mutable",
-                "Required": false,
-                "PrimitiveType": "Boolean"
-            },
-            "RniEnhancedMetricsEnabled": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-rnienhancedmetricsenabled",
-                "UpdateType": "Mutable",
-                "Required": false,
-                "PrimitiveType": "Boolean"
-            },
             "OutpostArn": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-outpostarn",
-                "UpdateType": "Immutable",
-                "Required": false,
-                "PrimitiveType": "String"
-            },
-            "PreferredInstanceType": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-preferredinstancetype",
                 "UpdateType": "Immutable",
                 "Required": false,
                 "PrimitiveType": "String"
@@ -47852,6 +48002,50 @@
                 "PrimitiveItemType": "String",
                 "DuplicatesAllowed": true
             },
+            "Name": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-name",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "IpAddresses": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-ipaddresses",
+                "UpdateType": "Mutable",
+                "Required": true,
+                "Type": "List",
+                "ItemType": "IpAddressRequest",
+                "DuplicatesAllowed": true
+            },
+            "TargetNameServerMetricsEnabled": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-targetnameservermetricsenabled",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "Boolean"
+            },
+            "RniEnhancedMetricsEnabled": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-rnienhancedmetricsenabled",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "Boolean"
+            },
+            "Ipv6InternetAccessEnabled": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-ipv6internetaccessenabled",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "Boolean"
+            },
+            "PreferredInstanceType": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-preferredinstancetype",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "Dns64Enabled": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-dns64enabled",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "Boolean"
+            },
             "Tags": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-tags",
                 "UpdateType": "Mutable",
@@ -47859,12 +48053,6 @@
                 "Type": "List",
                 "ItemType": "Tag",
                 "DuplicatesAllowed": true
-            },
-            "Name": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-route53resolver-resolverendpoint.html#cfn-route53resolver-resolverendpoint-name",
-                "UpdateType": "Mutable",
-                "Required": false,
-                "PrimitiveType": "String"
             }
         },
         "examples": [
@@ -49725,6 +49913,18 @@
                 "Required": false,
                 "PrimitiveType": "String"
             },
+            "GroupType": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-groupprofile.html#cfn-datazone-groupprofile-grouptype",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
+            "RolePrincipalArn": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-groupprofile.html#cfn-datazone-groupprofile-roleprincipalarn",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
             "DomainIdentifier": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-groupprofile.html#cfn-datazone-groupprofile-domainidentifier",
                 "UpdateType": "Immutable",
@@ -49734,7 +49934,7 @@
             "GroupIdentifier": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-groupprofile.html#cfn-datazone-groupprofile-groupidentifier",
                 "UpdateType": "Immutable",
-                "Required": true,
+                "Required": false,
                 "PrimitiveType": "String"
             }
         },
@@ -50336,6 +50536,12 @@
                 "UpdateType": "Mutable",
                 "Required": false,
                 "PrimitiveType": "Integer"
+            },
+            "ResourceConfigDnsResolution": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-vpclattice-resourcegateway.html#cfn-vpclattice-resourcegateway-resourceconfigdnsresolution",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "PrimitiveType": "String"
             },
             "SubnetIds": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-vpclattice-resourcegateway.html#cfn-vpclattice-resourcegateway-subnetids",
@@ -55856,6 +56062,12 @@
                 "ItemType": "KafkaCluster",
                 "DuplicatesAllowed": false
             },
+            "LogDelivery": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-msk-replicator.html#cfn-msk-replicator-logdelivery",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "Type": "LogDelivery"
+            },
             "Tags": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-msk-replicator.html#cfn-msk-replicator-tags",
                 "UpdateType": "Mutable",
@@ -56203,6 +56415,14 @@
                 "UpdateType": "Immutable",
                 "Required": false,
                 "PrimitiveType": "String"
+            },
+            "Certificates": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-bedrockagentcore-codeinterpretercustom.html#cfn-bedrockagentcore-codeinterpretercustom-certificates",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "Certificate",
+                "DuplicatesAllowed": true
             },
             "NetworkConfiguration": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-bedrockagentcore-codeinterpretercustom.html#cfn-bedrockagentcore-codeinterpretercustom-networkconfiguration",
@@ -57196,25 +57416,17 @@
         "name": "AWS::IoT::TopicRule",
         "description": "Use theAWS::IoT::TopicRuleresource to declare an AWS IoT\n         rule. For information about working with AWS IoT rules, seeRules for AWS IoTin theAWS IoT Developer Guide. To declare this entity in your CloudFormation template, use the following syntax: When you pass the logical ID of this resource to the intrinsicReffunction,Refreturns the topic rule name. For example:",
         "properties": {
-            "TopicRulePayload": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iot-topicrule.html#cfn-iot-topicrule-topicrulepayload",
-                "UpdateType": "Mutable",
-                "Required": true,
-                "Type": "TopicRulePayload"
-            },
             "RuleName": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iot-topicrule.html#cfn-iot-topicrule-rulename",
-                "UpdateType": "Immutable",
+                "PrimitiveType": "String",
                 "Required": false,
-                "PrimitiveType": "String"
+                "UpdateType": "Immutable"
             },
-            "Tags": {
-                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iot-topicrule.html#cfn-iot-topicrule-tags",
-                "UpdateType": "Mutable",
-                "Required": false,
-                "Type": "List",
-                "ItemType": "Tag",
-                "DuplicatesAllowed": true
+            "TopicRulePayload": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-iot-topicrule.html#cfn-iot-topicrule-topicrulepayload",
+                "Required": true,
+                "Type": "TopicRulePayload",
+                "UpdateType": "Mutable"
             }
         },
         "examples": [
@@ -58755,6 +58967,14 @@
                 "UpdateType": "Mutable",
                 "Required": true,
                 "PrimitiveType": "String"
+            },
+            "Tags": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-cloudwatch-dashboard.html#cfn-cloudwatch-dashboard-tags",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "Tag",
+                "DuplicatesAllowed": false
             }
         },
         "examples": [
@@ -61800,6 +62020,12 @@
                 "Required": false,
                 "PrimitiveType": "String"
             },
+            "KmsKeyArn": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-bedrockagentcore-evaluator.html#cfn-bedrockagentcore-evaluator-kmskeyarn",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
             "Level": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-bedrockagentcore-evaluator.html#cfn-bedrockagentcore-evaluator-level",
                 "UpdateType": "Mutable",
@@ -63833,7 +64059,7 @@
             },
             "ReplicasPerNodeGroup": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-elasticache-replicationgroup.html#cfn-elasticache-replicationgroup-replicaspernodegroup",
-                "UpdateType": "Immutable",
+                "UpdateType": "Mutable",
                 "Required": false,
                 "PrimitiveType": "Integer"
             },
@@ -64496,6 +64722,12 @@
                 "Required": false,
                 "PrimitiveType": "String"
             },
+            "ProjectCategory": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-project.html#cfn-datazone-project-projectcategory",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
             "ResourceTags": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-project.html#cfn-datazone-project-resourcetags",
                 "UpdateType": "Mutable",
@@ -64512,11 +64744,25 @@
                 "PrimitiveItemType": "String",
                 "DuplicatesAllowed": true
             },
+            "ProjectExecutionRole": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-project.html#cfn-datazone-project-projectexecutionrole",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            },
             "ProjectProfileVersion": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-project.html#cfn-datazone-project-projectprofileversion",
                 "UpdateType": "Mutable",
                 "Required": false,
                 "PrimitiveType": "String"
+            },
+            "MembershipAssignments": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-project.html#cfn-datazone-project-membershipassignments",
+                "UpdateType": "Immutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "ProjectMembershipAssignment",
+                "DuplicatesAllowed": true
             },
             "Name": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-project.html#cfn-datazone-project-name",
@@ -65409,6 +65655,12 @@
                 "UpdateType": "Mutable",
                 "Required": false,
                 "Type": "IngressPointConfiguration"
+            },
+            "TlsPolicy": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ses-mailmanageringresspoint.html#cfn-ses-mailmanageringresspoint-tlspolicy",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "String"
             }
         },
         "examples": [
@@ -67343,6 +67595,12 @@
                 "PrimitiveType": "String",
                 "UpdateType": "Mutable"
             },
+            "MaximumConcurrentFeeds": {
+                "Required": false,
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-mediaconvert-queue.html#cfn-mediaconvert-queue-maximumconcurrentfeeds",
+                "PrimitiveType": "Integer",
+                "UpdateType": "Mutable"
+            },
             "Tags": {
                 "Required": false,
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-mediaconvert-queue.html#cfn-mediaconvert-queue-tags",
@@ -68689,7 +68947,7 @@
             "DomainExecutionRole": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-datazone-domain.html#cfn-datazone-domain-domainexecutionrole",
                 "UpdateType": "Mutable",
-                "Required": true,
+                "Required": false,
                 "PrimitiveType": "String"
             },
             "KmsKeyIdentifier": {
@@ -69199,6 +69457,18 @@
             "ClientVpnEndpointId": {
                 "Required": true,
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-clientvpntargetnetworkassociation.html#cfn-ec2-clientvpntargetnetworkassociation-clientvpnendpointid",
+                "PrimitiveType": "String",
+                "UpdateType": "Immutable"
+            },
+            "AvailabilityZoneId": {
+                "Required": false,
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-clientvpntargetnetworkassociation.html#cfn-ec2-clientvpntargetnetworkassociation-availabilityzoneid",
+                "PrimitiveType": "String",
+                "UpdateType": "Immutable"
+            },
+            "AvailabilityZone": {
+                "Required": false,
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-clientvpntargetnetworkassociation.html#cfn-ec2-clientvpntargetnetworkassociation-availabilityzone",
                 "PrimitiveType": "String",
                 "UpdateType": "Immutable"
             },
@@ -70317,6 +70587,41 @@
             }
         },
         "examples": []
+    },
+    "AWS::DevOpsAgent::PrivateConnection": {
+        "name": "AWS::DevOpsAgent::PrivateConnection",
+        "description": "TheAWS::DevOpsAgent::PrivateConnectionresource Property description not available. for DevOpsAgent. To declare this entity in your CloudFormation template, use the following syntax:",
+        "properties": {
+            "ConnectionConfiguration": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-devopsagent-privateconnection.html#cfn-devopsagent-privateconnection-connectionconfiguration",
+                "UpdateType": "Immutable",
+                "Required": true,
+                "Type": "ConnectionConfiguration"
+            },
+            "Tags": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-devopsagent-privateconnection.html#cfn-devopsagent-privateconnection-tags",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "Tag",
+                "DuplicatesAllowed": false
+            },
+            "Name": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-devopsagent-privateconnection.html#cfn-devopsagent-privateconnection-name",
+                "UpdateType": "Immutable",
+                "Required": true,
+                "PrimitiveType": "String"
+            },
+            "Certificate": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-devopsagent-privateconnection.html#cfn-devopsagent-privateconnection-certificate",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "PrimitiveType": "String"
+            }
+        },
+        "examples": [
+            "Type: AWS::DevOpsAgent::PrivateConnection\nProperties:\n  Certificate: String\n  ConnectionConfiguration: \n    ConnectionConfiguration\n  Name: String\n  Tags: \n    - Tag"
+        ]
     },
     "AWS::Connect::ContactFlowVersion": {
         "name": "AWS::Connect::ContactFlowVersion",
@@ -74213,7 +74518,7 @@
             },
             "Tags": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-batch-consumableresource.html#cfn-batch-consumableresource-tags",
-                "UpdateType": "Immutable",
+                "UpdateType": "Mutable",
                 "Required": false,
                 "Type": "Map",
                 "PrimitiveItemType": "String"
@@ -75608,7 +75913,7 @@
             },
             "TunnelBandwidth": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-ec2-vpnconnection.html#cfn-ec2-vpnconnection-tunnelbandwidth",
-                "UpdateType": "Immutable",
+                "UpdateType": "Mutable",
                 "Required": false,
                 "PrimitiveType": "String"
             },
@@ -78390,7 +78695,7 @@
             },
             "ManagedEndpointConfiguration": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-rtbfabric-respondergateway.html#cfn-rtbfabric-respondergateway-managedendpointconfiguration",
-                "UpdateType": "Conditional",
+                "UpdateType": "Mutable",
                 "Required": false,
                 "Type": "ManagedEndpointConfiguration"
             },
@@ -78458,6 +78763,14 @@
                 "UpdateType": "Mutable",
                 "Required": true,
                 "PrimitiveType": "String"
+            },
+            "Tags": {
+                "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-mediaconnect-flowvpcinterface.html#cfn-mediaconnect-flowvpcinterface-tags",
+                "UpdateType": "Mutable",
+                "Required": false,
+                "Type": "List",
+                "ItemType": "Tag",
+                "DuplicatesAllowed": false
             },
             "Name": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-mediaconnect-flowvpcinterface.html#cfn-mediaconnect-flowvpcinterface-name",
@@ -79352,7 +79665,7 @@
             },
             "Tags": {
                 "Documentation": "http://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/aws-resource-batch-jobqueue.html#cfn-batch-jobqueue-tags",
-                "UpdateType": "Immutable",
+                "UpdateType": "Mutable",
                 "Required": false,
                 "Type": "Map",
                 "PrimitiveItemType": "String"

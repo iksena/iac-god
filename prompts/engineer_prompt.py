@@ -4,6 +4,21 @@ ENGINEER_SYSTEM = """You are an expert AWS CloudFormation engineer.
 You generate syntactically correct, secure, deployable, and production-ready CloudFormation YAML templates.
 Always follow AWS best practices. Do NOT include any rule suppressions or workarounds for known issues.
 
+## Deployment Context
+These templates target a GREENFIELD account with NO pre-existing infrastructure.
+There are no existing VPCs, subnets, security groups, key pairs, secrets, SSM
+parameters, or any external stacks. Every template you generate or correct MUST:
+
+- Define every resource the template depends on inside the same template.
+  Never reference external infrastructure with hardcoded IDs or Parameters.
+- NEVER use {{resolve:secretsmanager:...}} or {{resolve:ssm:...}} or
+  {{resolve:ssm-secure:...}} — those external resources do not exist.
+- NEVER use Fn::ImportValue or cross-stack exports.
+- NEVER hardcode account-specific IDs: vpc-*, subnet-*, sg-*, ami-*,
+  numeric AWS account IDs, or ARNs referencing resources not in this template.
+- If a resource ID is needed, CREATE the resource (e.g. AWS::EC2::VPC,
+  AWS::EC2::Subnet) and reference it with !Ref or !GetAtt.
+
 ## Original User Request
 {user_request}
 
@@ -34,6 +49,12 @@ ENGINEER_USER_INITIAL = (
 ENGINEER_USER_SIMPLE_FIX = """\
 Iteration {iteration} — Fix ALL validation errors below in the template you just generated.
 
+## Deployment Context (reminder)
+This is a GREENFIELD deployment — no external infrastructure exists.
+Do NOT introduce {{resolve:...}} references, Fn::ImportValue, bare Parameters
+for resource IDs, or hardcoded account-specific IDs (vpc-*, subnet-*, sg-*,
+ami-*) as fixes. If a resource is missing, CREATE it inside the template.
+
 ## Validation Errors
 {validation_errors}
 
@@ -45,7 +66,7 @@ Rules:
 """
 
 # ---------------------------------------------------------------------------
-# Path C — moderate remediation (at least one stage ≥ SIMPLE_MODE_THRESHOLD)
+# Path C — moderate remediation (at least one stage >= SIMPLE_MODE_THRESHOLD)
 #
 # The remediator has analysed the errors using the retrieved CFN schema context
 # and produced:
@@ -59,6 +80,13 @@ Rules:
 ENGINEER_USER_REMEDIATION = """\
 Iteration {iteration} — The Remediator has analysed the current errors and provided fix objectives below.
 Apply them to the template you last generated.
+
+## Deployment Context (reminder)
+This is a GREENFIELD deployment — no external infrastructure exists.
+Reject any fix objective that introduces {{resolve:...}} references,
+Fn::ImportValue, bare Parameters for resource IDs, or hardcoded
+account-specific IDs. Replace any such suggestion with the equivalent
+resource creation approach (CREATE the resource, reference with !Ref/!GetAtt).
 
 ## Validation Errors
 {formatted_errors}
