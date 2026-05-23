@@ -11,5 +11,14 @@ bypass-alias-check-accounts:
   - "000000000000"
 
 accounts:
-  "649872913223": {}
+  "649872913223":
+    filters:
+      IAMUser:
+        - "admin-user"
+      IAMUserPolicyAttachment:
+        - "admin-user -> AdministratorAccess"
+      IAMUserAccessKey:
+        - "admin-user -> AKIAZOT3RWNDYNPQTWXF"
+      IAMVirtualMFADevice:
+        - "arn:aws:iam::649872913223:mfa/admin-user"
 

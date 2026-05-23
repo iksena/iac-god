@@ -19,12 +19,24 @@ class ValidationResult(TypedDict):
     filtered_compliance_rate: NotRequired[float]
 
 
+class FailedResource(TypedDict):
+    """Canonical shape for a single resource-level deploy failure.
+
+    This matches what deploy_validator.py emits in every code path:
+      - _drain_stack_events():    {"logical_name": rid,       "status_reason": reason}
+      - parameter pre-check:      {"logical_name": param_key, "status_reason": "..."}
+      - ClientError / unexpected: {"logical_name": "stack",   "status_reason": msg}
+    """
+    logical_name: str   # CloudFormation LogicalResourceId (or "stack"/"template" sentinel)
+    status_reason: str  # CloudFormation ResourceStatusReason or error message
+
+
 class DeployValidationResult(TypedDict):
-    target: str                     # "localstack" | "aws" | "skipped"
+    target: str                         # "localstack" | "aws" | "skipped"
     passed: bool
     stack_id: Optional[str]
     completed_resources: list[str]
-    failed_resources: list[dict]    # [{"resource": str, "reason": str}]
+    failed_resources: list[FailedResource]
     error_message: Optional[str]
     duration_seconds: float
     deployment_logs: list[str]

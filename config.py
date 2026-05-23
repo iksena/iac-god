@@ -89,8 +89,8 @@ class DeployTarget(Enum):
 
 @dataclass
 class LLMConfig:
-    # provider: LLMProvider = LLMProvider.OPENROUTER
-    provider: LLMProvider = LLMProvider.OPENAI
+    provider: LLMProvider = LLMProvider.OPENROUTER
+    # provider: LLMProvider = LLMProvider.OPENAI
     model: str = "x-ai/grok-4.1-fast"
     temperature: float = 0.0
     max_tokens: int = 8192
@@ -144,8 +144,8 @@ class DeployConfig:
     aws_profile: str = field(
         default_factory=lambda: os.getenv("AWS_PROFILE", "default")
     )
-    stack_creation_timeout: int = 15 * 60
-    stack_deletion_timeout: int = 1 * 60
+    stack_creation_timeout: int = 60 * 60
+    stack_deletion_timeout: int = 5 * 60
 
 
 # ---------------------------------------------------------------------------
