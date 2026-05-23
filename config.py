@@ -144,8 +144,8 @@ class DeployConfig:
     aws_profile: str = field(
         default_factory=lambda: os.getenv("AWS_PROFILE", "default")
     )
-    stack_creation_timeout: int = 15 * 60
-    stack_deletion_timeout: int = 1 * 60
+    stack_creation_timeout: int = 60 * 60
+    stack_deletion_timeout: int = 5 * 60
 
 
 # ---------------------------------------------------------------------------
