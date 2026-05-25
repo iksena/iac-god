@@ -41,11 +41,19 @@ Severity ordering:
   placed last. A token budget (SECURITY_TOKEN_BUDGET) caps the total security
   context so low-signal UNKNOWN checks are dropped if the budget is exceeded.
 
+Embedding provider:
+  Controlled by EMBEDDING_PROVIDER env var (huggingface | ollama), matching
+  03_build_security_chromadb.py and 05_build_chromadb.py so query-time
+  embeddings are always in the same vector space as the indexed documents.
+
 Environment variables
 ---------------------
     NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
-    CHROMA_HOST   (default: localhost)
-    CHROMA_PORT   (default: 8000)
+    CHROMA_HOST          (default: localhost)
+    CHROMA_PORT          (default: 8000)
+    EMBEDDING_PROVIDER   (default: huggingface)  huggingface | ollama
+    EMBEDDING_MODEL      (default: provider default)
+    OLLAMA_BASE_URL      (default: http://localhost:11434)  Ollama only
 
 Usage
 -----
@@ -59,18 +67,13 @@ import re
 import sys
 from typing import Any
 
+import numpy as np
 import chromadb
 
 try:
     from neo4j import GraphDatabase
 except ImportError:
     print("ERROR: pip install neo4j", file=sys.stderr)
-    sys.exit(1)
-
-try:
-    from langchain_huggingface import HuggingFaceEmbeddings
-except ImportError:
-    print("ERROR: pip install langchain-huggingface", file=sys.stderr)
     sys.exit(1)
 
 try:
@@ -92,7 +95,75 @@ NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 
-EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
+# ---------------------------------------------------------------------------
+# Embedding provider — inline mirror of 05_build_chromadb.py.
+# Query-time provider MUST match build-time provider so vectors are
+# comparable.  Both are controlled by the same EMBEDDING_PROVIDER env var.
+# ---------------------------------------------------------------------------
+
+_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "huggingface").lower().strip()
+_DEFAULTS = {
+    "huggingface": "sentence-transformers/all-mpnet-base-v2",
+    "ollama":      "mxbai-embed-large",
+}
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", _DEFAULTS.get(_PROVIDER, _DEFAULTS["huggingface"]))
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+
+class _NormalisedEmbeddings:
+    """Thin wrapper that L2-normalises every vector before querying.
+
+    Ensures unit-length vectors so cosine distance == angular distance,
+    regardless of whether the underlying model normalises by default.
+    HuggingFaceEmbeddings with normalize_embeddings=True already does this;
+    OllamaEmbeddings does not.
+    """
+    def __init__(self, base):
+        self._base = base
+
+    @staticmethod
+    def _norm(vecs):
+        arr   = np.array(vecs, dtype=np.float32)
+        norms = np.linalg.norm(arr, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1.0, norms)
+        return (arr / norms).tolist()
+
+    def embed_documents(self, texts):
+        return self._norm(self._base.embed_documents(texts))
+
+    def embed_query(self, text):
+        return self._norm([self._base.embed_query(text)])[0]
+
+
+def _get_embeddings():
+    """Return an embedding object matching the configured EMBEDDING_PROVIDER.
+
+    This is a copy of the factory in 05_build_chromadb.py and
+    03_build_security_chromadb.py so that query-time embeddings are always
+    in the same vector space as the indexed documents.
+    """
+    if _PROVIDER == "ollama":
+        try:
+            from langchain_ollama import OllamaEmbeddings
+        except ImportError:
+            print(
+                "ERROR: langchain-ollama not installed. "
+                "Run: pip install langchain-ollama",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"[Retrieval] Embedding provider: Ollama  model: {EMBEDDING_MODEL}  url: {OLLAMA_BASE_URL}")
+        base = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=OLLAMA_BASE_URL)
+        return _NormalisedEmbeddings(base)
+
+    from langchain_huggingface import HuggingFaceEmbeddings
+    print(f"[Retrieval] Embedding provider: HuggingFace  model: {EMBEDDING_MODEL}")
+    return HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
+    )
+
 
 CFN_COLLECTION      = "cfn_schema_properties"
 SECURITY_COLLECTION = "security_checks"
@@ -136,14 +207,11 @@ def _clean_impact(raw: str | None) -> str:
 _embeddings = None
 
 
-def get_embeddings() -> HuggingFaceEmbeddings:
+def get_embeddings():
+    """Lazy-init shared embedding instance for this process."""
     global _embeddings
     if _embeddings is None:
-        _embeddings = HuggingFaceEmbeddings(
-            model_name=EMBEDDING_MODEL,
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
-        )
+        _embeddings = _get_embeddings()
     return _embeddings
 
 
@@ -336,12 +404,12 @@ def query_cfn_subgraph(driver, resource_names: list[str]) -> list[dict[str, Any]
             row = session.run(CFN_CYPHER, resource_name=name).single()
             if row:
                 results.append({
-                    "name": row["resource_name"],
-                    "description": row["resource_description"],
+                    "name":                row["resource_name"],
+                    "description":         row["resource_description"],
                     "required_properties": row["required_properties"],
                     "optional_properties": row["optional_properties"],
-                    "nested_types": row["nested_types"],
-                    "example": row["example"],
+                    "nested_types":        row["nested_types"],
+                    "example":             row["example"],
                 })
     return results
 
@@ -383,16 +451,16 @@ def query_security_subgraph(driver, check_ids: list[str]) -> list[dict[str, Any]
             row = session.run(SECURITY_CYPHER, check_id=cid).single()
             if row:
                 results.append({
-                    "check_id":          row["check_id"],
-                    "check_name":        row["check_name"],
-                    "severity":          row["severity"],
-                    "description":       row["description"],
-                    "service":           row["service"],
-                    "impact":            row["impact"],
-                    "remediations":      row["remediations"],
-                    "examples":          row["examples"],
-                    "rego_code":         row["rego_code"],
-                    "rego_source_url":   row["rego_source_url"],
+                    "check_id":           row["check_id"],
+                    "check_name":         row["check_name"],
+                    "severity":           row["severity"],
+                    "description":        row["description"],
+                    "service":            row["service"],
+                    "impact":             row["impact"],
+                    "remediations":       row["remediations"],
+                    "examples":           row["examples"],
+                    "rego_code":          row["rego_code"],
+                    "rego_source_url":    row["rego_source_url"],
                     "cfn_resource_names": row["cfn_resource_names"],
                 })
     return results
