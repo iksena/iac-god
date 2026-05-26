@@ -304,24 +304,31 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         error_resources=error_resources,
     )
 
+    from tools.security_hybrid_rag import execute_security_retrieval
+
+    security_context = execute_security_retrieval(retrieval_queries)
+    unified_context = "\n\n".join(
+        part for part in (cfn_context, security_context) if part.strip()
+    )
+
     recorder.append_retriever_history_entry(
         iteration=iteration,
         prompt=f"SYSTEM:\n{QUERY_GEN_SYSTEM}\n\nUSER:\n{user_content}",
         response=raw_response,
         retrieval_queries=retrieval_queries,
-        context_chars=len(cfn_context),
-        retrieved_context=cfn_context,
+        context_chars=len(unified_context),
+        retrieved_context=unified_context,
     )
 
     print(
-        f"[Retriever] Context: {len(cfn_context)} chars, "
+        f"[Retriever] Context: {len(unified_context)} chars, "
         f"{len(retrieval_queries)} queries used."
     )
 
     # Write back to retriever_history for audit / recorder purposes only.
     # This history is NOT forwarded to the LLM on subsequent calls.
     return {
-        "retriever_context":  cfn_context,
+        "retriever_context":  unified_context,
         "retriever_queries":  retrieval_queries,
         "llm_call_log":       state["llm_call_log"] + [llm_record],
         "retriever_history":  append_and_cap(

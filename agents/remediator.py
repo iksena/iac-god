@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-import re
-import json
 from datetime import datetime, timezone
 
 from state import GraphState, RemediationHistory, Message, append_and_cap
 from agents.llm_client import _build_client, _call_llm_with_history
 from prompts.remediator_prompt import REMEDIATOR_SYSTEM, REMEDIATOR_USER
-from tools.checkov_context import get_checkov_policy_context
-from tools.trivy_context import get_trivy_policy_context
-from tools.security_hybrid_rag import execute_security_retrieval
 from tools.retriever_helpers import (
-    get_latest_stage_result,
     format_cfn_lint_errors,
     format_deploy_errors,
     extract_errors,
@@ -19,10 +13,6 @@ from tools.retriever_helpers import (
 from tools.template_annotator import render_annotated_template
 from tracking.recorder import ResearchRecorder
 
-
-# ---------------------------------------------------------------------------
-# Internal helpers — error extraction
-# ---------------------------------------------------------------------------
 
 def _dedupe_preserve_order(items: list[str]) -> list[str]:
     seen: set[str] = set()
@@ -32,171 +22,6 @@ def _dedupe_preserve_order(items: list[str]) -> list[str]:
             seen.add(x)
             result.append(x)
     return result
-
-
-def _extract_check_ids_from_errors(errors: list[object]) -> set[str]:
-    check_ids: set[str] = set()
-    for error in errors:
-        text = str(error or "")
-        for match in re.findall(r"\[([A-Z0-9_-]+)\]", text):
-            check_ids.add(match.strip().upper())
-        for match in re.findall(r"\b(?:AVD-)?AWS-\d{4}\b", text, flags=re.IGNORECASE):
-            check_ids.add(match.strip().upper())
-        for match in re.findall(r"\bCKV2?_[A-Z0-9_]+\b", text, flags=re.IGNORECASE):
-            check_ids.add(match.strip().upper())
-    return check_ids
-
-
-# ---------------------------------------------------------------------------
-# Policy source context builders (Checkov / Trivy)
-# ---------------------------------------------------------------------------
-
-def _extract_security_findings(
-    validation_results: list[dict],
-    stage: str,
-    results_key: str,
-    items_path: list[str],
-) -> list[dict[str, str]]:
-    """Extract check-ID findings from a security tool's raw JSON output."""
-    findings: list[dict[str, str]] = []
-    result = get_latest_stage_result(validation_results, stage)
-    if not result:
-        return findings
-
-    raw = result.get("raw_output", "")
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        return findings
-
-    top = data.get(results_key, {})
-
-    if isinstance(top, dict):
-        for item in top.get(items_path[0], []):
-            check_id = str(item.get("check_id") or "").strip()
-            if check_id:
-                findings.append({"check_id": check_id})
-
-    elif isinstance(top, list):
-        for entry in top:
-            for item in entry.get(items_path[0], []):
-                check_id = str(item.get("ID") or "").strip()
-                if check_id:
-                    findings.append({"check_id": check_id})
-
-    return findings
-
-
-def _filter_findings_by_check_ids(
-    findings: list[dict[str, str]],
-    allowed_check_ids: set[str],
-) -> list[dict[str, str]]:
-    if not allowed_check_ids:
-        return findings
-
-    allowed = {cid.strip().upper() for cid in allowed_check_ids if cid}
-    seen: set[str] = set()
-    filtered: list[dict[str, str]] = []
-
-    for finding in findings:
-        check_id = str(finding.get("check_id") or finding.get("rule_id") or "").strip()
-        if not check_id:
-            continue
-        normalized = check_id.upper()
-        if normalized not in allowed or normalized in seen:
-            continue
-        seen.add(normalized)
-        filtered.append({"check_id": check_id})
-
-    return filtered
-
-
-def _build_policy_source_context(validation_results: list[dict]) -> str:
-    """Build the security policy context block for the remediator prompt.
-
-    Preference order (highest fidelity first):
-      1. GraphRAG (ChromaDB + Neo4j) via execute_security_retrieval()
-         - Uses Trivy finding text directly as semantic queries.
-         - Returns description, impact, CFN remediation, CFN good example,
-           Rego policy source code. No URLs.
-         - Falls back if collection or Neo4j is unavailable.
-      2. CSV fallback (existing get_trivy_policy_context / get_checkov_policy_context)
-         - Used when GraphRAG returns empty (graph not yet built, or no match).
-         - Same fields from trivy_enriched.csv + rego source code.
-
-    Both paths feed into the same prompt section:
-      '## Relevant Policy Source Context (Checkov/Trivy)'
-    so the remediator prompt format does not need to change.
-    """
-    latest_by_stage: dict[str, dict] = {}
-    for result in validation_results:
-        stage = str(result.get("stage") or "").strip()
-        if stage:
-            latest_by_stage[stage] = result
-
-    allowed_check_ids: set[str] = set()
-    for result in latest_by_stage.values():
-        allowed_check_ids.update(_extract_check_ids_from_errors(result.get("errors", [])))
-
-    if not allowed_check_ids:
-        return ""
-
-    # ---- Path 1: GraphRAG ----
-    # Collect the raw Trivy error strings to use as semantic queries.
-    # We pass the full formatted error strings (not just check_ids) so
-    # ChromaDB can use the rich natural-language description for similarity
-    # matching, not just the ID token.
-    trivy_result = latest_by_stage.get("trivy")
-    trivy_finding_texts: list[str] = []
-    if trivy_result and not trivy_result.get("passed", True):
-        trivy_finding_texts = [
-            str(e) for e in trivy_result.get("errors", []) if str(e).strip()
-        ]
-
-    graphrag_context = ""
-    if trivy_finding_texts:
-        graphrag_context = execute_security_retrieval(trivy_finding_texts)
-
-    # ---- Path 2: CSV fallback ----
-    # Used when GraphRAG returns empty (graph unavailable or no match).
-    checkov_context = ""
-    trivy_csv_context = ""
-
-    if not graphrag_context:
-        checkov_findings = _extract_security_findings(
-            validation_results,
-            stage="checkov",
-            results_key="results",
-            items_path=["failed_checks"],
-        )
-        trivy_findings = _extract_security_findings(
-            validation_results,
-            stage="trivy",
-            results_key="Results",
-            items_path=["Misconfigurations"],
-        )
-        checkov_context = get_checkov_policy_context(
-            _filter_findings_by_check_ids(checkov_findings, allowed_check_ids)
-        )
-        trivy_csv_context = get_trivy_policy_context(
-            _filter_findings_by_check_ids(trivy_findings, allowed_check_ids)
-        )
-
-    # ---- Assemble section ----
-    sections: list[str] = []
-
-    if graphrag_context:
-        sections.append(f"### Trivy Security Findings (GraphRAG)\n{graphrag_context}")
-    else:
-        if checkov_context:
-            sections.append(f"### Checkov Policy Source\n{checkov_context}")
-        if trivy_csv_context:
-            sections.append(f"### Trivy Policy Source\n{trivy_csv_context}")
-
-    if not sections:
-        return ""
-
-    return "## Relevant Policy Source Context (Checkov/Trivy)\n\n" + "\n\n".join(sections)
 
 
 # ---------------------------------------------------------------------------
@@ -245,38 +70,6 @@ def _build_validation_errors_text(state: GraphState) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Context inclusion guards
-# ---------------------------------------------------------------------------
-
-def should_include_remediation_context(state: GraphState) -> bool:
-    """Return True only when cfn-lint or deployment failures are present."""
-    validation_results = state.get("validation_results", [])
-    cfn_lint_result = get_latest_stage_result(validation_results, "cfn-lint")
-
-    if cfn_lint_result and not cfn_lint_result.get("passed", True):
-        return True
-
-    deploy_result = state.get("deploy_validation_result")
-    if (
-        deploy_result
-        and not deploy_result.get("passed", True)
-        and deploy_result.get("target") != "skipped"
-    ):
-        return True
-
-    return False
-
-
-def _should_include_policy_source_context(state: GraphState) -> bool:
-    validation_results = state.get("validation_results", [])
-    for stage in ("trivy", "checkov"):
-        result = get_latest_stage_result(validation_results, stage)
-        if result and not result.get("passed", True):
-            return True
-    return False
-
-
-# ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
 
@@ -291,25 +84,12 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"])),
     )
 
-    cfn_graph_context = state.get("retriever_context", "")
+    knowledge_base_context = state.get("retriever_context", "")
     retrieval_queries = state.get("retriever_queries", [])
 
-    include_remediation = should_include_remediation_context(state)
-    include_policy      = _should_include_policy_source_context(state)
-
-    if include_remediation:
-        print(
-            f"[Remediator] CFN schema context: {len(cfn_graph_context)} chars, "
-            f"{len(retrieval_queries)} retrieval queries."
-        )
-    else:
-        cfn_graph_context = ""
-        print("[Remediator] CFN schema context skipped (YAML/security-only failure).")
-
-    policy_source_context = (
-        _build_policy_source_context(state["validation_results"])
-        if include_policy
-        else ""
+    print(
+        f"[Remediator] Knowledge base context: {len(knowledge_base_context)} chars, "
+        f"{len(retrieval_queries)} retrieval queries."
     )
 
     formatted_errors = _build_validation_errors_text(state)
@@ -327,8 +107,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         iteration=iteration,
         annotated_template=annotated_template,
         validation_errors=formatted_errors,
-        policy_source_context=policy_source_context,
-        cfn_graph_context=cfn_graph_context,
+        knowledge_base_context=knowledge_base_context,
         remediation_history_context="",
     )
     user_msg: Message = {"role": "user", "content": user_content}

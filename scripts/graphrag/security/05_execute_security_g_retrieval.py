@@ -6,14 +6,14 @@ Stage 3 – Combined G-Retrieval: CFN schema + security remediation context.
 
 Both ChromaDB collections live in the same Docker container:
   'cfn_schema_properties'  – built by scripts/graphrag/05_build_chromadb.py
-  'security_checks'        – built by scripts/graphrag/security/03_build_security_chromadb.py
+    'security_checks'        – built by scripts/graphrag/security/03_build_security_chromadb.py
 
 Retrieval paths
 ---------------
 
-Path A — Deterministic (Trivy-driven, check_id known)
-  Used when the caller supplies a list[TrivyFinding] from
-  00_parse_trivy_output.py.  For each finding whose check_id exists in Neo4j
+    Path A — Deterministic (Trivy-driven, check_id known)
+    Used when the caller supplies a list[TrivyFinding] from
+    parse_trivy_output.py.  For each finding whose check_id exists in Neo4j
   a single cross-graph Cypher call returns:
     SecurityCheck → Impact / Remediation (CFN) / GoodExample (CFN) / RegoPolicy
     SecurityCheck → APPLIES_TO_RESOURCE → Resource → Property (required)
@@ -106,16 +106,8 @@ try:
         parse_trivy_json,
     )
 except ImportError:
-    # Fallback when running the file directly (not as a module)
-    import importlib.util, pathlib
-    _spec = importlib.util.spec_from_file_location(
-        "parse_trivy_output",
-        pathlib.Path(__file__).parent / "00_parse_trivy_output.py",
-    )
-    _mod = importlib.util.module_from_spec(_spec)
-    _spec.loader.exec_module(_mod)
-    TrivyFinding  = _mod.TrivyFinding    # type: ignore[assignment]
-    parse_trivy_json = _mod.parse_trivy_json  # type: ignore[assignment]
+    print("ERROR: install scripts/graphrag/security/parse_trivy_output.py dependencies", file=sys.stderr)
+    sys.exit(1)
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +304,7 @@ def retrieve_for_trivy_finding(
     driver:
         An active Neo4j driver instance.
     finding:
-        A TrivyFinding parsed by 00_parse_trivy_output.py.
+        A TrivyFinding parsed by parse_trivy_output.py.
 
     Returns
     -------
@@ -363,7 +355,7 @@ def retrieve_for_trivy_findings(
     driver:
         An active Neo4j driver instance.
     findings:
-        Parsed Trivy findings from 00_parse_trivy_output.py.
+        Parsed Trivy findings from parse_trivy_output.py.
     allowed_severities:
         Pre-filter findings to this severity list before querying Neo4j.
         Defaults to ["CRITICAL", "HIGH", "MEDIUM"].

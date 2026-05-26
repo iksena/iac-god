@@ -22,6 +22,9 @@ Data quality
 ------------
 impact fields are cleaned of HTML comment scaffold placeholders at load time
 (AVD uses <!-- Add Impact here --> for empty fields).
+Additional enrichment fields such as remediation_console, raw_text, and the
+CloudFormation / Terraform examples are preserved in the JSON output so later
+stages can use them directly.
 
 No rows are filtered out. All 723 checks are valid public AVD data.
 The prior "Get Demo" values in description were caused by an unscoped scraper
@@ -191,10 +194,12 @@ def load_csv(csv_path: Path, service_map: dict) -> dict:
                 "title": row.get("title", "").strip(),
                 # Clean HTML comment placeholders at load time
                 "impact": clean_impact(row.get("impact", "")),
+                "remediation_console": row.get("remediation_console", "").strip(),
                 "remediation_cfn": clean_list_field(row.get("remediation_cfn", "")),
                 "remediation_tf": clean_list_field(row.get("remediation_tf", "")),
                 "cfn_good_example": row.get("cfn_good_example", "").strip(),
                 "tf_good_example": row.get("tf_good_example", "").strip(),
+                "raw_text": row.get("raw_text", "").strip(),
                 "links": clean_links_field(row.get("links", "")),
             }
 

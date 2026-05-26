@@ -20,8 +20,8 @@ Retrieval runs in two sequential stages:
       consumption, not human browsing.
 
   Final — execute_security_retrieval():
-      Merges both stages into the single context block consumed by
-      remediator_agent via _build_policy_source_context.
+      Merges exact-match and semantic results into the single security
+      context block consumed by the retriever / remediator.
 
 Dependency direction (strictly unidirectional, no cycles):
   remediator_agent  →  security_hybrid_rag  (no agent imports)
@@ -29,18 +29,10 @@ Dependency direction (strictly unidirectional, no cycles):
 
 Input contract
 --------------
-The caller passes raw Trivy finding text (the full JSON-serialised error
-strings that validators.py emits, or the formatted strings from
-format_trivy_errors / _build_validation_errors_text). No pre-parsing is
-required — check_ids are extracted here via regex so the caller can pass
-the finding text as-is.
-
-Fallback
---------
-If ChromaDB or Neo4j are unavailable the function degrades gracefully to
-the CSV-backed get_trivy_policy_context() already used by remediator.py.
-This preserves the existing behaviour for deployments that have not yet
-built the security graph.
+The caller passes LLM-generated retrieval queries. If a query explicitly
+contains an AVD/Trivy check ID, the function routes it to the deterministic
+Neo4j lookup path first. Otherwise it performs semantic search against the
+security ChromaDB collection and re-ranks the matching graph rows.
 """
 from __future__ import annotations
 
@@ -164,19 +156,18 @@ def _neo4j_driver():
 
 
 # ---------------------------------------------------------------------------
-# Stage 1 — Semantic search: finding text → check_ids
+# Stage 1 — Query routing: explicit IDs → exact lookup, free text → semantic search
 # ---------------------------------------------------------------------------
 
 def _security_semantic_search(
     finding_texts: list[str],
     k_per_query: int = 5,
 ) -> list[str]:
-    """Run ChromaDB similarity search using raw finding texts as queries.
+    """Run ChromaDB similarity search using free-text retrieval queries.
 
-    Each finding string is used as its own search query — Trivy findings
-    carry rich natural-language descriptions ('S3 bucket is not encrypted',
-    'IAM role has wildcard permissions') that embed well without
-    pre-processing.
+    Each query string is used as its own search query — LLM-generated
+    prompts such as 'S3 bucket encryption' or 'AWS::S3::Bucket public access'
+    embed well without pre-processing.
 
     Returns a de-duplicated list of check_ids ordered by first-seen
     (similarity-descending within each query).
@@ -392,41 +383,39 @@ def _assemble_security_context(
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def execute_security_retrieval(finding_texts: list[str]) -> str:
+def execute_security_retrieval(retrieval_queries: list[str]) -> str:
     """Execute full security G-Retrieval: ChromaDB → Neo4j → formatted context.
 
     Args:
-        finding_texts: Raw Trivy finding strings as produced by validators.py
-            (JSON-serialised error dicts or the formatted strings from
-            format_trivy_errors). check_ids are extracted internally.
+        retrieval_queries: LLM-generated semantic queries, possibly including
+            explicit AVD / Trivy IDs such as AVD-AWS-0086.
 
     Returns:
-        A formatted context string suitable for injection into the
-        remediator prompt under '## Security Remediation Context'.
-        Returns an empty string when ChromaDB/Neo4j are unavailable so the
-        caller can fall back to get_trivy_policy_context() without special
-        casing.
-
-    Fallback behaviour:
-        If ChromaDB is unreachable (collection absent or connection refused),
-        Stage 1 returns [] and the function returns '' immediately without
-        touching Neo4j. The remediator_agent caller detects the empty string
-        and falls back to CSV-based context.
+        A formatted context string suitable for injection into the retriever
+        or remediator prompt.
     """
-    if not finding_texts:
+    if not retrieval_queries:
         return ""
 
-    print(f"[SecurityRAG] Retrieval for {len(finding_texts)} finding(s).")
+    print(f"[SecurityRAG] Retrieval for {len(retrieval_queries)} query(ies).")
 
-    # Stage 1: semantic search to discover relevant check_ids.
-    # Also merge any check_ids we can extract directly from the finding text
-    # (explicit AVD IDs in bracket notation) as a zero-latency seed.
-    seed_ids = extract_trivy_check_ids(finding_texts)
-    semantic_ids = _security_semantic_search(finding_texts)
+    # Stage 1A: deterministic exact-match path for queries with explicit IDs.
+    exact_match_queries = [
+        query for query in retrieval_queries
+        if extract_trivy_check_ids([query])
+    ]
+    exact_ids = extract_trivy_check_ids(exact_match_queries)
 
-    # Merge: seed_ids first (exact match, highest confidence), then semantic
+    # Stage 1B: semantic search for the remaining free-text queries.
+    semantic_queries = [
+        query for query in retrieval_queries
+        if not extract_trivy_check_ids([query])
+    ]
+    semantic_ids = _security_semantic_search(semantic_queries) if semantic_queries else []
+
+    # Merge: exact IDs first (highest confidence), then semantic matches.
     merged: OrderedDict[str, None] = OrderedDict()
-    for cid in seed_ids + semantic_ids:
+    for cid in exact_ids + semantic_ids:
         norm = cid.strip().upper()
         if norm:
             merged[norm] = None
@@ -436,7 +425,7 @@ def execute_security_retrieval(finding_texts: list[str]) -> str:
         return ""
 
     print(
-        f"[SecurityRAG] check_ids: {len(seed_ids)} seeded, "
+        f"[SecurityRAG] check_ids: {len(exact_ids)} exact, "
         f"{len(semantic_ids)} from semantic search, "
         f"{len(merged)} total unique."
     )

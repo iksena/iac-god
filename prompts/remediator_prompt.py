@@ -54,9 +54,8 @@ the primary signal for which properties need fixing.
 ## Current Validation Errors
 {validation_errors}
 
-{policy_source_context}
-
-{cfn_graph_context}
+## Knowledge Base Context
+{knowledge_base_context}
 
 Provide fix objectives that resolve all current validation errors.
 Do NOT repeat fix objectives that are marked as already applied in the history above.

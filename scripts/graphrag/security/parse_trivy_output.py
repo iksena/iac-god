@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-00_parse_trivy_output.py
+parse_trivy_output.py
 
 Parses Trivy's ``--format json`` output into typed TrivyFinding objects
 that the retrieval pipeline can use as structured lookup keys.
@@ -51,7 +51,7 @@ Usage
     findings = parse_trivy_json(Path("trivy_output.json"))
 
     # CLI smoke-test
-    python scripts/graphrag/security/00_parse_trivy_output.py \\
+    python scripts/graphrag/security/parse_trivy_output.py \
         --input path/to/trivy_output.json
 
 Environment variables
@@ -64,7 +64,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -258,30 +258,11 @@ def main() -> None:
     input_path = Path(args.input)
     try:
         findings = parse_trivy_json(input_path, target_type=args.type)
-    except FileNotFoundError as exc:
+    except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    if not findings:
-        print("No findings found (check --type filter and Trivy output structure).")
-        sys.exit(0)
-
-    print(f"Parsed {len(findings)} finding(s) from: {input_path}\n")
-    avd_count    = sum(1 for f in findings if f.is_known_avd_id)
-    custom_count = len(findings) - avd_count
-    print(f"  Known AVD IDs  : {avd_count}  (Path A — deterministic Neo4j lookup)")
-    print(f"  Custom/unknown : {custom_count}  (Path B — ChromaDB semantic fallback)")
-    print()
-
-    sev_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4}
-    for f in sorted(findings, key=lambda x: sev_order.get(x.severity, 4)):
-        known = "[AVD]" if f.is_known_avd_id else "[custom]"
-        print(
-            f"  {known:<10} {f.severity:<8} {f.check_id:<20} "
-            f"{f.cfn_resource_type:<30} {f.title[:60]}"
-        )
-        if f.file_path:
-            print(f"             file: {f.file_path}  line: {f.start_line}")
+    print(json.dumps([finding.__dict__ for finding in findings], indent=2))
 
 
 if __name__ == "__main__":

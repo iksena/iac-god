@@ -18,11 +18,6 @@ from __future__ import annotations
 import json
 import re
 
-# Validation stages that emit security policy violations.
-# Excluded from CFN schema retrieval — the remediator already knows the fix
-# (e.g. enable encryption) without needing property-level schema context.
-SECURITY_STAGES = {"checkov", "trivy"}
-
 # Keywords that flag a deployment event log line as actionable.
 _DEPLOY_ERROR_KEYWORDS = (
     "FAILED",
@@ -125,9 +120,6 @@ def extract_errors(
 ) -> list[str]:
     """Extract a list of error strings from the validation state.
 
-    Security stages (checkov, trivy) are excluded — their findings are policy
-    violations, not schema errors, and do not benefit from CFN schema retrieval.
-
     Deploy failures are rendered with format_deploy_errors() so the retriever
     LLM receives the same structured breakdown (target, failed resources,
     filtered event log) that the remediator prompt shows.
@@ -136,8 +128,6 @@ def extract_errors(
 
     for result in validation_results:
         stage = str(result.get("stage") or "").strip().lower()
-        if stage in SECURITY_STAGES:
-            continue
         if not result.get("passed"):
             for err in result.get("errors", []):
                 if str(err).strip():

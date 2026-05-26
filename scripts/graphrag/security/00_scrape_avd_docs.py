@@ -136,6 +136,76 @@ def get_content_scope(soup: BeautifulSoup) -> Tag:
     return container if container else soup
 
 
+def extract_avd_content(soup: BeautifulSoup) -> dict:
+    """Extract structured AVD fields from a check detail page."""
+    # Title from <title> tag
+    title = ""
+    if soup.title:
+        title = (
+            soup.title.get_text(strip=True)
+            .replace(" - Aqua Vulnerability Database", "")
+            .replace(" | Vulnerability Database | Aqua Security", "")
+            .strip()
+        )
+    if not title:
+        h = soup.find(["h1", "h2"])
+        title = h.get_text(strip=True) if h else ""
+
+    content = get_content_scope(soup)
+
+    paragraphs = [
+        p.get_text(" ", strip=True)
+        for p in content.find_all("p")
+        if p.get_text(strip=True)
+    ]
+    description = paragraphs[0] if paragraphs else ""
+
+    impact_texts: list[str] = []
+    remediation_steps: list[str] = []
+    for heading in content.find_all(["h2", "h3"]):
+        heading_text = heading.get_text(strip=True).lower()
+        sibling_texts: list[str] = []
+        for sibling in heading.find_next_siblings():
+            if sibling.name in ("h2", "h3"):
+                break
+            text = sibling.get_text(" ", strip=True)
+            if text:
+                sibling_texts.append(text)
+
+        if "impact" in heading_text:
+            impact_texts.extend(sibling_texts)
+        elif any(k in heading_text for k in ("remediat", "resolut", "fix", "how to")):
+            remediation_steps.extend(sibling_texts)
+
+    if not remediation_steps and len(paragraphs) > 1:
+        remediation_steps = paragraphs[1:]
+
+    cfn_example = ""
+    tf_example = ""
+    for block in content.find_all(["code", "pre"]):
+        text = block.get_text().strip()
+        if not cfn_example and ("Type: AWS::" in text or "AWSTemplateFormatVersion" in text):
+            cfn_example = text
+        elif not tf_example and ("resource \"aws_" in text or "provider \"aws\"" in text):
+            tf_example = text
+        if cfn_example and tf_example:
+            break
+
+    impact = clean_impact(" ".join(impact_texts))
+    remediation_console = "\n".join(remediation_steps)
+
+    return {
+        "title": title,
+        "description": description,
+        "impact": impact,
+        "remediation_steps": remediation_steps,
+        "remediation_console": remediation_console,
+        "cfn_good_example": cfn_example,
+        "tf_good_example": tf_example,
+        "raw_text": content.get_text(" ", strip=True)[:4000],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Step 1 – discover service slugs
 # ---------------------------------------------------------------------------
@@ -210,44 +280,7 @@ def scrape_check_detail(url: str) -> dict:
     soup = fetch(url)
     if not soup:
         return {}
-
-    # Title from <title> tag
-    title = ""
-    if soup.title:
-        title = (
-            soup.title.get_text(strip=True)
-            .replace(" - Aqua Vulnerability Database", "")
-            .replace(" | Vulnerability Database | Aqua Security", "")
-            .strip()
-        )
-    if not title:
-        h = soup.find(["h1", "h2"])
-        title = h.get_text(strip=True) if h else ""
-
-    # Scope all content extraction to the main content container
-    content = get_content_scope(soup)
-
-    paragraphs = [
-        p.get_text(" ", strip=True)
-        for p in content.find_all("p")
-        if p.get_text(strip=True)
-    ]
-    description = paragraphs[0] if paragraphs else ""
-
-    remediation_steps: list[str] = []
-    for li in content.find_all("li"):
-        text = li.get_text(" ", strip=True)
-        if text:
-            remediation_steps.append(text)
-    if not remediation_steps and len(paragraphs) > 1:
-        remediation_steps = paragraphs[1:]
-
-    return {
-        "title": title,
-        "description": description,
-        "remediation_steps": remediation_steps,
-        "raw_text": content.get_text(" ", strip=True)[:4000],
-    }
+    return extract_avd_content(soup)
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +362,16 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
         if avd_url:
             url_to_idx[avd_url] = i
 
-    extra_cols = ["avd_url", "title", "description", "remediation_console", "raw_text"]
+    extra_cols = [
+        "avd_url",
+        "title",
+        "description",
+        "impact",
+        "remediation_console",
+        "cfn_good_example",
+        "tf_good_example",
+        "raw_text",
+    ]
     for col in extra_cols:
         if col not in fieldnames:
             fieldnames.append(col)
@@ -343,6 +385,7 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
     for url, item in avd_data.items():
         normalised_url = url.rstrip("/")
         scraped_desc = item.get("description", "")
+        scraped_impact = item.get("impact", "")
         remediation_text = "\n".join(item.get("remediation_steps", []))
 
         if normalised_url in url_to_idx:
@@ -359,8 +402,14 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
 
             if not row.get("title"):
                 row["title"] = item.get("title", "")
+            if not row.get("impact"):
+                row["impact"] = scraped_impact
             if not row.get("remediation_console"):
                 row["remediation_console"] = remediation_text
+            if not row.get("cfn_good_example"):
+                row["cfn_good_example"] = item.get("cfn_good_example", "")
+            if not row.get("tf_good_example"):
+                row["tf_good_example"] = item.get("tf_good_example", "")
             if not row.get("raw_text"):
                 row["raw_text"] = item.get("raw_text", "")
 
@@ -374,19 +423,19 @@ def merge_into_csv(avd_data: dict, csv_path: Path) -> None:
                 "check_name": item.get("check_name", ""),
                 "title": item.get("title", ""),
                 "description": scraped_desc,
+                "impact": scraped_impact,
                 "service": item["service_slug"],
                 "framework": "cloudformation",
                 "avd_url": url,
                 "remediation_console": remediation_text,
+                "cfn_good_example": item.get("cfn_good_example", ""),
+                "tf_good_example": item.get("tf_good_example", ""),
                 "raw_text": item.get("raw_text", ""),
                 "severity": "",
                 "source_file_url": "",
                 "source_code": "",
-                "impact": "",
                 "remediation_cfn": "",
                 "remediation_tf": "",
-                "cfn_good_example": "",
-                "tf_good_example": "",
                 "links": "",
             })
             rows.append(new_row)
