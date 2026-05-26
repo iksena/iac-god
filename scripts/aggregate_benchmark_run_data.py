@@ -57,6 +57,90 @@ def _extract_stage_errors(stage_record):
         return [errors.strip()] if errors.strip() else []
     return []
 
+
+def _normalize_path_inputs(paths):
+    if paths is None:
+        return []
+    if isinstance(paths, (str, os.PathLike)):
+        return [paths]
+    return list(paths)
+
+
+def _collect_files_recursive(paths, extension, exclude_filenames=None):
+    """Collect files from paths or folders recursively that end with ``extension``."""
+    exclude_filenames = set(exclude_filenames or [])
+    collected = []
+
+    for path in _normalize_path_inputs(paths):
+        if os.path.isdir(path):
+            for root, _, files in os.walk(path):
+                for file_name in files:
+                    if not file_name.lower().endswith(extension):
+                        continue
+                    if file_name in exclude_filenames:
+                        continue
+                    collected.append(os.path.join(root, file_name))
+        elif os.path.isfile(path) and path.lower().endswith(extension):
+            if os.path.basename(path) not in exclude_filenames:
+                collected.append(path)
+
+    return sorted(dict.fromkeys(collected))
+
+
+def merge_results_from_paths(
+    csv_paths,
+    merged_csv_path="results_merged.csv",
+    jsonl_paths=None,
+    merged_jsonl_path="results_merged.jsonl",
+):
+    """Recursively expand CSV and JSONL inputs, then merge them."""
+    csv_files = _collect_files_recursive(
+        csv_paths,
+        ".csv",
+        exclude_filenames={os.path.basename(merged_csv_path)},
+    )
+    jsonl_files = _collect_files_recursive(
+        jsonl_paths,
+        ".jsonl",
+        exclude_filenames={os.path.basename(merged_jsonl_path)},
+    )
+
+    if not csv_files and not jsonl_files:
+        print("No CSV or JSONL files found to merge.")
+        return
+
+    merge_results(
+        csv_paths=csv_files,
+        merged_csv_path=merged_csv_path,
+        jsonl_paths=jsonl_files,
+        merged_jsonl_path=merged_jsonl_path,
+    )
+
+
+def merge_results_from_directory(
+    base_dir,
+    merged_csv_path="results_merged.csv",
+    merged_jsonl_path="results_merged.jsonl",
+):
+    """Find CSV and JSONL files recursively under ``base_dir`` and merge them."""
+    resolved_csv_path = (
+        merged_csv_path
+        if os.path.isabs(merged_csv_path)
+        else os.path.join(base_dir, merged_csv_path)
+    )
+    resolved_jsonl_path = (
+        merged_jsonl_path
+        if os.path.isabs(merged_jsonl_path)
+        else os.path.join(base_dir, merged_jsonl_path)
+    )
+
+    merge_results_from_paths(
+        csv_paths=[base_dir],
+        merged_csv_path=resolved_csv_path,
+        jsonl_paths=[base_dir],
+        merged_jsonl_path=resolved_jsonl_path,
+    )
+
 def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_csv="results_merged.csv"):
     if not os.path.exists(input_csv):
         print(f"Error: The input CSV '{input_csv}' does not exist.")
@@ -338,18 +422,22 @@ def move_run_folders_from_csv(
 
 if __name__ == "__main__":
     # move_run_folders_from_csv(
-    #     input_csv='benchmark_runs/20260515_010830 o3mini deploy/results_merged.csv',
+    #     input_csv='benchmark_runs/20260521_162319 Deepseek V4 Flash/results_merged.csv',
     #     runs_dir='runs',
-    #     target_subfolder_name='O3mini_deployability_runs',
+    #     target_subfolder_name='DeepseekV4Flash_deployability_runs',
     #     run_id_col='run_id',
     #     dry_run=False,
     # )
 
     merge_results_with_reports(
-        input_csv="benchmark_runs/20260515_010830 o3mini deploy/results_merged.csv", 
-        base_dir="runs/O3mini_deployability_runs", 
-        output_csv="benchmark_runs/20260515_010830 o3mini deploy/O3mini_deployability.csv"
+        input_csv="benchmark_runs/20260521_162319 Deepseek V4 Flash/results_merged.csv", 
+        base_dir="runs/DeepseekV4Flash_deployability_runs", 
+        output_csv="benchmark_runs/20260521_162319 Deepseek V4 Flash/DeepseekV4Flash_deployability.csv"
     )
+
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/20260521_162319 Deepseek V4 Flash",
+    # )
 
     # merge_results(
     #     csv_paths=[
