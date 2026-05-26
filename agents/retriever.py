@@ -273,7 +273,16 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     model, raw_response, usage = _call_query_generator(
         user_content=user_content,
     )
-    retrieval_queries = parse_query_response(raw_response) or errors[:8]
+    parsed_queries = parse_query_response(raw_response)
+    schema_queries = parsed_queries.get("schema_queries", [])
+    security_queries = parsed_queries.get("security_queries", [])
+    
+    # Fallback to errors if no queries generated
+    if not schema_queries and not security_queries:
+        schema_queries = errors[:8]
+
+    # Combine for history tracking
+    retrieval_queries = schema_queries + security_queries
 
     user_msg: Message = {"role": "user", "content": user_content}
     assistant_msg: Message = {"role": "assistant", "content": raw_response}
@@ -299,14 +308,17 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     ) or None
 
     cfn_context = execute_hybrid_retrieval(
-        retrieval_queries=retrieval_queries,
+        retrieval_queries=schema_queries,
         seed_resources=seed_resources,
         error_resources=error_resources,
     )
 
     from tools.security_hybrid_rag import execute_security_retrieval
 
-    security_context = execute_security_retrieval(retrieval_queries)
+    security_context = execute_security_retrieval(
+        security_queries=security_queries,
+        raw_errors=errors
+    )
     unified_context = "\n\n".join(
         part for part in (cfn_context, security_context) if part.strip()
     )

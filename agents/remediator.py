@@ -137,7 +137,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         "formatted_errors":  formatted_errors,
         "suggestion":        content,
         "timestamp":         datetime.now(timezone.utc).isoformat(),
-        "cfn_context":       cfn_graph_context,
+        "retriever_context": knowledge_base_context,
         "retrieval_queries": retrieval_queries,
     }
 

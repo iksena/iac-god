@@ -383,36 +383,26 @@ def _assemble_security_context(
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def execute_security_retrieval(retrieval_queries: list[str]) -> str:
+def execute_security_retrieval(security_queries: list[str], raw_errors: list[str]) -> str:
     """Execute full security G-Retrieval: ChromaDB → Neo4j → formatted context.
 
     Args:
-        retrieval_queries: LLM-generated semantic queries, possibly including
-            explicit AVD / Trivy IDs such as AVD-AWS-0086.
+        security_queries: LLM-generated semantic security queries.
+        raw_errors: Raw violation errors to extract explicit AVD / Trivy IDs deterministically.
 
     Returns:
         A formatted context string suitable for injection into the retriever
         or remediator prompt.
     """
-    if not retrieval_queries:
-        return ""
-
-    print(f"[SecurityRAG] Retrieval for {len(retrieval_queries)} query(ies).")
-
-    # Stage 1A: deterministic exact-match path for queries with explicit IDs.
-    exact_match_queries = [
-        query for query in retrieval_queries
-        if extract_trivy_check_ids([query])
-    ]
-    exact_ids = extract_trivy_check_ids(exact_match_queries)
-
-    # Stage 1B: semantic search for the remaining free-text queries.
-    semantic_queries = [
-        query for query in retrieval_queries
-        if not extract_trivy_check_ids([query])
-    ]
-    semantic_ids = _security_semantic_search(semantic_queries) if semantic_queries else []
-
+    
+    print(f"[SecurityRAG] Retrieval for {len(security_queries)} semantic query(ies) and {len(raw_errors)} raw error(s).")
+    
+    # 1. Guaranteed Exact Match: Pluck AVD IDs directly from Trivy outputs
+    exact_ids = extract_trivy_check_ids(raw_errors)
+    
+    # 2. Semantic Fallback: Use the LLM's conceptual queries
+    semantic_ids = _security_semantic_search(security_queries) if security_queries else []
+    
     # Merge: exact IDs first (highest confidence), then semantic matches.
     merged: OrderedDict[str, None] = OrderedDict()
     for cid in exact_ids + semantic_ids:

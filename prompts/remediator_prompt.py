@@ -55,6 +55,12 @@ the primary signal for which properties need fixing.
 {validation_errors}
 
 ## Knowledge Base Context
+You have been provided with two types of context:
+1. **Security Constraints**: This tells you the policy (e.g., S3 buckets must be encrypted).
+2. **CloudFormation Schema**: This tells you exactly how to write the property to satisfy the policy (e.g., the syntax for `BucketEncryption`).
+
+When writing Fix Objectives, combine the "What" from the Security context with the "How" from the Schema context.
+
 {knowledge_base_context}
 
 Provide fix objectives that resolve all current validation errors.

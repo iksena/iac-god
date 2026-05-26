@@ -149,9 +149,14 @@ strategy for that category.
 
 Output format — respond with ONLY a JSON object, no prose, no markdown fence:
 {
-  "queries": [
-    "What are the required properties for AWS::S3::Bucket BucketEncryption?",
-    "What valid values exist for AWS::RDS::DBInstance DBInstanceClass?"
+  "schema_queries": [
+    "AWS::S3::Bucket BucketEncryption required properties",
+    "AWS::RDS::DBInstance StorageEncrypted"
+  ],
+  "security_queries": [
+    "S3 bucket public access block remediation",
+    "AVD-AWS-0086 S3 encryption"
   ]
 }
+Place structural/property lookups in `schema_queries` and vulnerability/policy lookups in `security_queries`. Do not mix them.
 """
