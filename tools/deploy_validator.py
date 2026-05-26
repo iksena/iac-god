@@ -538,7 +538,7 @@ def validate_deployment(
         deadline = time.time() + deploy_config.stack_creation_timeout
 
         # Change 1 — Custom resource stall detection state
-        STALL_TIMEOUT = 120  # seconds of event silence before declaring stall
+        STALL_TIMEOUT = 15 * 60  # seconds of event silence before declaring stall
         last_event_time = time.time()
         last_active_resource: str | None = None
         prev_seen_count = 0
