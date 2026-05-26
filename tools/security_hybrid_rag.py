@@ -48,6 +48,8 @@ from langchain_chroma import Chroma
 from langchain_huggingface import HuggingFaceEmbeddings
 from neo4j import GraphDatabase
 
+from tools.embedding_provider import get_embeddings
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
@@ -131,21 +133,6 @@ def _id_variants(check_id: str) -> list[str]:
     return [base]
 
 
-# ---------------------------------------------------------------------------
-# Shared embedding model (lazy, process-scoped)
-# ---------------------------------------------------------------------------
-_embeddings: HuggingFaceEmbeddings | None = None
-
-
-@lru_cache(maxsize=1)
-def _get_global_embeddings() -> HuggingFaceEmbeddings:
-    return HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
-
-
 @contextmanager
 def _neo4j_driver():
     driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
@@ -186,7 +173,7 @@ def _security_semantic_search(
 
         vectorstore = Chroma(
             collection_name=SECURITY_COLLECTION,
-            embedding_function=_get_global_embeddings(),
+            embedding_function=get_embeddings(),
             client=client,
         )
 
