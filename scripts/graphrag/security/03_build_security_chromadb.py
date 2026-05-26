@@ -22,16 +22,32 @@ Chunking strategy:
   - metadata carries bridge keys for Neo4j traversal:
       check_id, service, cfn_resource_prefix, severity, avd_url
 
-Embedding model: sentence-transformers/all-mpnet-base-v2 (same as CFN pipeline)
+Embedding model:
+  Controlled by EMBEDDING_PROVIDER env var (huggingface | ollama).
+  Defaults to sentence-transformers/all-mpnet-base-v2 via HuggingFace,
+  matching 05_build_chromadb.py so both collections share the same vector space.
+
+ChromaDB distance metric:
+  Collection is always created with hnsw:space=cosine so similarity scores
+  are comparable with cfn_schema_properties and threshold semantics are
+  unambiguous regardless of provider.
+
+Clean rebuild:
+  If the collection already exists it is DELETED before ingestion so stale
+  vectors from a previous CSV are never silently left in place.
 
 Usage:
     python scripts/graphrag/security/03_build_security_chromadb.py
 
 Environment variables:
-    CHROMA_HOST   (default: localhost)
-    CHROMA_PORT   (default: 8000)
+    CHROMA_HOST          (default: localhost)
+    CHROMA_PORT          (default: 8000)
+    EMBEDDING_PROVIDER   (default: huggingface)  huggingface | ollama
+    EMBEDDING_MODEL      (default: provider default)
+    OLLAMA_BASE_URL      (default: http://localhost:11434)  Ollama only
 
-Dependencies: langchain-core, langchain-huggingface, langchain-chroma, chromadb
+Dependencies: langchain-core, langchain-huggingface, langchain-chroma, chromadb, numpy
+               (+ langchain-ollama when EMBEDDING_PROVIDER=ollama)
 """
 
 import json
@@ -39,18 +55,13 @@ import os
 import sys
 from pathlib import Path
 
+import numpy as np
 import chromadb
 
 try:
     from langchain_core.documents import Document
 except ImportError:
     print("ERROR: pip install langchain-core", file=sys.stderr)
-    sys.exit(1)
-
-try:
-    from langchain_huggingface import HuggingFaceEmbeddings
-except ImportError:
-    print("ERROR: pip install langchain-huggingface", file=sys.stderr)
     sys.exit(1)
 
 try:
@@ -65,17 +76,92 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Paths & config
 # ---------------------------------------------------------------------------
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT   = Path(__file__).resolve().parents[3]
 CHECKS_JSON = REPO_ROOT / "data" / "security_checks.json"
 
-# ChromaDB Docker connection – must match the container started by the CFN pipeline
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 
-COLLECTION_NAME = "security_checks"
-EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
+COLLECTION_NAME     = "security_checks"
 EXAMPLE_PREVIEW_CHARS = 600
 
+# Collection is always created with cosine distance so threshold semantics
+# are unambiguous regardless of provider.  Must match the query-time config
+# in 05_execute_security_g_retrieval.py (COLLECTION_METADATA).
+COLLECTION_METADATA = {"hnsw:space": "cosine"}
+
+# ---------------------------------------------------------------------------
+# Embedding provider — inline mirror of 05_build_chromadb.py so this script
+# has no dependency on the tools/ package and supports the same env vars.
+# ---------------------------------------------------------------------------
+
+_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "huggingface").lower().strip()
+_DEFAULTS = {
+    "huggingface": "sentence-transformers/all-mpnet-base-v2",
+    "ollama":      "mxbai-embed-large",
+}
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", _DEFAULTS.get(_PROVIDER, _DEFAULTS["huggingface"]))
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+
+class _NormalisedEmbeddings:
+    """Thin wrapper that L2-normalises every vector before ingestion.
+
+    Ensures unit-length vectors so cosine distance == angular distance,
+    regardless of whether the underlying model normalises by default.
+    HuggingFaceEmbeddings with normalize_embeddings=True already does this;
+    OllamaEmbeddings does not.
+    """
+    def __init__(self, base):
+        self._base = base
+
+    @staticmethod
+    def _norm(vecs):
+        arr   = np.array(vecs, dtype=np.float32)
+        norms = np.linalg.norm(arr, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1.0, norms)
+        return (arr / norms).tolist()
+
+    def embed_documents(self, texts):
+        return self._norm(self._base.embed_documents(texts))
+
+    def embed_query(self, text):
+        return self._norm([self._base.embed_query(text)])[0]
+
+
+def _get_embeddings():
+    """Return an embedding object matching the configured EMBEDDING_PROVIDER.
+
+    This is an exact copy of the factory in 05_build_chromadb.py so that the
+    security collection is always embedded in the same vector space as
+    cfn_schema_properties, enabling cross-collection similarity comparison.
+    """
+    if _PROVIDER == "ollama":
+        try:
+            from langchain_ollama import OllamaEmbeddings
+        except ImportError:
+            print(
+                "ERROR: langchain-ollama not installed. "
+                "Run: pip install langchain-ollama",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"[Build] Embedding provider: Ollama  model: {EMBEDDING_MODEL}  url: {OLLAMA_BASE_URL}")
+        base = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=OLLAMA_BASE_URL)
+        return _NormalisedEmbeddings(base)  # Ollama does not normalise by default
+
+    from langchain_huggingface import HuggingFaceEmbeddings
+    print(f"[Build] Embedding provider: HuggingFace  model: {EMBEDDING_MODEL}")
+    return HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},  # already normalised
+    )
+
+
+# ---------------------------------------------------------------------------
+# Document construction
+# ---------------------------------------------------------------------------
 
 def build_page_content(check: dict) -> str:
     """
@@ -87,13 +173,13 @@ def build_page_content(check: dict) -> str:
       'S3 bucket public read access'      → AVD-AWS-0173
       'API Gateway missing authorization' → AVD-AWS-0004
     """
-    check_id = check.get("check_id", "")
+    check_id   = check.get("check_id", "")
     check_name = check.get("check_name", "")
-    severity = check.get("severity", "")
+    severity   = check.get("severity", "")
     description = check.get("description", "")
-    service = check.get("service", "")
+    service    = check.get("service", "")
     cfn_prefix = check.get("cfn_resource_prefix", "")
-    impact = check.get("impact", "")
+    impact     = check.get("impact", "")
 
     rem_cfn = check.get("remediation_cfn", [])
     if isinstance(rem_cfn, list):
@@ -124,17 +210,21 @@ def build_documents(checks: dict) -> list[Document]:
         docs.append(Document(
             page_content=build_page_content(check),
             metadata={
-                "check_id": check_id,
-                "check_name": check.get("check_name", ""),
-                "severity": check.get("severity", ""),
-                "service": check.get("service", ""),
+                "check_id":            check_id,
+                "check_name":          check.get("check_name", ""),
+                "severity":            check.get("severity", ""),
+                "service":             check.get("service", ""),
                 "cfn_resource_prefix": check.get("cfn_resource_prefix", ""),
-                "avd_url": check.get("avd_url", ""),
-                "source_file_url": check.get("source_file_url", ""),
+                "avd_url":             check.get("avd_url", ""),
+                "source_file_url":     check.get("source_file_url", ""),
             },
         ))
     return docs
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     print(f"Loading security checks from: {CHECKS_JSON}")
@@ -148,17 +238,12 @@ def main():
     print(f"Building documents for {len(checks)} security checks...")
     documents = build_documents(checks)
 
-    print(f"Loading embedding model: {EMBEDDING_MODEL}")
-    embeddings = HuggingFaceEmbeddings(
-        model_name=EMBEDDING_MODEL,
-        model_kwargs={"device": "cpu"},
-        encode_kwargs={"normalize_embeddings": True},
-    )
+    embeddings = _get_embeddings()
 
     print(f"Connecting to ChromaDB Docker at {CHROMA_HOST}:{CHROMA_PORT} ...")
     chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
 
-    # Verify the CFN collection is present so the user knows both will co-exist
+    # Verify the CFN collection is present so the user knows both will co-exist.
     existing = [c.name for c in chroma_client.list_collections()]
     print(f"  Existing collections: {existing}")
     if "cfn_schema_properties" not in existing:
@@ -168,12 +253,22 @@ def main():
             "  collections share the same Docker container."
         )
 
-    print(f"Creating collection '{COLLECTION_NAME}' ...")
+    # -----------------------------------------------------------------------
+    # Clean rebuild: drop stale collection before re-ingestion.
+    # This ensures stale vectors from a previous CSV are never silently
+    # left in place when the source data changes.
+    # -----------------------------------------------------------------------
+    if COLLECTION_NAME in existing:
+        print(f"  Dropping existing collection '{COLLECTION_NAME}' for clean rebuild...")
+        chroma_client.delete_collection(COLLECTION_NAME)
+
+    print(f"Creating collection '{COLLECTION_NAME}' (hnsw:space=cosine) ...")
     vectorstore = Chroma.from_documents(
         documents=documents,
         embedding=embeddings,
         client=chroma_client,
         collection_name=COLLECTION_NAME,
+        collection_metadata=COLLECTION_METADATA,   # hnsw:space=cosine
     )
 
     # Smoke-test
@@ -184,9 +279,13 @@ def main():
         print(f"  [{i}] {m['check_id']} | {m['check_name']} | {m['severity']}")
 
     print(f"\n✓ Collection '{COLLECTION_NAME}' built in ChromaDB Docker.")
-    print(f"  Total documents : {len(documents)}")
-    print(f"  Docker endpoint : {CHROMA_HOST}:{CHROMA_PORT}")
-    print(f"  Collections now : {[c.name for c in chroma_client.list_collections()]}")
+    print(f"  Provider   : {_PROVIDER}")
+    print(f"  Model      : {EMBEDDING_MODEL}")
+    print(f"  Distance   : cosine (hnsw:space=cosine)")
+    print(f"  Normalised : True")
+    print(f"  Total docs : {len(documents)}")
+    print(f"  Endpoint   : {CHROMA_HOST}:{CHROMA_PORT}")
+    print(f"  Collections: {[c.name for c in chroma_client.list_collections()]}")
 
 
 if __name__ == "__main__":
