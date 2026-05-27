@@ -296,6 +296,7 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     # ------------------------------------------------------------------
     schema_queries: list[str] = []
     cfn_context = ""
+    llm_record = None
 
     if has_schema:
         has_line_numbers = _errors_have_line_numbers(errors)
@@ -322,7 +323,8 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         if not schema_queries:
             schema_queries = errors[:8]
 
-        recorder.record_llm_call(
+        # Capture the log record so it can be appended to state below.
+        llm_record = recorder.record_llm_call(
             state=state,
             agent="retriever",
             model=model,
@@ -394,7 +396,9 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     return {
         "retriever_context":  unified_context,
         "retriever_queries":  retrieval_queries,
-        "llm_call_log":       state["llm_call_log"],
+        # Append the LLM record when a schema retrieval call was made;
+        # security retrieval is deterministic and produces no LLM record.
+        "llm_call_log":       state["llm_call_log"] + ([llm_record] if llm_record else []),
         "retriever_history":  append_and_cap(
             state.get("retriever_history", []), user_msg, assistant_msg
         ),

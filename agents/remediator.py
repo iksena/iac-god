@@ -151,10 +151,3 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
             state.get("remediator_history", []), user_msg, assistant_msg
         ),
     }
-
-
-def should_include_remediation_context(state: GraphState) -> bool:
-    """In the dual RAG setup, both CFN schema and Security context
-    are fetched via the retriever agent. Therefore, we always return True
-    so the graph routes to the retriever first in moderate mode."""
-    return True
