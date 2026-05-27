@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from main import run_pipeline
+import logging
+logging.getLogger("neo4j").setLevel(logging.ERROR)
 
 
 @dataclass

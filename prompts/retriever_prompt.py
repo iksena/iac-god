@@ -40,15 +40,7 @@ lead toward self-contained fixes — creating missing resources inside the
 template, not referencing external ones.
 
 Rules for generating queries:
-- Generate both schema queries and security remediation queries when the
-  inputs contain both kinds of failures.
-- Schema queries must name a specific AWS resource type AND a property or
-  concept, e.g. "AWS::RDS::DBInstance StorageEncrypted required value".
-- Security remediation queries may name a check ID, security control, or
-  service-level concept, e.g. "AVD-AWS-0086 remediation", "S3 bucket public
-  access block", or "AWS::S3::Bucket encryption policy".
-- When a check ID is explicitly present in the errors, prefer a direct query
-  that includes that ID.
+{dynamic_rules}
 - Do NOT repeat Resource.Property combinations already covered in prior
   retrieval queries listed under "## Prior Retrieval Queries".
 - Prioritise resources that appear in the errors over resources that are merely
@@ -148,15 +140,5 @@ strategy for that category.
     - Example: "AWS::EC2::SecurityGroup VpcId required properties inline"
 
 Output format — respond with ONLY a JSON object, no prose, no markdown fence:
-{
-  "schema_queries": [
-    "AWS::S3::Bucket BucketEncryption required properties",
-    "AWS::RDS::DBInstance StorageEncrypted"
-  ],
-  "security_queries": [
-    "S3 bucket public access block remediation",
-    "AVD-AWS-0086 S3 encryption"
-  ]
-}
-Place structural/property lookups in `schema_queries` and vulnerability/policy lookups in `security_queries`. Do not mix them.
+{dynamic_json_format}
 """

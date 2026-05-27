@@ -195,8 +195,41 @@ def build_retrieval_prompt(
     return "\n\n".join(parts)
 
 
+def _get_active_error_types(state: GraphState) -> tuple[bool, bool]:
+    """Determine if active errors require schema context, security context, or both."""
+    has_schema = False
+    has_security = False
+
+    latest_by_stage: dict[str, dict] = {}
+    for result in state.get("validation_results", []):
+        stage = str(result.get("stage") or "").strip()
+        if stage:
+            latest_by_stage[stage] = result
+
+    # Check structural stages
+    if not latest_by_stage.get("cfn-lint", {}).get("passed", True):
+        has_schema = True
+        
+    deploy = state.get("deploy_validation_result")
+    if deploy and not deploy.get("passed") and deploy.get("target") != "skipped":
+        has_schema = True
+
+    # Check security stages
+    if not latest_by_stage.get("checkov", {}).get("passed", True):
+        has_security = True
+    if not latest_by_stage.get("trivy", {}).get("passed", True):
+        has_security = True
+
+    # Fallback to both if state is somehow empty
+    if not has_schema and not has_security:
+        has_schema, has_security = True, True
+
+    return has_schema, has_security
+
+
 def _call_query_generator(
     user_content: str,
+    system_prompt: str,
 ) -> tuple[str, str, dict | None]:
     """Send the retrieval prompt to the LLM without conversation history.
 
@@ -213,7 +246,7 @@ def _call_query_generator(
     raw_response, usage = _call_llm_with_history(
         client,
         model,
-        system=QUERY_GEN_SYSTEM,
+        system=system_prompt,
         messages=[{"role": "user", "content": user_content}],
     )
     return model, raw_response, usage
@@ -267,11 +300,27 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         remediation_history=state.get("remediation_history", []),
     )
 
-    # Stateless LLM call — no rolling history passed.
-    # Prior-query deduplication is handled by the prompt itself via
-    # the '## Prior Retrieval Queries' section from remediation_history.
+    has_schema, has_security = _get_active_error_types(state)
+    print(f"[Retriever] Routing contexts -> Schema: {has_schema} | Security: {has_security}")
+
+    if has_schema and has_security:
+        dynamic_rules = "- Generate both schema queries and security remediation queries."
+        dynamic_json = '{\n  "schema_queries": ["..."],\n  "security_queries": ["..."]\n}\nPlace structural lookups in `schema_queries` and vulnerability lookups in `security_queries`.'
+    elif has_schema:
+        dynamic_rules = "- Generate ONLY schema queries based on structural/deployment errors. Do NOT generate security queries."
+        dynamic_json = '{\n  "schema_queries": ["...", "..."]\n}'
+    else:
+        dynamic_rules = "- Generate ONLY security remediation queries based on vulnerability findings. Do NOT generate schema queries."
+        dynamic_json = '{\n  "security_queries": ["...", "..."]\n}'
+
+    system_prompt = QUERY_GEN_SYSTEM.format(
+        dynamic_rules=dynamic_rules,
+        dynamic_json_format=dynamic_json
+    )
+
     model, raw_response, usage = _call_query_generator(
         user_content=user_content,
+        system_prompt=system_prompt
     )
     parsed_queries = parse_query_response(raw_response)
     schema_queries = parsed_queries.get("schema_queries", [])
@@ -307,18 +356,26 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         deploy_validation_result=deploy_validation_result,
     ) or None
 
-    cfn_context = execute_hybrid_retrieval(
-        retrieval_queries=schema_queries,
-        seed_resources=seed_resources,
-        error_resources=error_resources,
-    )
+    # Conditionally Execute RAG Tools
+    cfn_context = ""
+    if has_schema:
+        # Fallback if LLM fails
+        if not schema_queries and not security_queries:
+             schema_queries = errors[:8]
+        cfn_context = execute_hybrid_retrieval(
+            retrieval_queries=schema_queries,
+            seed_resources=seed_resources,
+            error_resources=error_resources,
+        )
 
-    from tools.security_hybrid_rag import execute_security_retrieval
+    security_context = ""
+    if has_security:
+        from tools.security_hybrid_rag import execute_security_retrieval
+        security_context = execute_security_retrieval(
+            security_queries=security_queries,
+            raw_errors=errors
+        )
 
-    security_context = execute_security_retrieval(
-        security_queries=security_queries,
-        raw_errors=errors
-    )
     unified_context = "\n\n".join(
         part for part in (cfn_context, security_context) if part.strip()
     )
