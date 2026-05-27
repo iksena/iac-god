@@ -1,38 +1,30 @@
 """tools/security_hybrid_rag.py
 
-ChromaDB + Neo4j hybrid retrieval for security remediation context.
+Pure-graph deterministic security retrieval.
 
-Mirrors the structure of tools/cfn_hybrid_rag.py but targets the
-'security_checks' ChromaDB collection and the SecurityCheck subgraph in
-Neo4j, which were built by scripts/graphrag/security/.
+All security context is now sourced exclusively from the Neo4j SecurityCheck
+subgraph that was built by scripts/graphrag/security/04_import_security_to_neo4j.py.
+ChromaDB semantic search has been removed because Trivy/Checkov validators
+always emit explicit rule IDs (e.g. AVD-AWS-0086) — there is no ambiguity to
+resolve with vector search.
 
-Retrieval runs in two sequential stages:
-  Stage 1 — _security_semantic_search():
-      ChromaDB similarity search over pre-indexed security check chunks.
-      Only chunks at or below SECURITY_DISTANCE_THRESHOLD are kept.
-      Results are de-duplicated by check_id.
+Retrieval pipeline
+------------------
+  1. extract_trivy_check_ids(raw_errors)
+       Regex-extracts every AVD-AWS-XXXX / AWS-XXXX ID from the raw validator
+       output strings. Deterministic, no LLM, no embedding.
 
-  Stage 2 — _security_graph_lookup():
-      Neo4j traversal per check_id. Returns description, impact,
-      CloudFormation remediation text, CFN good examples, and the Rego
-      policy source code. URLs (avd_url, rego_source_url, links) are
-      intentionally excluded — the context is designed for LLM
-      consumption, not human browsing.
+  2. _security_graph_lookup(check_ids)
+       One Cypher query per ID. Returns description, impact, CFN remediation
+       instructions, CFN good example, and Rego policy source.
 
-  Final — execute_security_retrieval():
-      Merges exact-match and semantic results into the single security
-      context block consumed by the retriever / remediator.
+  3. _assemble_security_context(checks)
+       Sorts by severity (CRITICAL first), applies a character budget, and
+       returns the formatted context block for the remediator prompt.
 
 Dependency direction (strictly unidirectional, no cycles):
   remediator_agent  →  security_hybrid_rag  (no agent imports)
   security_hybrid_rag does NOT import from agents/
-
-Input contract
---------------
-The caller passes LLM-generated retrieval queries. If a query explicitly
-contains an AVD/Trivy check ID, the function routes it to the deterministic
-Neo4j lookup path first. Otherwise it performs semantic search against the
-security ChromaDB collection and re-ranks the matching graph rows.
 """
 from __future__ import annotations
 
@@ -40,36 +32,16 @@ import os
 import re
 from collections import OrderedDict
 from contextlib import contextmanager
-from functools import lru_cache
 from typing import Any
 
-import chromadb
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
 from neo4j import GraphDatabase
-
-from tools.embedding_provider import get_embeddings
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
-
 NEO4J_URI      = os.getenv("NEO4J_URI",      "bolt://localhost:7687")
 NEO4J_USER     = os.getenv("NEO4J_USER",     "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
-
-CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
-CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
-
-SECURITY_COLLECTION = "security_checks"
-
-# Raw cosine-distance floor for the security_checks collection.
-# Lower = more similar. 0.55 matches the CFN collection baseline.
-# Tune DOWNWARD for higher precision, UPWARD for higher recall.
-SECURITY_DISTANCE_THRESHOLD: float = float(
-    os.getenv("SECURITY_DISTANCE_THRESHOLD", "0.55")
-)
 
 # Sort order: lower = higher priority in the formatted context block.
 _SEVERITY_RANK: dict[str, int] = {
@@ -81,10 +53,10 @@ _SEVERITY_RANK: dict[str, int] = {
 # for the CFN schema block and the prompt frame.
 _SECURITY_CHAR_BUDGET: int = int(os.getenv("SECURITY_CHAR_BUDGET", "12000"))
 
-# Patterns used to extract Trivy check IDs from raw finding text
-_AVD_ID_RE   = re.compile(r"\b(?:AVD-)?AWS-\d{4}\b", re.IGNORECASE)
-_BRACKET_RE  = re.compile(r"\[([A-Z0-9_-]+)\]")
-_HTML_CMNT   = re.compile(r"<!--.*?-->", re.DOTALL)
+# Compiled once at module level — used by is_known_avd_id and extract_trivy_check_ids.
+_AVD_ID_RE  = re.compile(r"\b(?:AVD-)?AWS-\d{4}\b", re.IGNORECASE)
+_BRACKET_RE = re.compile(r"\[([A-Z0-9_-]+)\]")
+_HTML_CMNT  = re.compile(r"<!--.*?-->", re.DOTALL)
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +72,7 @@ def _clean_html_comments(text: str | None) -> str:
 def extract_trivy_check_ids(finding_texts: list[str]) -> list[str]:
     """Extract Trivy/AVD check-IDs from raw finding text strings.
 
-    Accepts the same variety of formats that validators.py produces:
+    Accepts the variety of formats that validators.py produces:
       - '[AVD-AWS-0088] ...'   (bracket-wrapped, AVD prefix)
       - 'AVD-AWS-0132: ...'    (plain AVD-AWS-####)
       - 'AWS-0090 ...'         (short form without AVD prefix)
@@ -143,66 +115,7 @@ def _neo4j_driver():
 
 
 # ---------------------------------------------------------------------------
-# Stage 1 — Query routing: explicit IDs → exact lookup, free text → semantic search
-# ---------------------------------------------------------------------------
-
-def _security_semantic_search(
-    finding_texts: list[str],
-    k_per_query: int = 5,
-) -> list[str]:
-    """Run ChromaDB similarity search using free-text retrieval queries.
-
-    Each query string is used as its own search query — LLM-generated
-    prompts such as 'S3 bucket encryption' or 'AWS::S3::Bucket public access'
-    embed well without pre-processing.
-
-    Returns a de-duplicated list of check_ids ordered by first-seen
-    (similarity-descending within each query).
-    """
-    seen: OrderedDict[str, None] = OrderedDict()
-
-    try:
-        client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
-        existing = [c.name for c in client.list_collections()]
-        if SECURITY_COLLECTION not in existing:
-            print(
-                f"[SecurityRAG] Stage 1: collection '{SECURITY_COLLECTION}' not found. "
-                "Falling back to CSV lookup."
-            )
-            return []
-
-        vectorstore = Chroma(
-            collection_name=SECURITY_COLLECTION,
-            embedding_function=get_embeddings(),
-            client=client,
-        )
-
-        kept = dropped = 0
-        for query in finding_texts:
-            scored = vectorstore.similarity_search_with_score(query, k=k_per_query)
-            for doc, score in scored:
-                if score > SECURITY_DISTANCE_THRESHOLD:
-                    dropped += 1
-                    continue
-                cid = (doc.metadata.get("check_id") or "").strip().upper()
-                if cid and cid not in seen:
-                    seen[cid] = None
-                    kept += 1
-
-        print(
-            f"[SecurityRAG] Stage 1: {kept + dropped} chunks retrieved, "
-            f"{dropped} dropped (distance > {SECURITY_DISTANCE_THRESHOLD}), "
-            f"{kept} kept ({len(seen)} unique check_ids)."
-        )
-
-    except Exception as exc:
-        print(f"[SecurityRAG] Stage 1 warning: ChromaDB unavailable. {exc}")
-
-    return list(seen.keys())
-
-
-# ---------------------------------------------------------------------------
-# Stage 2 — Graph lookup: check_ids → full security subgraph
+# Graph lookup — check_ids → full security subgraph
 # ---------------------------------------------------------------------------
 
 _SECURITY_CYPHER = """
@@ -237,11 +150,11 @@ def _query_security_check(driver, check_id: str) -> dict[str, Any] | None:
             row = session.run(_SECURITY_CYPHER, check_id=variant).single()
             if row:
                 return {
-                    "check_id":        row["check_id"],
-                    "check_name":      row["check_name"],
-                    "severity":        row["severity"],
-                    "description":     row["description"],
-                    "impact":          row["impact"],
+                    "check_id":         row["check_id"],
+                    "check_name":       row["check_name"],
+                    "severity":         row["severity"],
+                    "description":      row["description"],
+                    "impact":           row["impact"],
                     "cfn_remediations": [r for r in (row["cfn_remediations"] or []) if r],
                     "cfn_examples":     [e for e in (row["cfn_examples"] or []) if e],
                     "rego_code":        row["rego_code"],
@@ -254,7 +167,7 @@ def _security_graph_lookup(check_ids: list[str]) -> list[dict[str, Any]]:
     results: list[dict] = []
     if not check_ids:
         return results
-    print(f"[SecurityRAG] Stage 2: querying Neo4j for {len(check_ids)} checks...")
+    print(f"[SecurityRAG] Graph lookup: querying Neo4j for {len(check_ids)} check(s)...")
     try:
         with _neo4j_driver() as driver:
             seen: set[str] = set()
@@ -267,8 +180,11 @@ def _security_graph_lookup(check_ids: list[str]) -> list[dict[str, Any]]:
                 if row:
                     results.append(row)
     except Exception as exc:
-        print(f"[SecurityRAG] Stage 2 warning: Neo4j unavailable. {exc}")
-    print(f"[SecurityRAG] Stage 2: {len(results)}/{len(check_ids)} checks retrieved from graph.")
+        print(f"[SecurityRAG] Graph lookup warning: Neo4j unavailable. {exc}")
+    print(
+        f"[SecurityRAG] Graph lookup: {len(results)}/{len(check_ids)} "
+        f"check(s) resolved from Neo4j."
+    )
     return results
 
 
@@ -283,7 +199,7 @@ def _format_one_check(chk: dict[str, Any]) -> str:
       - No URLs of any kind (avd_url, rego_source_url, links) — this context
         goes directly to the LLM and URLs add noise without semantic value.
       - Fields: check_id, check_name, severity, description, impact,
-        CFN remediation instructions, CFN good examples, Rego source code.
+        CFN remediation instructions, CFN good example, Rego source code.
       - Rego code is included because it contains the exact condition the
         policy enforces, which guides the LLM to produce a compliant fix.
     """
@@ -325,8 +241,8 @@ def _assemble_security_context(
     """Sort by severity, apply char budget, return formatted context block.
 
     CRITICAL/HIGH/MEDIUM/LOW checks are always included if budget allows.
-    UNKNOWN-severity checks (non-standard AVD IDs) are appended last and
-    silently dropped when the budget is exceeded.
+    UNKNOWN-severity checks are appended last and silently dropped when the
+    budget is exceeded.
     """
     if not checks:
         return ""
@@ -357,11 +273,11 @@ def _assemble_security_context(
 
     if skipped_unknown:
         print(
-            f"[SecurityRAG] Dropped {skipped_unknown} UNKNOWN-severity checks "
-            f"(char budget). Included {len(included_blocks)}/{len(checks)} checks."
+            f"[SecurityRAG] Dropped {skipped_unknown} UNKNOWN-severity check(s) "
+            f"(char budget). Included {len(included_blocks)}/{len(checks)} check(s)."
         )
     else:
-        print(f"[SecurityRAG] Included {len(included_blocks)}/{len(checks)} checks.")
+        print(f"[SecurityRAG] Included {len(included_blocks)}/{len(checks)} check(s).")
 
     return "\n\n".join(included_blocks)
 
@@ -370,49 +286,44 @@ def _assemble_security_context(
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def execute_security_retrieval(security_queries: list[str], raw_errors: list[str]) -> str:
-    """Execute full security G-Retrieval: ChromaDB → Neo4j → formatted context.
+def execute_security_retrieval(raw_errors: list[str]) -> str:
+    """Execute deterministic Security G-Retrieval: ID extraction → Neo4j → formatted context.
+
+    All security context is sourced directly from the Neo4j SecurityCheck graph.
+    No LLM call, no embedding, no ChromaDB — the validator's explicit rule IDs
+    are the only retrieval key.
 
     Args:
-        security_queries: LLM-generated semantic security queries.
-        raw_errors: Raw violation errors to extract explicit AVD / Trivy IDs deterministically.
+        raw_errors: Raw violation strings from trivy / checkov validators.
+                    AVD-AWS-XXXX and AWS-XXXX IDs are extracted by regex.
 
     Returns:
-        A formatted context string suitable for injection into the retriever
-        or remediator prompt.
+        A formatted context string suitable for injection into the remediator
+        prompt.  Returns empty string when no known IDs are found or Neo4j
+        is unavailable.
     """
-    
-    print(f"[SecurityRAG] Retrieval for {len(security_queries)} semantic query(ies) and {len(raw_errors)} raw error(s).")
-    
-    # 1. Guaranteed Exact Match: Pluck AVD IDs directly from Trivy outputs
-    exact_ids = extract_trivy_check_ids(raw_errors)
-    
-    # 2. Semantic Fallback: Use the LLM's conceptual queries
-    semantic_ids = _security_semantic_search(security_queries) if security_queries else []
-    
-    # Merge: exact IDs first (highest confidence), then semantic matches.
-    merged: OrderedDict[str, None] = OrderedDict()
-    for cid in exact_ids + semantic_ids:
-        norm = cid.strip().upper()
-        if norm:
-            merged[norm] = None
+    check_ids = extract_trivy_check_ids(raw_errors)
 
-    if not merged:
-        print("[SecurityRAG] No check_ids identified. Returning empty context.")
+    if not check_ids:
+        print(
+            "[SecurityRAG] No AVD/Trivy IDs found in raw errors. "
+            "Returning empty security context."
+        )
         return ""
 
     print(
-        f"[SecurityRAG] check_ids: {len(exact_ids)} exact, "
-        f"{len(semantic_ids)} from semantic search, "
-        f"{len(merged)} total unique."
+        f"[SecurityRAG] Extracted {len(check_ids)} unique ID(s) from "
+        f"{len(raw_errors)} raw error string(s): {check_ids}"
     )
 
-    # Stage 2: graph traversal per check_id.
-    checks = _security_graph_lookup(list(merged.keys()))
+    checks = _security_graph_lookup(check_ids)
     if not checks:
+        print(
+            f"[SecurityRAG] 0/{len(check_ids)} IDs resolved from Neo4j. "
+            "Ensure 04_import_security_to_neo4j.py has been run."
+        )
         return ""
 
-    # Format and return.
     context = _assemble_security_context(checks)
-    print(f"[SecurityRAG] Context assembled: {len(context)} chars.")
+    print(f"[SecurityRAG] Context assembled: {len(context)} char(s).")
     return context

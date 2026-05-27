@@ -152,6 +152,9 @@ def build_retrieval_prompt(
       3. Prior retrieval-query history to avoid duplicate lookups.
 
     Pure function — no I/O, no LLM calls, fully unit-testable.
+    Only structural errors (cfn-lint / deploy) are included here; security
+    errors are routed directly to execute_security_retrieval() without going
+    through the LLM.
     """
     parts: list[str] = [
         "## Validation Errors\n" + "\n".join(f"- {e}" for e in errors)
@@ -209,7 +212,7 @@ def _get_active_error_types(state: GraphState) -> tuple[bool, bool]:
     # Check structural stages
     if not latest_by_stage.get("cfn-lint", {}).get("passed", True):
         has_schema = True
-        
+
     deploy = state.get("deploy_validation_result")
     if deploy and not deploy.get("passed") and deploy.get("target") != "skipped":
         has_schema = True
@@ -258,21 +261,19 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     Orchestration steps:
       1. Extract cfn-lint + deploy errors (security stages excluded).
       2. Annotate the template to seed resource types for Neo4j.
-      3. Build the retrieval prompt (pure, no I/O).
-      4. Call the LLM (stateless — no rolling history passed) to generate queries.
-         All deduplication context is supplied via the '## Prior Retrieval Queries'
-         section in the prompt, which is sourced from remediation_history.
-      5. Execute ChromaDB (semantic) + Neo4j (graph) hybrid retrieval.
-         - ChromaDB results are filtered to seed_resources only.
-         - Neo4j lookups are scoped to error_resources when errors are present,
-           avoiding full-template schema dumps on repair iterations.
-      6. Persist prompt, response, queries, and full schema context to
+      3. Build the retrieval prompt (pure, no I/O) — structural errors only.
+      4. When has_schema: call the LLM to generate schema_queries, then run
+         ChromaDB + Neo4j hybrid retrieval for CFN documentation context.
+      5. When has_security: extract AVD/Trivy IDs from raw errors via regex,
+         then run a direct Neo4j graph lookup — NO LLM query generation for
+         security (IDs are already explicit in the validator output).
+      6. Persist prompt, response, queries, and full context to
          retriever_history.txt via the recorder.
       7. Return retriever_context, retriever_queries, and updated
          retriever_history into state.
     """
     iteration = state["current_iteration"]
-    print(f"\n[Retriever] Building CFN context (iteration {iteration})...")
+    print(f"\n[Retriever] Building context (iteration {iteration})...")
 
     deploy_validation_result = state.get("deploy_validation_result")
 
@@ -287,98 +288,93 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         smell_report=state.get("smell_report"),
     )
 
-    has_line_numbers = _errors_have_line_numbers(errors)
-    print(
-        f"[Retriever] {'Line numbers detected — annotated template' : <45} "
-        f"{'included' if has_line_numbers else 'NOT included (plain template used)'}."
-    )
-
-    user_content = build_retrieval_prompt(
-        errors=errors,
-        template_yaml=template_yaml,
-        annotation=annotation,
-        remediation_history=state.get("remediation_history", []),
-    )
-
     has_schema, has_security = _get_active_error_types(state)
-    print(f"[Retriever] Routing contexts -> Schema: {has_schema} | Security: {has_security}")
+    print(f"[Retriever] Routing -> Schema: {has_schema} | Security: {has_security}")
 
-    if has_schema and has_security:
-        dynamic_rules = "- Generate both schema queries and security remediation queries."
-        dynamic_json = '{\n  "schema_queries": ["..."],\n  "security_queries": ["..."]\n}\nPlace structural lookups in `schema_queries` and vulnerability lookups in `security_queries`.'
-    elif has_schema:
-        dynamic_rules = "- Generate ONLY schema queries based on structural/deployment errors. Do NOT generate security queries."
-        dynamic_json = '{\n  "schema_queries": ["...", "..."]\n}'
-    else:
-        dynamic_rules = "- Generate ONLY security remediation queries based on vulnerability findings. Do NOT generate schema queries."
-        dynamic_json = '{\n  "security_queries": ["...", "..."]\n}'
-
-    system_prompt = QUERY_GEN_SYSTEM.format(
-        dynamic_rules=dynamic_rules,
-        dynamic_json_format=dynamic_json
-    )
-
-    model, raw_response, usage = _call_query_generator(
-        user_content=user_content,
-        system_prompt=system_prompt
-    )
-    parsed_queries = parse_query_response(raw_response)
-    schema_queries = parsed_queries.get("schema_queries", [])
-    security_queries = parsed_queries.get("security_queries", [])
-    
-    # Fallback to errors if no queries generated
-    if not schema_queries and not security_queries:
-        schema_queries = errors[:8]
-
-    # Combine for history tracking
-    retrieval_queries = schema_queries + security_queries
-
-    user_msg: Message = {"role": "user", "content": user_content}
-    assistant_msg: Message = {"role": "assistant", "content": raw_response}
-
-    llm_record = recorder.record_llm_call(
-        state=state,
-        agent="retriever",
-        model=model,
-        prompt=f"SYSTEM:\n{QUERY_GEN_SYSTEM}\n\nUSER:\n{user_content}",
-        response=raw_response,
-        token_usage=usage,
-    )
-
-    seed_resources = extract_resource_types(annotation)
-
-    # Resolve which resource *types* have active errors so Neo4j lookups can
-    # be scoped to only those resources on repair iterations.  Falls back to
-    # None (full seed set) when no errors can be resolved to types.
-    error_resources = _extract_error_resources(
-        errors=errors,
-        annotation=annotation,
-        deploy_validation_result=deploy_validation_result,
-    ) or None
-
-    # Conditionally Execute RAG Tools
+    # ------------------------------------------------------------------
+    # CFN schema retrieval (has_schema) — LLM generates schema_queries
+    # ------------------------------------------------------------------
+    schema_queries: list[str] = []
     cfn_context = ""
+
     if has_schema:
-        # Fallback if LLM fails
-        if not schema_queries and not security_queries:
-             schema_queries = errors[:8]
+        has_line_numbers = _errors_have_line_numbers(errors)
+        print(
+            f"[Retriever] {'Line numbers detected — annotated template' : <45} "
+            f"{'included' if has_line_numbers else 'NOT included (plain template used)'}."
+        )
+
+        user_content = build_retrieval_prompt(
+            errors=errors,
+            template_yaml=template_yaml,
+            annotation=annotation,
+            remediation_history=state.get("remediation_history", []),
+        )
+
+        model, raw_response, usage = _call_query_generator(
+            user_content=user_content,
+            system_prompt=QUERY_GEN_SYSTEM,
+        )
+        parsed_queries = parse_query_response(raw_response)
+        schema_queries = parsed_queries.get("schema_queries", [])
+
+        # Fallback to raw errors when LLM produces nothing useful
+        if not schema_queries:
+            schema_queries = errors[:8]
+
+        recorder.record_llm_call(
+            state=state,
+            agent="retriever",
+            model=model,
+            prompt=f"SYSTEM:\n{QUERY_GEN_SYSTEM}\n\nUSER:\n{user_content}",
+            response=raw_response,
+            token_usage=usage,
+        )
+
+        seed_resources = extract_resource_types(annotation)
+        error_resources = _extract_error_resources(
+            errors=errors,
+            annotation=annotation,
+            deploy_validation_result=deploy_validation_result,
+        ) or None
+
         cfn_context = execute_hybrid_retrieval(
             retrieval_queries=schema_queries,
             seed_resources=seed_resources,
             error_resources=error_resources,
         )
+    else:
+        # No schema errors — still need to record a stub for the recorder.
+        user_content = ""
+        raw_response = ""
+        model = ""
+        usage = None
 
+    # ------------------------------------------------------------------
+    # Security retrieval (has_security) — pure deterministic graph lookup
+    # No LLM, no embeddings, no ChromaDB.
+    # ------------------------------------------------------------------
     security_context = ""
-    if has_security:
-        from tools.security_hybrid_rag import execute_security_retrieval
-        security_context = execute_security_retrieval(
-            security_queries=security_queries,
-            raw_errors=errors
-        )
+    security_ids: list[str] = []
 
+    if has_security:
+        from tools.security_hybrid_rag import execute_security_retrieval, extract_trivy_check_ids
+        security_ids = extract_trivy_check_ids(errors)
+        security_context = execute_security_retrieval(raw_errors=errors)
+
+    # ------------------------------------------------------------------
+    # Merge and persist
+    # ------------------------------------------------------------------
     unified_context = "\n\n".join(
         part for part in (cfn_context, security_context) if part.strip()
     )
+
+    # retrieval_queries tracks everything used for the audit trail.
+    # Security: use extracted IDs (deterministic), not LLM queries.
+    retrieval_queries = schema_queries + security_ids
+
+    user_msg: Message = {"role": "user", "content": user_content}
+    assistant_msg: Message = {"role": "assistant", "content": raw_response}
 
     recorder.append_retriever_history_entry(
         iteration=iteration,
@@ -390,16 +386,15 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     )
 
     print(
-        f"[Retriever] Context: {len(unified_context)} chars, "
-        f"{len(retrieval_queries)} queries used."
+        f"[Retriever] Context: {len(unified_context)} char(s) | "
+        f"{len(schema_queries)} schema quer(y/ies) | "
+        f"{len(security_ids)} security ID(s) resolved."
     )
 
-    # Write back to retriever_history for audit / recorder purposes only.
-    # This history is NOT forwarded to the LLM on subsequent calls.
     return {
         "retriever_context":  unified_context,
         "retriever_queries":  retrieval_queries,
-        "llm_call_log":       state["llm_call_log"] + [llm_record],
+        "llm_call_log":       state["llm_call_log"],
         "retriever_history":  append_and_cap(
             state.get("retriever_history", []), user_msg, assistant_msg
         ),
