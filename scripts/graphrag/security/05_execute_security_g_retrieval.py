@@ -6,30 +6,74 @@ Stage 3 – Combined G-Retrieval: CFN schema + security remediation context.
 
 Both ChromaDB collections live in the same Docker container:
   'cfn_schema_properties'  – built by scripts/graphrag/05_build_chromadb.py
-  'security_checks'        – built by scripts/graphrag/security/03_build_security_chromadb.py
+    'security_checks'        – built by scripts/graphrag/security/03_build_security_chromadb.py
 
-Retrieval flow
---------------
-  User query
-      ├─ ChromaDB 'cfn_schema_properties'  (k=5)            → resource_names
-      └─ ChromaDB 'security_checks'         (k=10 + boost)  → check_ids
-           ▼
-      Neo4j pass A: query_cfn_subgraph(resource_names)
-      Neo4j pass B: query_security_subgraph(check_ids)
-           ▼
-      format_combined_context(cfn_result, security_result)
+Retrieval paths
+---------------
+
+    Path A — Deterministic (Trivy-driven, check_id known)
+    Used when the caller supplies a list[TrivyFinding] from
+    parse_trivy_output.py.  For each finding whose check_id exists in Neo4j
+  a single cross-graph Cypher call returns:
+    SecurityCheck → Impact / Remediation (CFN) / GoodExample (CFN) / RegoPolicy
+    SecurityCheck → APPLIES_TO_RESOURCE → Resource → Property (required)
+  No vector search is performed for known check_ids.
+
+Path B — Probabilistic fallback (check_id unknown or no trivy_findings given)
+  The original semantic-search + Neo4j traversal pipeline:
+    User query
+        ├─ ChromaDB 'cfn_schema_properties'  (k=5)            → candidate_resource_names
+        └─ ChromaDB 'security_checks'         (k=10 + boost)  → check_ids
+             │
+             │  Cross-graph re-rank (Stage 2a):
+             │  security check_ids → Neo4j APPLIES_TO_RESOURCE → resource_names
+             │  Merge with candidate_resource_names, linked resources ranked first.
+             │
+             ▼
+        Neo4j pass A: query_cfn_subgraph(ranked_resource_names)
+        Neo4j pass B: query_security_subgraph(check_ids)
+
+Design notes
+------------
+Cross-graph re-rank (Path B):
+  The CFN vector search embeds per-property, so "S3 bucket" matches any
+  resource with "S3" in the name (VectorBucket, DirectoryBucket, TableBucket,
+  etc.). The correct resource AWS::S3::Bucket has APPLIES_TO_RESOURCE edges
+  from the retrieved security checks; the noise resources do not. We use this
+  graph signal to rank linked resources first and cap at CFN_RESOURCE_LIMIT.
+
+Severity ordering:
+  Security checks are sorted CRITICAL > HIGH > MEDIUM > LOW > UNKNOWN before
+  formatting. UNKNOWN-severity checks (non-standard AVD IDs) are included but
+  placed last. A token budget (SECURITY_TOKEN_BUDGET) caps the total security
+  context so low-signal UNKNOWN checks are dropped if the budget is exceeded.
+
+Embedding provider:
+  Controlled by EMBEDDING_PROVIDER env var (huggingface | ollama), matching
+  03_build_security_chromadb.py and 05_build_chromadb.py so query-time
+  embeddings are always in the same vector space as the indexed documents.
 
 Environment variables
 ---------------------
     NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
-    CHROMA_HOST   (default: localhost)
-    CHROMA_PORT   (default: 8000)
+    CHROMA_HOST          (default: localhost)
+    CHROMA_PORT          (default: 8000)
+    EMBEDDING_PROVIDER   (default: huggingface)  huggingface | ollama
+    EMBEDDING_MODEL      (default: provider default)
+    OLLAMA_BASE_URL      (default: http://localhost:11434)  Ollama only
 
 Usage
 -----
+    # Path B (semantic query, backward-compatible)
     python scripts/graphrag/security/05_execute_security_g_retrieval.py \\
         --query "S3 bucket with encryption and no public access"
+
+    # Path A (Trivy-driven)
+    python scripts/graphrag/security/05_execute_security_g_retrieval.py \\
+        --trivy path/to/trivy_output.json
 """
+
+from __future__ import annotations
 
 import argparse
 import os
@@ -37,18 +81,13 @@ import re
 import sys
 from typing import Any
 
+import numpy as np
 import chromadb
 
 try:
     from neo4j import GraphDatabase
 except ImportError:
     print("ERROR: pip install neo4j", file=sys.stderr)
-    sys.exit(1)
-
-try:
-    from langchain_huggingface import HuggingFaceEmbeddings
-except ImportError:
-    print("ERROR: pip install langchain-huggingface", file=sys.stderr)
     sys.exit(1)
 
 try:
@@ -60,28 +99,115 @@ except ImportError:
         print("ERROR: pip install chromadb langchain-chroma", file=sys.stderr)
         sys.exit(1)
 
+# Import the Trivy parser (same package)
+try:
+    from scripts.graphrag.security.parse_trivy_output import (
+        TrivyFinding,
+        parse_trivy_json,
+    )
+except ImportError:
+    print("ERROR: install scripts/graphrag/security/parse_trivy_output.py dependencies", file=sys.stderr)
+    sys.exit(1)
+
+
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_URI      = os.getenv("NEO4J_URI",      "bolt://localhost:7687")
+NEO4J_USER     = os.getenv("NEO4J_USER",     "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "password")
 
-# ChromaDB Docker – same container used by scripts/graphrag/05_build_chromadb.py
 CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
 CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
 
-EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
+# ---------------------------------------------------------------------------
+# Embedding provider — inline mirror of 05_build_chromadb.py.
+# Query-time provider MUST match build-time provider so vectors are
+# comparable.  Both are controlled by the same EMBEDDING_PROVIDER env var.
+# ---------------------------------------------------------------------------
 
-# Collection names – must match what was used at build time
-CFN_COLLECTION = "cfn_schema_properties"   # built by scripts/graphrag/05_build_chromadb.py
-SECURITY_COLLECTION = "security_checks"    # built by 03_build_security_chromadb.py
+_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "huggingface").lower().strip()
+_DEFAULTS = {
+    "huggingface": "sentence-transformers/all-mpnet-base-v2",
+    "ollama":      "mxbai-embed-large",
+}
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", _DEFAULTS.get(_PROVIDER, _DEFAULTS["huggingface"]))
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
-SEMANTIC_K = 5       # CFN: 5 is sufficient (results are per-resource)
-SEMANTIC_K_SEC = 10  # Security: higher – one service can have 10-15 checks
+
+class _NormalisedEmbeddings:
+    """Thin wrapper that L2-normalises every vector before querying.
+
+    Ensures unit-length vectors so cosine distance == angular distance,
+    regardless of whether the underlying model normalises by default.
+    HuggingFaceEmbeddings with normalize_embeddings=True already does this;
+    OllamaEmbeddings does not.
+    """
+    def __init__(self, base):
+        self._base = base
+
+    @staticmethod
+    def _norm(vecs):
+        arr   = np.array(vecs, dtype=np.float32)
+        norms = np.linalg.norm(arr, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1.0, norms)
+        return (arr / norms).tolist()
+
+    def embed_documents(self, texts):
+        return self._norm(self._base.embed_documents(texts))
+
+    def embed_query(self, text):
+        return self._norm([self._base.embed_query(text)])[0]
+
+
+def _get_embeddings():
+    """Return an embedding object matching the configured EMBEDDING_PROVIDER.
+
+    This is a copy of the factory in 05_build_chromadb.py and
+    03_build_security_chromadb.py so that query-time embeddings are always
+    in the same vector space as the indexed documents.
+    """
+    if _PROVIDER == "ollama":
+        try:
+            from langchain_ollama import OllamaEmbeddings
+        except ImportError:
+            print(
+                "ERROR: langchain-ollama not installed. "
+                "Run: pip install langchain-ollama",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"[Retrieval] Embedding provider: Ollama  model: {EMBEDDING_MODEL}  url: {OLLAMA_BASE_URL}")
+        base = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=OLLAMA_BASE_URL)
+        return _NormalisedEmbeddings(base)
+
+    from langchain_huggingface import HuggingFaceEmbeddings
+    print(f"[Retrieval] Embedding provider: HuggingFace  model: {EMBEDDING_MODEL}")
+    return HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
+    )
+
+
+CFN_COLLECTION      = "cfn_schema_properties"
+SECURITY_COLLECTION = "security_checks"
+
+SEMANTIC_K     = 5   # CFN candidate resources from vector search
+SEMANTIC_K_SEC = 10  # security checks from vector search
 SEMANTIC_K_MAX = 15  # ceiling after service-hint boost
 
-# AWS service tokens used for service-hint boosting in security search
+# After cross-graph re-rank, include at most this many CFN resources in context.
+CFN_RESOURCE_LIMIT = 2
+
+# Approximate token budget for the security context block.
+# avg token ~ 4 chars; 3000 tokens ~ 12 000 chars is a reasonable slice of a
+# 16k-token context window, leaving room for the CFN schema + prompt.
+SECURITY_TOKEN_BUDGET = 12_000  # characters
+
+# Severity sort order: lower number = higher priority
+_SEVERITY_RANK = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3, "UNKNOWN": 4}
+
 _AWS_SERVICE_TOKENS = {
     "s3", "ec2", "rds", "iam", "lambda", "cloudtrail", "cloudfront",
     "apigateway", "api", "dynamodb", "elasticache", "eks", "ecs",
@@ -93,7 +219,7 @@ _AWS_SERVICE_TOKENS = {
 _HTML_COMMENT_RE = re.compile(r'<!--.*?-->', re.DOTALL)
 
 
-def clean_impact(raw: str | None) -> str:
+def _clean_impact(raw: str | None) -> str:
     if not raw:
         return ""
     return _HTML_COMMENT_RE.sub("", raw).strip()
@@ -105,14 +231,11 @@ def clean_impact(raw: str | None) -> str:
 _embeddings = None
 
 
-def get_embeddings() -> HuggingFaceEmbeddings:
+def get_embeddings():
+    """Lazy-init shared embedding instance for this process."""
     global _embeddings
     if _embeddings is None:
-        _embeddings = HuggingFaceEmbeddings(
-            model_name=EMBEDDING_MODEL,
-            model_kwargs={"device": "cpu"},
-            encode_kwargs={"normalize_embeddings": True},
-        )
+        _embeddings = _get_embeddings()
     return _embeddings
 
 
@@ -120,11 +243,169 @@ def get_chroma_client() -> chromadb.HttpClient:
     return chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
 
 
+# ===========================================================================
+# PATH A — Deterministic retrieval (Trivy-driven)
+# ===========================================================================
+
+# Single cross-graph Cypher that returns the full context for one Trivy
+# finding without any vector search.  Joins SecurityCheck → Impact /
+# Remediation / GoodExample / RegoPolicy AND SecurityCheck → Resource →
+# required Property in one round-trip.
+_TRIVY_FINDING_CYPHER = """
+MATCH (sc:SecurityCheck {check_id: $check_id})
+
+OPTIONAL MATCH (sc)-[:HAS_IMPACT]->(imp:Impact)
+OPTIONAL MATCH (sc)-[:HAS_REMEDIATION]->(rem:Remediation)
+  WHERE rem.framework IN ['cfn', 'cloudformation']
+OPTIONAL MATCH (sc)-[:HAS_GOOD_EXAMPLE]->(ex:GoodExample)
+  WHERE ex.framework IN ['cfn', 'cloudformation']
+OPTIONAL MATCH (sc)-[:ENFORCED_BY]->(rp:RegoPolicy)
+
+OPTIONAL MATCH (sc)-[:APPLIES_TO_RESOURCE]->(r:Resource {name: $cfn_resource_type})
+OPTIONAL MATCH (r)-[:HAS_PROPERTY]->(req_p:Property {required: true})
+
+RETURN sc.check_id          AS check_id,
+       sc.check_name        AS check_name,
+       sc.severity          AS severity,
+       sc.description       AS description,
+       imp.text             AS impact,
+       collect(DISTINCT rem.instruction)                           AS cfn_remediations,
+       ex.code                                                     AS cfn_good_example,
+       rp.code                                                     AS rego_code,
+       rp.source_file_url                                          AS rego_source_url,
+       r.name                                                      AS resource_name,
+       r.description                                               AS resource_description,
+       collect(DISTINCT {name: req_p.name, type: req_p.type})      AS required_properties
+"""
+
+
+def _check_id_in_graph(driver, check_id: str) -> bool:
+    """Return True if a SecurityCheck node with this check_id exists in Neo4j."""
+    with driver.session() as session:
+        result = session.run(
+            "MATCH (sc:SecurityCheck {check_id: $check_id}) RETURN sc LIMIT 1",
+            check_id=check_id,
+        )
+        return result.single() is not None
+
+
+def retrieve_for_trivy_finding(
+    driver,
+    finding: TrivyFinding,
+) -> dict[str, Any] | None:
+    """Path A: single Cypher call for one Trivy finding.
+
+    Returns a structured dict with the full security + CFN schema context,
+    or None if the check_id is not found in Neo4j (caller should fall back
+    to Path B).
+
+    Parameters
+    ----------
+    driver:
+        An active Neo4j driver instance.
+    finding:
+        A TrivyFinding parsed by parse_trivy_output.py.
+
+    Returns
+    -------
+    dict or None
+        Keys: check_id, check_name, severity, description, impact,
+              cfn_remediations, cfn_good_example, rego_code, rego_source_url,
+              resource_name, resource_description, required_properties,
+              finding (the original TrivyFinding for context in formatting).
+    """
+    with driver.session() as session:
+        row = session.run(
+            _TRIVY_FINDING_CYPHER,
+            check_id          = finding.check_id,
+            cfn_resource_type = finding.cfn_resource_type,
+        ).single()
+
+    if row is None:
+        return None
+
+    return {
+        "check_id":            row["check_id"],
+        "check_name":          row["check_name"],
+        "severity":            row["severity"],
+        "description":         row["description"],
+        "impact":              row["impact"],
+        "cfn_remediations":    [r for r in (row["cfn_remediations"] or []) if r],
+        "cfn_good_example":    row["cfn_good_example"],
+        "rego_code":           row["rego_code"],
+        "rego_source_url":     row["rego_source_url"],
+        "resource_name":       row["resource_name"],
+        "resource_description": row["resource_description"],
+        "required_properties": [
+            p for p in (row["required_properties"] or []) if p.get("name")
+        ],
+        "finding":             finding,  # preserved for prompt formatting
+    }
+
+
+def retrieve_for_trivy_findings(
+    driver,
+    findings: list[TrivyFinding],
+    allowed_severities: list[str] | None = None,
+) -> tuple[list[dict], list[TrivyFinding]]:
+    """Batch Path A over a list of TrivyFindings.
+
+    Parameters
+    ----------
+    driver:
+        An active Neo4j driver instance.
+    findings:
+        Parsed Trivy findings from parse_trivy_output.py.
+    allowed_severities:
+        Pre-filter findings to this severity list before querying Neo4j.
+        Defaults to ["CRITICAL", "HIGH", "MEDIUM"].
+
+    Returns
+    -------
+    (path_a_results, path_b_findings)
+        path_a_results:  list of result dicts for findings found in Neo4j.
+        path_b_findings: list of TrivyFindings whose check_id was NOT found
+                         in Neo4j — caller should handle via Path B.
+    """
+    allowed = set(allowed_severities or ["CRITICAL", "HIGH", "MEDIUM"])
+
+    # Pre-filter by severity
+    filtered = [f for f in findings if f.severity in allowed]
+    skipped  = len(findings) - len(filtered)
+    if skipped:
+        print(f"  [Path A] Skipped {skipped} findings below severity threshold.")
+
+    path_a_results:  list[dict]          = []
+    path_b_findings: list[TrivyFinding]  = []
+
+    for finding in filtered:
+        print(f"  [Path A] {finding.check_id} / {finding.cfn_resource_type} "
+              f"({finding.severity}) ...")
+        result = retrieve_for_trivy_finding(driver, finding)
+        if result is not None:
+            path_a_results.append(result)
+            print(f"    ✓ found in graph")
+        else:
+            path_b_findings.append(finding)
+            print(f"    ⚠ not in graph — will fall back to Path B")
+
+    print(
+        f"  [Path A] {len(path_a_results)} resolved, "
+        f"{len(path_b_findings)} to Path B."
+    )
+    return path_a_results, path_b_findings
+
+
+# ===========================================================================
+# PATH B — Probabilistic fallback (semantic search)
+# ===========================================================================
+
 # ---------------------------------------------------------------------------
-# Stage 1a: CFN semantic search
+# Stage 1a: CFN semantic search → candidate resource names
 # ---------------------------------------------------------------------------
 
 def semantic_search_cfn(query: str, k: int = SEMANTIC_K) -> list[str]:
+    """Returns up to k unique CFN resource names ordered by vector similarity."""
     print(f"  [CFN ChromaDB] Semantic search: '{query[:60]}'")
     client = get_chroma_client()
 
@@ -155,7 +436,7 @@ def semantic_search_cfn(query: str, k: int = SEMANTIC_K) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Stage 1b: Security semantic search (two-pass with service-hint boost)
+# Stage 1b: Security semantic search → check_ids (two-pass with service boost)
 # ---------------------------------------------------------------------------
 
 def _extract_service_hint(query: str) -> str | None:
@@ -169,6 +450,7 @@ def semantic_search_security(
     k: int = SEMANTIC_K_SEC,
     k_max: int = SEMANTIC_K_MAX,
 ) -> list[str]:
+    """Returns check_ids ordered by relevance (vector similarity + service boost)."""
     print(f"  [Security ChromaDB] Semantic search: '{query[:60]}'")
     client = get_chroma_client()
 
@@ -184,7 +466,6 @@ def semantic_search_security(
         client=client,
     )
 
-    # Pass 1: full query
     results = vectorstore.similarity_search(query, k=k)
     check_ids: list[str] = []
     seen: set[str] = set()
@@ -194,7 +475,6 @@ def semantic_search_security(
             seen.add(cid)
             check_ids.append(cid)
 
-    # Pass 2: service-hint boost
     service_hint = _extract_service_hint(query)
     if service_hint and len(check_ids) < k_max:
         boost_results = vectorstore.similarity_search(
@@ -215,7 +495,53 @@ def semantic_search_security(
 
 
 # ---------------------------------------------------------------------------
-# Stage 2a: Neo4j – CFN schema subgraph
+# Stage 2a: Cross-graph CFN re-rank
+# ---------------------------------------------------------------------------
+
+_CFN_LINKED_RESOURCES_CYPHER = """
+UNWIND $check_ids AS cid
+MATCH (s:SecurityCheck {check_id: cid})-[:APPLIES_TO_RESOURCE]->(r:Resource)
+RETURN DISTINCT r.name AS resource_name
+"""
+
+
+def rerank_cfn_resources(
+    driver,
+    candidate_names: list[str],
+    check_ids: list[str],
+    limit: int = CFN_RESOURCE_LIMIT,
+) -> list[str]:
+    """
+    Re-rank CFN resource candidates using the cross-graph signal:
+      resources that have APPLIES_TO_RESOURCE edges from the retrieved
+      security checks are ranked first (graph-confirmed relevance).
+      Remaining candidates fill up to `limit` from the original vector order.
+    """
+    if not check_ids:
+        return candidate_names[:limit]
+
+    with driver.session() as session:
+        result = session.run(_CFN_LINKED_RESOURCES_CYPHER, check_ids=check_ids)
+        linked = {row["resource_name"] for row in result}
+
+    ranked: list[str] = []
+    for name in candidate_names:
+        if name in linked:
+            ranked.append(name)
+    for name in candidate_names:
+        if name not in linked and len(ranked) < limit:
+            ranked.append(name)
+
+    final = ranked[:limit]
+    dropped = [n for n in candidate_names if n not in final]
+    if dropped:
+        print(f"  [Re-rank] Dropped {len(dropped)} unlinked CFN resources: {dropped}")
+    print(f"  [Re-rank] CFN resources after cross-graph re-rank: {final}")
+    return final
+
+
+# ---------------------------------------------------------------------------
+# Stage 2b: Neo4j – CFN schema subgraph (Path B only)
 # ---------------------------------------------------------------------------
 
 CFN_CYPHER = """
@@ -253,18 +579,18 @@ def query_cfn_subgraph(driver, resource_names: list[str]) -> list[dict[str, Any]
             row = session.run(CFN_CYPHER, resource_name=name).single()
             if row:
                 results.append({
-                    "name": row["resource_name"],
-                    "description": row["resource_description"],
+                    "name":                row["resource_name"],
+                    "description":         row["resource_description"],
                     "required_properties": row["required_properties"],
                     "optional_properties": row["optional_properties"],
-                    "nested_types": row["nested_types"],
-                    "example": row["example"],
+                    "nested_types":        row["nested_types"],
+                    "example":             row["example"],
                 })
     return results
 
 
 # ---------------------------------------------------------------------------
-# Stage 2b: Neo4j – security subgraph
+# Stage 2c: Neo4j – security subgraph (Path B only)
 # ---------------------------------------------------------------------------
 
 SECURITY_CYPHER = """
@@ -277,18 +603,17 @@ SECURITY_CYPHER = """
     OPTIONAL MATCH (s)-[:ENFORCED_BY]->(rp:RegoPolicy)
     OPTIONAL MATCH (s)-[:APPLIES_TO_RESOURCE]->(cfn_r:Resource)
 
-    RETURN s.check_id     AS check_id,
-           s.check_name   AS check_name,
-           s.severity     AS severity,
-           s.description  AS description,
-           s.avd_url      AS avd_url,
-           s.title        AS title,
-           svc.name       AS service,
-           imp.text       AS impact,
+    RETURN s.check_id       AS check_id,
+           s.check_name     AS check_name,
+           s.severity       AS severity,
+           s.description    AS description,
+           svc.name         AS service,
+           imp.text         AS impact,
            collect(DISTINCT {framework: rem.framework,
                              instruction: rem.instruction}) AS remediations,
            collect(DISTINCT {framework: ex.framework,
                              code: ex.code})               AS examples,
+           rp.code                                         AS rego_code,
            rp.source_file_url                              AS rego_source_url,
            collect(DISTINCT cfn_r.name)                    AS cfn_resource_names
 """
@@ -301,25 +626,24 @@ def query_security_subgraph(driver, check_ids: list[str]) -> list[dict[str, Any]
             row = session.run(SECURITY_CYPHER, check_id=cid).single()
             if row:
                 results.append({
-                    "check_id": row["check_id"],
-                    "check_name": row["check_name"],
-                    "severity": row["severity"],
-                    "description": row["description"],
-                    "avd_url": row["avd_url"],
-                    "title": row["title"],
-                    "service": row["service"],
-                    "impact": row["impact"],
-                    "remediations": row["remediations"],
-                    "examples": row["examples"],
-                    "rego_source_url": row["rego_source_url"],
+                    "check_id":           row["check_id"],
+                    "check_name":         row["check_name"],
+                    "severity":           row["severity"],
+                    "description":        row["description"],
+                    "service":            row["service"],
+                    "impact":             row["impact"],
+                    "remediations":       row["remediations"],
+                    "examples":           row["examples"],
+                    "rego_code":          row["rego_code"],
+                    "rego_source_url":    row["rego_source_url"],
                     "cfn_resource_names": row["cfn_resource_names"],
                 })
     return results
 
 
-# ---------------------------------------------------------------------------
-# Stage 3: Format combined context
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Formatters
+# ===========================================================================
 
 def format_cfn_context(resources: list[dict]) -> str:
     if not resources:
@@ -327,7 +651,9 @@ def format_cfn_context(resources: list[dict]) -> str:
     lines = []
     for res in resources:
         lines.append(f"Resource: {res['name']}")
-        lines.append(f"Description: {res.get('description', '')}")
+        desc = (res.get("description") or "").strip()
+        if desc:
+            lines.append(f"Description: {desc}")
         req = [p for p in (res.get("required_properties") or []) if p.get("name")]
         if req:
             lines.append("Required Properties:")
@@ -350,44 +676,226 @@ def format_cfn_context(resources: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def format_security_context(checks: list[dict]) -> str:
-    """
-    Format security remediation block for the LLM prompt.
-    No filtering – all 723 checks are public AVD data.
-    Only data cleaning: strip HTML comment scaffolding from impact field.
-    """
-    if not checks:
-        return "No security constraints found for this query."
+def _sort_checks_by_severity(checks: list[dict]) -> list[dict]:
+    """Sort security checks CRITICAL > HIGH > MEDIUM > LOW > UNKNOWN."""
+    return sorted(
+        checks,
+        key=lambda c: _SEVERITY_RANK.get((c.get("severity") or "UNKNOWN").upper(), 4),
+    )
+
+
+def _format_one_check(chk: dict) -> str:
+    """Format a single security check (Path B) for the LLM prompt context block."""
     lines = []
-    for chk in checks:
-        severity = chk.get("severity") or "UNKNOWN"
-        lines.append(f"[{chk['check_id']}] {chk['check_name']} (Severity: {severity})")
-        if chk.get("description"):
-            lines.append(f"Description: {chk['description']}")
-        impact = clean_impact(chk.get("impact"))
-        if impact:
-            lines.append(f"Impact: {impact}")
-        cfn_rems = [
-            r["instruction"] for r in (chk.get("remediations") or [])
-            if r.get("framework") == "cfn" and r.get("instruction")
-        ]
-        if cfn_rems:
-            lines.append("CloudFormation Remediation:")
-            for rem in cfn_rems:
-                lines.append(f"  - {rem}")
-        cfn_exs = [
-            e["code"] for e in (chk.get("examples") or [])
-            if e.get("framework") == "cfn" and e.get("code")
-        ]
-        if cfn_exs:
-            lines.append(f"CloudFormation Good Example:\n```yaml\n{cfn_exs[0]}\n```")
-        if chk.get("avd_url"):
-            lines.append(f"Reference: {chk['avd_url']}")
-        lines.append("")
+    severity = (chk.get("severity") or "UNKNOWN").upper()
+    lines.append(f"[{chk['check_id']}] {chk['check_name']} (Severity: {severity})")
+
+    desc = (chk.get("description") or "").strip()
+    if desc:
+        lines.append(f"Description: {desc}")
+
+    impact = _clean_impact(chk.get("impact"))
+    if impact:
+        lines.append(f"Impact: {impact}")
+
+    cfn_rems = [
+        r["instruction"] for r in (chk.get("remediations") or [])
+        if r.get("framework") in ("cfn", "cloudformation") and r.get("instruction")
+    ]
+    if cfn_rems:
+        lines.append("CloudFormation Remediation:")
+        for rem in cfn_rems:
+            lines.append(f"  - {rem}")
+
+    cfn_exs = [
+        e["code"] for e in (chk.get("examples") or [])
+        if e.get("framework") in ("cfn", "cloudformation") and e.get("code")
+    ]
+    if cfn_exs:
+        lines.append(f"CloudFormation Good Example:\n```yaml\n{cfn_exs[0]}\n```")
+
+    rego_url = (chk.get("rego_source_url") or "").strip()
+    if rego_url:
+        lines.append(f"Policy Source: {rego_url}")
+
+    lines.append("")
     return "\n".join(lines)
 
 
+def format_trivy_context(
+    path_a_results: list[dict],
+    token_budget: int = SECURITY_TOKEN_BUDGET,
+) -> str:
+    """
+    Format Path A results (Trivy-driven) into the LLM prompt context block.
+
+    Each result block follows the structure defined in the improvement plan:
+
+        === Trivy Finding ===
+        [AVD-AWS-0086] S3 Bucket does not have encryption enabled
+        Resource: AWS::S3::Bucket  |  Severity: HIGH
+
+        === Security Constraint ===
+        Description: ...
+        Impact: ...
+        CloudFormation Remediation:
+          - ...
+        CloudFormation Good Example:
+          ```yaml
+          ...
+          ```
+        Policy Source: https://...
+
+        === CFN Schema (AWS::S3::Bucket) ===
+        Description: ...
+        Required Properties:
+          - ...
+
+    Results are sorted CRITICAL > HIGH > MEDIUM > LOW > UNKNOWN.
+    Total output is capped at token_budget characters.
+    """
+    if not path_a_results:
+        return ""
+
+    # Sort by severity
+    sorted_results = sorted(
+        path_a_results,
+        key=lambda r: _SEVERITY_RANK.get(
+            (r.get("severity") or "UNKNOWN").upper(), 4
+        ),
+    )
+
+    lines: list[str] = []
+    total_chars = 0
+
+    for r in sorted_results:
+        finding: TrivyFinding = r["finding"]
+        severity = (r.get("severity") or finding.severity or "UNKNOWN").upper()
+
+        block_lines: list[str] = []
+
+        # — Finding header
+        block_lines.append("=== Trivy Finding ===")
+        block_lines.append(
+            f"[{r['check_id']}] {r['check_name'] or finding.title}"
+        )
+        block_lines.append(
+            f"Resource: {finding.cfn_resource_type or r.get('resource_name', 'unknown')}"
+            f"  |  Severity: {severity}"
+        )
+        if finding.file_path:
+            block_lines.append(f"File: {finding.file_path}  line: {finding.start_line}")
+
+        # — Security constraint
+        block_lines.append("")
+        block_lines.append("=== Security Constraint ===")
+        desc = (r.get("description") or "").strip()
+        if desc:
+            block_lines.append(f"Description: {desc}")
+
+        impact = _clean_impact(r.get("impact"))
+        if impact:
+            block_lines.append(f"Impact: {impact}")
+
+        cfn_rems = [rem for rem in (r.get("cfn_remediations") or []) if rem]
+        if cfn_rems:
+            block_lines.append("CloudFormation Remediation:")
+            for rem in cfn_rems:
+                block_lines.append(f"  - {rem}")
+
+        cfn_ex = (r.get("cfn_good_example") or "").strip()
+        if cfn_ex:
+            block_lines.append(f"CloudFormation Good Example:\n```yaml\n{cfn_ex}\n```")
+
+        rego_url = (r.get("rego_source_url") or "").strip()
+        if rego_url:
+            block_lines.append(f"Policy Source: {rego_url}")
+
+        # — CFN schema for the violating resource
+        res_name = r.get("resource_name") or finding.cfn_resource_type
+        if res_name:
+            block_lines.append("")
+            block_lines.append(f"=== CFN Schema ({res_name}) ===")
+            res_desc = (r.get("resource_description") or "").strip()
+            if res_desc:
+                block_lines.append(f"Description: {res_desc}")
+            req_props = [p for p in (r.get("required_properties") or []) if p.get("name")]
+            if req_props:
+                block_lines.append("Required Properties:")
+                for p in req_props:
+                    block_lines.append(f"  - {p['name']} ({p['type']})")
+            else:
+                block_lines.append("Required Properties: (none — all properties optional)")
+
+        block_lines.append("")
+        block_lines.append("-" * 60)
+        block_lines.append("")
+
+        block = "\n".join(block_lines)
+
+        if total_chars + len(block) > token_budget:
+            print(
+                f"  [Context] Token budget reached at {r['check_id']} "
+                f"(severity={severity}). Truncating Path A context."
+            )
+            break
+
+        lines.append(block)
+        total_chars += len(block)
+
+    return "\n".join(lines)
+
+
+def format_security_context(
+    checks: list[dict],
+    token_budget: int = SECURITY_TOKEN_BUDGET,
+) -> str:
+    """
+    Format Path B security remediation block for the LLM prompt.
+
+    Checks are sorted CRITICAL > HIGH > MEDIUM > LOW > UNKNOWN.
+    The formatted output is truncated to `token_budget` characters so that
+    low-signal UNKNOWN-severity checks are dropped before they consume prompt
+    context.
+    """
+    if not checks:
+        return "No security constraints found for this query."
+
+    sorted_checks = _sort_checks_by_severity(checks)
+    lines = []
+    total_chars = 0
+    included = 0
+    skipped_unknown = 0
+
+    for chk in sorted_checks:
+        block = _format_one_check(chk)
+        if total_chars + len(block) > token_budget:
+            severity = (chk.get("severity") or "UNKNOWN").upper()
+            if severity == "UNKNOWN":
+                skipped_unknown += 1
+                continue
+            print(
+                f"  WARNING: token budget exceeded at check {chk['check_id']} "
+                f"(severity={severity}). Truncating security context."
+            )
+            break
+        lines.append(block)
+        total_chars += len(block)
+        included += 1
+
+    if skipped_unknown:
+        print(
+            f"  [Context] Dropped {skipped_unknown} UNKNOWN-severity checks "
+            f"(token budget). Included {included}/{len(checks)} checks."
+        )
+    else:
+        print(f"  [Context] Included {included}/{len(checks)} security checks.")
+
+    return "\n".join(lines) if lines else "No security constraints found for this query."
+
+
 def format_combined_context(cfn_results: list[dict], security_results: list[dict]) -> str:
+    """Format Path B results into the combined context block."""
     return (
         "=== CloudFormation Schema Context ===\n"
         + format_cfn_context(cfn_results)
@@ -396,45 +904,141 @@ def format_combined_context(cfn_results: list[dict], security_results: list[dict
     )
 
 
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # Public API
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
-def retrieve_combined_context(query: str) -> str:
+def retrieve_combined_context(
+    query: str,
+    trivy_findings: list[TrivyFinding] | None = None,
+    allowed_severities: list[str] | None = None,
+) -> str:
+    """Main entry point for the retrieval pipeline.
+
+    Parameters
+    ----------
+    query:
+        Free-text query used for Path B semantic search and for scoping
+        Path A context in the prompt header.  Required even for Path A calls.
+    trivy_findings:
+        If provided, Path A is attempted first for each finding.  Findings
+        whose check_id is not in Neo4j fall back to Path B.
+        If None, only Path B runs (backward-compatible).
+    allowed_severities:
+        Severity filter for Path A. Defaults to ["CRITICAL", "HIGH", "MEDIUM"].
+
+    Returns
+    -------
+    str
+        Formatted context block ready for LLM prompt injection.
+    """
     print(f"\n[G-Retrieval] Query: '{query}'")
-    print("Stage 1: Semantic search in ChromaDB...")
-    cfn_names = semantic_search_cfn(query)
-    check_ids = semantic_search_security(query)
 
-    print("Stage 2: Graph traversal in Neo4j...")
     driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
     try:
-        cfn_results = query_cfn_subgraph(driver, cfn_names)
-        security_results = query_security_subgraph(driver, check_ids)
+        # -------------------------------------------------------------------
+        # PATH A: deterministic Trivy-driven retrieval
+        # -------------------------------------------------------------------
+        path_a_context = ""
+        path_b_findings_from_a: list[TrivyFinding] = []
+
+        if trivy_findings:
+            print(f"Stage 1 (Path A): Deterministic lookup for {len(trivy_findings)} Trivy findings...")
+            path_a_results, path_b_findings_from_a = retrieve_for_trivy_findings(
+                driver, trivy_findings, allowed_severities=allowed_severities
+            )
+            if path_a_results:
+                path_a_context = format_trivy_context(path_a_results)
+                print(f"  Path A context: {len(path_a_context)} chars")
+
+        # -------------------------------------------------------------------
+        # PATH B: semantic search fallback
+        # -------------------------------------------------------------------
+        # Run Path B if:
+        #   (a) no trivy_findings were provided (backward-compatible mode), OR
+        #   (b) some findings from Path A were not found in the graph
+        run_path_b = (not trivy_findings) or bool(path_b_findings_from_a)
+
+        path_b_context = ""
+        if run_path_b:
+            if path_b_findings_from_a:
+                # Build a query from the unresolved findings' titles
+                path_b_query = " ".join(
+                    f.title or f.check_id for f in path_b_findings_from_a
+                ) or query
+                print(f"Stage 1 (Path B): Semantic search for {len(path_b_findings_from_a)} unresolved findings...")
+            else:
+                path_b_query = query
+                print("Stage 1 (Path B): Semantic search in ChromaDB...")
+
+            candidate_cfn_names = semantic_search_cfn(path_b_query)
+            check_ids = semantic_search_security(path_b_query)
+
+            print("Stage 2 (Path B): Graph traversal in Neo4j...")
+            ranked_cfn_names = rerank_cfn_resources(driver, candidate_cfn_names, check_ids)
+            cfn_results      = query_cfn_subgraph(driver, ranked_cfn_names)
+            security_results = query_security_subgraph(driver, check_ids)
+
+            print(f"  CFN resources retrieved   : {len(cfn_results)}")
+            print(f"  Security checks retrieved : {len(security_results)}")
+
+            path_b_context = format_combined_context(cfn_results, security_results)
+
     finally:
         driver.close()
 
-    print(f"  CFN resources retrieved   : {len(cfn_results)}")
-    print(f"  Security checks retrieved : {len(security_results)}")
+    # -------------------------------------------------------------------
+    # Assemble final context
+    # -------------------------------------------------------------------
+    print("Stage 3: Assembling final context...")
+    parts: list[str] = []
+    if path_a_context:
+        parts.append("=== Trivy-Driven Security Context (Path A) ===\n" + path_a_context)
+    if path_b_context:
+        parts.append(path_b_context)
+    return "\n\n".join(parts) if parts else "No context found."
 
-    print("Stage 3: Formatting combined context...")
-    return format_combined_context(cfn_results, security_results)
 
-
-# ---------------------------------------------------------------------------
+# ===========================================================================
 # CLI
-# ---------------------------------------------------------------------------
+# ===========================================================================
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Run combined CFN + security G-Retrieval."
+        description="Run combined CFN + security G-Retrieval (Path A + Path B)."
     )
     parser.add_argument(
         "--query", "-q",
         default="Create a secure S3 bucket with encryption and versioning enabled",
+        help="Free-text query (required for Path B; used as context header for Path A).",
+    )
+    parser.add_argument(
+        "--trivy", "-t",
+        default=None,
+        help="Path to Trivy --format json output. Enables Path A deterministic retrieval.",
+    )
+    parser.add_argument(
+        "--severities", "-s",
+        default="CRITICAL,HIGH,MEDIUM",
+        help="Comma-separated severity filter for Path A (default: CRITICAL,HIGH,MEDIUM).",
     )
     args = parser.parse_args()
-    context = retrieve_combined_context(args.query)
+
+    trivy_findings = None
+    if args.trivy:
+        from pathlib import Path as _Path
+        trivy_path = _Path(args.trivy)
+        print(f"Parsing Trivy output: {trivy_path}")
+        trivy_findings = parse_trivy_json(trivy_path)
+        print(f"  Parsed {len(trivy_findings)} findings.")
+
+    allowed = [s.strip().upper() for s in args.severities.split(",") if s.strip()]
+
+    context = retrieve_combined_context(
+        query=args.query,
+        trivy_findings=trivy_findings,
+        allowed_severities=allowed,
+    )
     print("\n" + "=" * 70)
     print("COMBINED CONTEXT (will be injected into LLM prompt)")
     print("=" * 70)

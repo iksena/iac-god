@@ -421,23 +421,23 @@ def move_run_folders_from_csv(
     return moved
 
 if __name__ == "__main__":
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/20260527_002230 Deepseek V4 Flash Security",
+    # )
+
     # move_run_folders_from_csv(
-    #     input_csv='benchmark_runs/20260521_162319 Deepseek V4 Flash/results_merged.csv',
+    #     input_csv='benchmark_runs/20260527_002230 Deepseek V4 Flash Security/results_merged.csv',
     #     runs_dir='runs',
-    #     target_subfolder_name='DeepseekV4Flash_deployability_runs',
+    #     target_subfolder_name='DeepseekV4Flash_security_runs',
     #     run_id_col='run_id',
     #     dry_run=False,
     # )
 
     merge_results_with_reports(
-        input_csv="benchmark_runs/20260521_162319 Deepseek V4 Flash/results_merged.csv", 
-        base_dir="runs/DeepseekV4Flash_deployability_runs", 
-        output_csv="benchmark_runs/20260521_162319 Deepseek V4 Flash/DeepseekV4Flash_deployability.csv"
+        input_csv="benchmark_runs/20260527_002230 Deepseek V4 Flash Security/results_merged.csv", 
+        base_dir="runs/DeepseekV4Flash_security_runs", 
+        output_csv="benchmark_runs/20260527_002230 Deepseek V4 Flash Security/DeepseekV4Flash_security.csv"
     )
-
-    # merge_results_from_directory(
-    #     base_dir="./benchmark_runs/20260521_162319 Deepseek V4 Flash",
-    # )
 
     # merge_results(
     #     csv_paths=[

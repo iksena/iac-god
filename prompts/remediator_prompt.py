@@ -54,9 +54,11 @@ the primary signal for which properties need fixing.
 ## Current Validation Errors
 {validation_errors}
 
-{policy_source_context}
+## Knowledge Base Context
 
-{cfn_graph_context}
+You have been provided with contextual knowledge to help you resolve the active errors. Depending on the current errors, this may include **CloudFormation Schema Context** (how to correctly structure a specific resource) and/or **Security Constraints Context** (why a resource is non-compliant and the policy needed to secure it). Use this context directly to write your Fix Objectives.
+
+{knowledge_base_context}
 
 Provide fix objectives that resolve all current validation errors.
 Do NOT repeat fix objectives that are marked as already applied in the history above.

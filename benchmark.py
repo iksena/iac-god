@@ -647,6 +647,9 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
+    import logging
+    logging.getLogger("neo4j").setLevel(logging.ERROR)
+
     args = parse_args()
     output_dir = args.output_dir or _default_output_dir()
     cfg = BenchmarkConfig(

@@ -18,11 +18,6 @@ from __future__ import annotations
 import json
 import re
 
-# Validation stages that emit security policy violations.
-# Excluded from CFN schema retrieval — the remediator already knows the fix
-# (e.g. enable encryption) without needing property-level schema context.
-SECURITY_STAGES = {"checkov", "trivy"}
-
 # Keywords that flag a deployment event log line as actionable.
 _DEPLOY_ERROR_KEYWORDS = (
     "FAILED",
@@ -125,9 +120,6 @@ def extract_errors(
 ) -> list[str]:
     """Extract a list of error strings from the validation state.
 
-    Security stages (checkov, trivy) are excluded — their findings are policy
-    violations, not schema errors, and do not benefit from CFN schema retrieval.
-
     Deploy failures are rendered with format_deploy_errors() so the retriever
     LLM receives the same structured breakdown (target, failed resources,
     filtered event log) that the remediator prompt shows.
@@ -136,8 +128,6 @@ def extract_errors(
 
     for result in validation_results:
         stage = str(result.get("stage") or "").strip().lower()
-        if stage in SECURITY_STAGES:
-            continue
         if not result.get("passed"):
             for err in result.get("errors", []):
                 if str(err).strip():
@@ -153,10 +143,10 @@ def extract_errors(
     return errors
 
 
-def parse_query_response(raw: str, max_queries: int = 8) -> list[str]:
+def parse_query_response(raw: str, max_queries: int = 8) -> dict[str, list[str]]:
     """Parse the LLM's query-generation response.
 
-    Accepts both {"queries": [...]} object form and bare [...] array form.
+    Accepts {"schema_queries": [...], "security_queries": [...]} object form.
     Strips markdown fences before parsing.
     """
     cleaned = re.sub(r"```(?:json)?\s*", "", raw).strip().removesuffix("```").strip()
@@ -165,20 +155,31 @@ def parse_query_response(raw: str, max_queries: int = 8) -> list[str]:
         parsed = json.loads(cleaned)
     except json.JSONDecodeError as e:
         print(f"[RAG Tool] Query parse error (JSONDecodeError): {e}. Raw: {cleaned[:200]}")
-        return []
+        return {"schema_queries": [], "security_queries": []}
+
+    schema_queries = []
+    security_queries = []
 
     if isinstance(parsed, dict):
-        queries = parsed.get("queries") or parsed.get("query") or []
+        schema_queries = parsed.get("schema_queries", [])
+        security_queries = parsed.get("security_queries", [])
+        # Fallback for old {"queries": [...]} format
+        if not schema_queries and not security_queries:
+             queries = parsed.get("queries") or parsed.get("query") or []
+             schema_queries = queries
     elif isinstance(parsed, list):
-        queries = parsed
+        schema_queries = parsed
     else:
         print(f"[RAG Tool] Unexpected query response type: {type(parsed)}")
-        return []
+        return {"schema_queries": [], "security_queries": []}
 
-    if not isinstance(queries, list):
-        print(f"[RAG Tool] 'queries' field is not a list: {queries}")
-        return []
+    if not isinstance(schema_queries, list):
+        schema_queries = []
+    if not isinstance(security_queries, list):
+        security_queries = []
 
-    result = [str(q).strip() for q in queries if str(q).strip()][:max_queries]
-    print(f"[RAG Tool] Parsed {len(result)} retrieval queries from LLM response.")
-    return result
+    schema_result = [str(q).strip() for q in schema_queries if str(q).strip()][:max_queries]
+    security_result = [str(q).strip() for q in security_queries if str(q).strip()][:max_queries]
+    
+    print(f"[RAG Tool] Parsed {len(schema_result)} schema queries and {len(security_result)} security queries from LLM response.")
+    return {"schema_queries": schema_result, "security_queries": security_result}
