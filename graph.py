@@ -9,7 +9,7 @@ from agents.engineer import engineer_agent
 from agents.validator import validator_agent
 from agents.retriever import retriever_agent
 from agents.remediator import remediator_agent
-from agents.remediator import should_include_remediation_context
+# from agents.remediator import should_include_remediation_context
 from tracking.recorder import ResearchRecorder
 
 
@@ -53,7 +53,8 @@ def route_after_validator(state: GraphState) -> str:
                 for s in sorted(failing_stages)
             )
         )
-        if should_include_remediation_context(state):
+        # if should_include_remediation_context(state):
+        if True:  # for now, always include remediation context if in moderate mode
             return "retriever"
         return "remediator"
 
