@@ -6,3 +6,4 @@
 **/benchmark_runs/**
 **/scraped_html/**
 **/cfn_chroma_db/**
+tf_schema_raw.json
