@@ -8,6 +8,15 @@ Mirrors the structure of scripts/graphrag/03_parse_and_merge.py (CFN) but
 handles Terraform's attribute / block_types nesting instead of CFN's flat
 Properties dict.
 
+Key alignment
+-------------
+tf_schema_raw.json    → keyed by full resource name: 'aws_s3_bucket'
+tf_registry_docs.json → also keyed by full resource name: 'aws_s3_bucket'
+                         (_slug_to_tf_name in 02_fetch adds 'aws_' prefix)
+
+The merge is therefore a direct identity lookup: registry_docs[resource_name].
+No slug conversion is needed here.
+
 Output shape (tf_knowledge_graph.json)
 --------------------------------------
 {
@@ -54,9 +63,6 @@ DOCS_FILE     = Path("tf_registry_docs.json")
 OUTPUT_FILE   = Path("tf_knowledge_graph.json")
 
 _PROVIDER_KEY = "registry.terraform.io/hashicorp/aws"
-
-# Primitive Terraform types that map directly (no recursion needed).
-_PRIMITIVE_TYPES = {"string", "number", "bool", "dynamic", "any"}
 
 
 # ---------------------------------------------------------------------------
@@ -113,17 +119,6 @@ def _parse_block_types(block_types: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Slug helpers
-# ---------------------------------------------------------------------------
-
-def _resource_to_slug(resource_name: str) -> str:
-    """Convert 'aws_s3_bucket' to the Registry slug 'r/s3_bucket'."""
-    # Registry slugs strip the 'aws_' prefix and prefix with 'r/'.
-    without_prefix = resource_name.removeprefix("aws_")
-    return f"r/{without_prefix}"
-
-
-# ---------------------------------------------------------------------------
 # Main merge
 # ---------------------------------------------------------------------------
 
@@ -144,20 +139,21 @@ def build_knowledge_graph() -> None:
     print(f"[03] Found {len(registry_docs):,} registry doc entries.")
 
     kg: dict[str, dict] = {}
-    enriched_count    = 0
-    examples_count    = 0
-    missing_docs      = []
+    enriched_count = 0
+    examples_count = 0
+    missing_docs   = []
 
     for resource_name, resource_schema in resource_schemas.items():
-        slug  = _resource_to_slug(resource_name)
-        doc   = registry_docs.get(slug, {})
+        # Both files are keyed by the full TF resource name ('aws_s3_bucket').
+        # Direct lookup — no slug conversion needed.
+        doc = registry_docs.get(resource_name, {})
 
         if doc:
             enriched_count += 1
         else:
             missing_docs.append(resource_name)
 
-        block = resource_schema.get("block", {})
+        block       = resource_schema.get("block", {})
         attributes  = _parse_attributes(block.get("attributes", {}))
         block_types = _parse_block_types(block.get("block_types", {}))
 
@@ -166,12 +162,11 @@ def build_knowledge_graph() -> None:
         doc_content = doc.get("content", "")
         for attr_name, attr_data in attributes.items():
             if not attr_data["description"] and doc_content:
-                # Heuristic: look for "* `{attr_name}` -" in the markdown,
-                # which is the standard Registry attribute-description format.
+                # Registry markdown format: "* `{attr_name}` - description"
                 marker = f"* `{attr_name}` -"
-                idx = doc_content.find(marker)
+                idx    = doc_content.find(marker)
                 if idx != -1:
-                    end = doc_content.find("\n", idx)
+                    end     = doc_content.find("\n", idx)
                     snippet = doc_content[idx + len(marker): end].strip()
                     if snippet:
                         attr_data["description"] = snippet
