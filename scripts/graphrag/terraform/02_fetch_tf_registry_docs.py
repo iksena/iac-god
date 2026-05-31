@@ -21,6 +21,9 @@ The list response only has stub fields (slug, title, subcategory, path).
 Full markdown content requires a separate fetch per doc:
     GET /v2/provider-docs/<doc-id>
 
+Code fence format: the Registry uses ```terraform (NOT ```hcl).
+    Both are accepted by extract_hcl_examples for safety.
+
 Total docs for hashicorp/aws@6.47.0: 1,657 resources across 17 pages.
 
 Output
@@ -50,6 +53,10 @@ _PAGE_SIZE = 100
 _SLEEP     = 0.2    # seconds between list-page requests
 _WORKERS   = 10     # parallel content fetches
 _TIMEOUT   = 30     # per-request timeout (s)
+
+# The AWS provider Registry docs use ```terraform fences, not ```hcl.
+# Accept both to be safe.
+_HCL_FENCES = {"terraform", "hcl"}
 
 
 # ---------------------------------------------------------------------------
@@ -159,29 +166,39 @@ def _fetch_all_contents(stubs: list[dict]) -> dict[str, str]:
 def _slug_to_tf_name(slug: str) -> str:
     """Registry slugs omit the 'aws_' prefix; add it back.
 
-    'access_key'  → already starts with 'aws_' in some edge cases — keep as-is.
-    's3_bucket'   → 'aws_s3_bucket'
+    's3_bucket'  → 'aws_s3_bucket'
+    'instance'   → 'aws_instance'
     """
     return slug if slug.startswith("aws_") else f"aws_{slug}"
 
 
 def extract_hcl_examples(markdown: str) -> list[str]:
-    """Extract ```hcl … ``` fenced code blocks."""
+    """Extract fenced Terraform/HCL code blocks from Registry markdown.
+
+    The Terraform Registry AWS provider uses ```terraform fences (not ```hcl).
+    Both are accepted. Closing fence must be a bare ``` on its own line.
+    """
     examples: list[str] = []
     in_block = False
     current:  list[str] = []
+
     for line in markdown.splitlines():
-        s = line.strip()
-        if not in_block and s.startswith("```hcl"):
-            in_block = True
-            current  = []
-        elif in_block and s == "```":
-            in_block = False
-            block    = "\n".join(current).strip()
-            if block:
-                examples.append(block)
-        elif in_block:
-            current.append(line)
+        stripped = line.strip()
+        if not in_block:
+            if stripped.startswith("```"):
+                lang = stripped[3:].strip().lower()
+                if lang in _HCL_FENCES:
+                    in_block = True
+                    current  = []
+        else:
+            if stripped == "```":
+                in_block = False
+                block    = "\n".join(current).strip()
+                if block:
+                    examples.append(block)
+            else:
+                current.append(line)
+
     return examples
 
 
