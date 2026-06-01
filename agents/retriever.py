@@ -27,8 +27,32 @@ _COLON_LINE_RE = re.compile(r":\d+(:\d+)?")
 # Defensive fallback for any remaining raw-dict repr (should no longer appear).
 _DICT_LINE_RE  = re.compile(r"'LineNumber'\s*:\s*\d+")
 
-# cfn-lint error format: "[W3687] | line 109 | Resource: WebServerSecurityGroup | ..."
+# ---------------------------------------------------------------------------
+# Error-resource extraction patterns
+# ---------------------------------------------------------------------------
+
+# CFN: cfn-lint error format: "[W3687] | line 109 | Resource: WebServerSecurityGroup | ..."
 _CFN_LINT_RESOURCE_RE = re.compile(r"Resource:\s*([\w-]+)", re.IGNORECASE)
+
+# Terraform: terraform-validate HCL error header:
+#   on main.tf line 12, in resource "aws_vpc" "main":
+#   Error: Invalid argument ... aws_vpc.main ...
+# Pattern 1 — on ... in resource "<type>" "<name>"
+_TF_VALIDATE_RESOURCE_RE = re.compile(
+    r'in\s+resource\s+"(?P<type>[a-z][a-z0-9_]*)"\s+"(?P<name>[^"]+)"',
+    re.IGNORECASE,
+)
+# Pattern 2 — bare address form: aws_vpc.main  (used by tflint and some
+#   terraform-validate messages that don't carry the full HCL header)
+_TF_ADDRESS_RE = re.compile(
+    r'\b(?P<type>(?:aws|google|azurerm|random|local|null|archive|tls)_[a-z][a-z0-9_]*)\.(?P<name>[a-z][a-z0-9_-]*)\b',
+    re.IGNORECASE,
+)
+# Pattern 3 — tflint bracket notation: [aws_vpc.main]
+_TF_BRACKET_RE = re.compile(
+    r'\[(?P<type>(?:aws|google|azurerm|random|local|null|archive|tls)_[a-z][a-z0-9_]*)\.(?P<name>[a-z][a-z0-9_-]*)\]',
+    re.IGNORECASE,
+)
 
 
 def _errors_have_line_numbers(errors: list[str]) -> bool:
@@ -50,59 +74,94 @@ def _extract_error_resources(
     annotation: TemplateAnnotation | None,
     deploy_validation_result: dict | None,
 ) -> set[str]:
-    """Extract AWS resource type names for resources that have active errors.
+    """Extract resource type names for resources that have active errors.
 
-    Parses logical resource IDs from:
-      - cfn-lint error strings: "Resource: <LogicalId>"
+    Handles two distinct ID schemes depending on iac_type:
+
+    CloudFormation (logical ID -> AWS type):
+      - cfn-lint errors:      "Resource: <LogicalId>"
       - deploy failed_resources: [{"logical_name": "...", "status_reason": "..."}]
-        Uses only the canonical "logical_name" key (FailedResource shape from
-        state.py) — deploy_validator.py always emits this key in every path.
+      Logical IDs are mapped to AWS types via the annotation
+      (e.g. "WebServerSG" -> "AWS::EC2::SecurityGroup").
 
-    Then maps each logical ID to its AWS type (e.g. "AWS::EC2::SecurityGroup")
-    using the template annotation's resource_id field.  Logical IDs that cannot
-    be resolved are silently skipped so the caller always gets a clean set of
-    type strings.
+    Terraform (resource address -> provider type):
+      terraform-validate and tflint emit resource *addresses*, not logical IDs:
+        - HCL block header: in resource "aws_vpc" "main"
+        - Bare address:     aws_vpc.main
+        - tflint bracket:   [aws_vpc.main]
+      The resource *type* component (e.g. "aws_vpc") is extracted directly and
+      matched against annotation.resource_type (set to the type string by
+      _parse_terraform()).  No logical-ID-to-type translation step is needed.
 
-    Returns an empty set when annotation is unavailable or no logical IDs are
-    found, which causes execute_hybrid_retrieval() to fall back to fetching
-    schema for all seed resources (the original behaviour).
+    Returns an empty set when annotation is unavailable or no resource
+    identifiers are found, which causes execute_*_retrieval() to fall back to
+    fetching schema for all seed resources.
     """
     if not annotation:
         return set()
 
-    # Build a lookup: resource_id (logical ID) -> AWS resource type
-    # ResourceAnnotation uses resource_id for the logical name, not logical_id.
+    error_resource_types: set[str] = set()
+
+    # -----------------------------------------------------------------
+    # CloudFormation path: resolve logical IDs -> AWS resource types
+    # -----------------------------------------------------------------
+    # Build lookup: resource_id (logical ID) -> AWS resource type
     logical_to_type: dict[str, str] = {
         r.resource_id: r.resource_type
         for r in annotation.resources
         if r.resource_id and r.resource_type
     }
 
-    if not logical_to_type:
-        return set()
-
     error_logical_ids: set[str] = set()
 
-    # Parse cfn-lint error strings for "Resource: <LogicalId>"
     for error_str in errors:
         m = _CFN_LINT_RESOURCE_RE.search(error_str)
         if m:
             error_logical_ids.add(m.group(1).strip())
 
-    # Parse deploy failed_resources for logical IDs.
-    # Uses only the canonical "logical_name" key (FailedResource in state.py).
     if deploy_validation_result and not deploy_validation_result.get("passed"):
         for fr in deploy_validation_result.get("failed_resources", []):
             logical_id = fr.get("logical_name") or ""
             if logical_id:
                 error_logical_ids.add(logical_id.strip())
 
-    # Map logical IDs to resource types; skip any that aren't in the annotation
-    error_resource_types: set[str] = set()
     for logical_id in error_logical_ids:
         resource_type = logical_to_type.get(logical_id)
         if resource_type:
             error_resource_types.add(resource_type)
+
+    # -----------------------------------------------------------------
+    # Terraform path: extract resource type directly from error address
+    # -----------------------------------------------------------------
+    # Build a set of known resource types present in the template so we
+    # only emit types that are actually in scope.
+    known_tf_types: set[str] = {
+        r.resource_type
+        for r in annotation.resources
+        if r.resource_type
+    }
+
+    # Only run TF extraction when the annotation actually contains TF resources
+    # (resource_type == "aws_vpc" style), avoiding false positives on CFN runs.
+    if known_tf_types and not any(t.startswith("AWS::") for t in known_tf_types):
+        for error_str in errors:
+            # Pattern 1: in resource "aws_vpc" "main"
+            for m in _TF_VALIDATE_RESOURCE_RE.finditer(error_str):
+                rtype = m.group("type").lower()
+                if rtype in known_tf_types:
+                    error_resource_types.add(rtype)
+
+            # Pattern 2: bare address aws_vpc.main
+            for m in _TF_ADDRESS_RE.finditer(error_str):
+                rtype = m.group("type").lower()
+                if rtype in known_tf_types:
+                    error_resource_types.add(rtype)
+
+            # Pattern 3: tflint bracket [aws_vpc.main]
+            for m in _TF_BRACKET_RE.finditer(error_str):
+                rtype = m.group("type").lower()
+                if rtype in known_tf_types:
+                    error_resource_types.add(rtype)
 
     if error_resource_types:
         print(

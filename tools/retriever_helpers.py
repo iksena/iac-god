@@ -9,9 +9,9 @@ Extracted from cfn_hybrid_rag.py so that:
 - These helpers, which depend only on state shape and stdlib, have no
   heavyweight dependencies and can be unit-tested without DB fixtures.
 
-format_deploy_errors() and format_cfn_lint_errors() are defined here (not in
-remediator.py) so both the retriever and the remediator render deploy failures
-with the same level of detail.
+format_deploy_errors(), format_cfn_lint_errors(), and format_tflint_errors()
+are defined here (not in remediator.py) so both the retriever and the
+remediator render failures with the same level of detail.
 """
 from __future__ import annotations
 
@@ -48,6 +48,33 @@ def format_cfn_lint_errors(errors: list[str]) -> str:
     reference — emitted as-is with consistent bullet style.
     """
     return "\n".join(f"  - {e.strip()}" for e in errors)
+
+
+def format_tflint_errors(tflint_errors: list[str], tf_validate_errors: list[str]) -> str:
+    """Format tflint and terraform-validate errors as a structured bullet list.
+
+    Mirrors format_cfn_lint_errors() in style but handles two Terraform
+    structural stages in a single call:
+      - tflint (Stage 1): HCL style/best-practice rule violations
+      - terraform-validate (Stage 2): provider type/attribute errors
+
+    Both stages are rendered with a per-stage heading so the remediator
+    LLM can distinguish rule-based linting issues (tflint) from hard type
+    errors (terraform-validate) and apply the correct fix strategy.
+
+    Either list may be empty — empty lists produce no heading.
+    """
+    parts: list[str] = []
+
+    if tflint_errors:
+        parts.append("**tflint (HCL lint):**")
+        parts.extend(f"  - {e.strip()}" for e in tflint_errors)
+
+    if tf_validate_errors:
+        parts.append("**terraform-validate (provider schema):**")
+        parts.extend(f"  - {e.strip()}" for e in tf_validate_errors)
+
+    return "\n".join(parts) if parts else "No Terraform structural errors."
 
 
 def format_deploy_errors(deploy_result: dict) -> str:
@@ -180,6 +207,6 @@ def parse_query_response(raw: str, max_queries: int = 8) -> dict[str, list[str]]
 
     schema_result = [str(q).strip() for q in schema_queries if str(q).strip()][:max_queries]
     security_result = [str(q).strip() for q in security_queries if str(q).strip()][:max_queries]
-    
+
     print(f"[RAG Tool] Parsed {len(schema_result)} schema queries and {len(security_result)} security queries from LLM response.")
     return {"schema_queries": schema_result, "security_queries": security_result}

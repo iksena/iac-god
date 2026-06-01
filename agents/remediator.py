@@ -8,6 +8,7 @@ from agents.llm_client import _build_client, _call_llm_with_history
 from prompts.remediator_prompt import get_remediator_system_prompt, REMEDIATOR_USER
 from tools.retriever_helpers import (
     format_cfn_lint_errors,
+    format_tflint_errors,
     format_deploy_errors,
     extract_errors,
 )
@@ -30,7 +31,19 @@ def _dedupe_preserve_order(items: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _build_validation_errors_text(state: GraphState) -> str:
-    """Build the full validation error section for the remediator user prompt."""
+    """Build the full validation error section for the remediator user prompt.
+
+    Error formatting is iac_type-aware and symmetric across both pipelines:
+      CloudFormation: cfn-lint errors  -> format_cfn_lint_errors()
+      Terraform:      tflint errors    -> format_tflint_errors()  (Stage 1)
+                      terraform-validate errors -> format_tflint_errors()  (Stage 2)
+      Both pipelines: all other stages -> generic bullet formatter
+
+    tflint and terraform-validate are collapsed into a single formatted block
+    via format_tflint_errors() so the remediator prompt mirrors the cfn-lint
+    section structure: one heading, two sub-sections (rule violations vs. type
+    errors), rather than two separate top-level error blocks.
+    """
     error_blocks: list[str] = []
 
     validation_results = state.get("validation_results", [])
@@ -39,6 +52,13 @@ def _build_validation_errors_text(state: GraphState) -> str:
         stage = str(result.get("stage") or "").strip()
         if stage:
             latest_by_stage[stage] = result
+
+    # Collect Terraform structural stage errors upfront so they can be
+    # rendered together in a single format_tflint_errors() block, mirroring
+    # the single cfn-lint block on the CFN side.
+    tflint_errors: list[str] = []
+    tf_validate_errors: list[str] = []
+    tf_structural_emitted = False
 
     for result in latest_by_stage.values():
         if result["passed"]:
@@ -50,12 +70,33 @@ def _build_validation_errors_text(state: GraphState) -> str:
             continue
 
         stage = result["stage"]
-        if stage == "cfn-lint":
-            errors_text = format_cfn_lint_errors(deduped)
-        else:
-            errors_text = "\n".join(f"  - {e}" for e in deduped)
 
-        error_blocks.append(f"### {stage.upper()} Errors\n{errors_text}")
+        if stage == "cfn-lint":
+            error_blocks.append(
+                f"### {stage.upper()} Errors\n{format_cfn_lint_errors(deduped)}"
+            )
+
+        elif stage == "tflint":
+            # Accumulate — rendered together with terraform-validate below
+            tflint_errors = deduped
+
+        elif stage == "terraform-validate":
+            # Accumulate — rendered together with tflint below
+            tf_validate_errors = deduped
+
+        else:
+            # Trivy, checkov, yaml, and any future stages use generic bullets
+            errors_text = "\n".join(f"  - {e}" for e in deduped)
+            error_blocks.append(f"### {stage.upper()} Errors\n{errors_text}")
+
+    # Emit the combined Terraform structural block once, after all stages
+    # have been visited, so tflint and terraform-validate always appear
+    # together regardless of iteration order.
+    if tflint_errors or tf_validate_errors:
+        error_blocks.append(
+            f"### TERRAFORM STRUCTURAL Errors\n"
+            f"{format_tflint_errors(tflint_errors, tf_validate_errors)}"
+        )
 
     deploy_result = state.get("deploy_validation_result")
     if (
