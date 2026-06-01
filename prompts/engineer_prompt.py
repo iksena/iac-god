@@ -73,6 +73,10 @@ parameters, or external Terraform state. Every configuration you generate MUST:
   Never reference resources by hardcoded IDs.
 - NEVER use data sources to look up pre-existing infrastructure
   (e.g. data "aws_vpc" {{}} , data "aws_subnet_ids" {{}}) — those resources do not exist.
+- NEVER use data "aws_elastic_beanstalk_solution_stack" to look up solution stacks.
+  The test harness does not support ListAvailableSolutionStacks. Instead, hardcode
+  the solution_stack_name string directly in the aws_elastic_beanstalk_environment
+  resource (e.g. solution_stack_name = "64bit Amazon Linux 2023 v4.0.1 running Go 1").
 - NEVER hardcode account-specific IDs: vpc-*, subnet-*, sg-*, ami-*,
   numeric AWS account IDs, or ARNs referencing resources not declared in this file.
 - If a resource ID is needed, CREATE the resource (e.g. resource "aws_vpc",

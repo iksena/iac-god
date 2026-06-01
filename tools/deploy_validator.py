@@ -219,12 +219,12 @@ def _delete_all_non_default_vpcs(deploy_config: DeployConfig) -> None:
     ec2 = session.client("ec2", region_name=deploy_config.aws_region)
 
     try:
-        vpcs = ec2.describe_vpcs()["Vpcs"]
+ earlier_vpcs = ec2.describe_vpcs()["Vpcs"]
     except Exception as e:
         print(f"[Deploy] VPC pre-flight: could not list VPCs: {e}")
         return
 
-    non_default = [v for v in vpcs if not v.get("IsDefault", False)]
+    non_default = [v for v in earlier_vpcs if not v.get("IsDefault", False)]
     if not non_default:
         return
 
@@ -405,6 +405,252 @@ def _strip_provider_blocks(hcl: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# LocalStack provider override builder (Terraform)
+# ---------------------------------------------------------------------------
+
+# Exhaustive list of LocalStack-supported AWS service endpoint keys recognised
+# by the Terraform AWS provider. Routing every service through the LocalStack
+# endpoint prevents 403 InvalidClientTokenId errors that occur when a service
+# is missing from this map and Terraform falls back to the real AWS endpoint.
+_LOCALSTACK_SERVICES = [
+    "accessanalyzer",
+    "account",
+    "acm",
+    "acmpca",
+    "amplicationbackend",
+    "amplify",
+    "apigateway",
+    "apigatewayv2",
+    "appautoscaling",
+    "appconfig",
+    "appflow",
+    "appintegrations",
+    "applicationautoscaling",
+    "applicationinsights",
+    "appmesh",
+    "apprunner",
+    "appstream",
+    "appsync",
+    "athena",
+    "autoscaling",
+    "autoscalingplans",
+    "backup",
+    "batch",
+    "budgets",
+    "ce",
+    "chime",
+    "cloud9",
+    "cloudcontrol",
+    "cloudformation",
+    "cloudfront",
+    "cloudhsm",
+    "cloudsearch",
+    "cloudtrail",
+    "cloudwatch",
+    "codeartifact",
+    "codebuild",
+    "codecommit",
+    "codedeploy",
+    "codepipeline",
+    "codestar",
+    "codestarconnections",
+    "codestarnotifications",
+    "cognitoidentity",
+    "cognitoidp",
+    "comprehend",
+    "configservice",
+    "connect",
+    "controltower",
+    "cur",
+    "dataexchange",
+    "datapipeline",
+    "datasync",
+    "dax",
+    "detective",
+    "devicefarm",
+    "directconnect",
+    "directoryservice",
+    "dlm",
+    "dms",
+    "docdb",
+    "ds",
+    "dynamodb",
+    "ec2",
+    "ecr",
+    "ecrpublic",
+    "ecs",
+    "efs",
+    "eks",
+    "elasticache",
+    "elasticbeanstalk",
+    "elastictranscoder",
+    "elb",
+    "elbv2",
+    "emr",
+    "emrcontainers",
+    "emrserverless",
+    "es",
+    "eventbridge",
+    "events",
+    "evidently",
+    "finspace",
+    "firehose",
+    "fis",
+    "fms",
+    "forecast",
+    "fsx",
+    "gamelift",
+    "glacier",
+    "globalaccelerator",
+    "glue",
+    "grafana",
+    "greengrass",
+    "groundstation",
+    "guardduty",
+    "healthlake",
+    "iam",
+    "identitystore",
+    "imagebuilder",
+    "inspector",
+    "inspector2",
+    "internetmonitor",
+    "iot",
+    "iotanalytics",
+    "iotevents",
+    "ivs",
+    "ivschat",
+    "kafka",
+    "kafkaconnect",
+    "kendra",
+    "keyspaces",
+    "kinesis",
+    "kinesisanalytics",
+    "kinesisanalyticsv2",
+    "kinesisvideo",
+    "kms",
+    "lakeformation",
+    "lambda",
+    "lexmodels",
+    "lexmodelsv2",
+    "lexruntime",
+    "lexruntimev2",
+    "licensemanager",
+    "lightsail",
+    "location",
+    "logs",
+    "lookoutequipment",
+    "lookoutmetrics",
+    "lookoutvision",
+    "macie2",
+    "mediaconnect",
+    "mediaconvert",
+    "medialive",
+    "mediapackage",
+    "mediastore",
+    "memorydb",
+    "mq",
+    "mwaa",
+    "neptune",
+    "networkfirewall",
+    "networkmanager",
+    "opensearch",
+    "opensearchserverless",
+    "opsworks",
+    "organizations",
+    "outposts",
+    "panorama",
+    "personalize",
+    "pinpoint",
+    "pipes",
+    "polly",
+    "pricing",
+    "prometheus",
+    "quicksight",
+    "ram",
+    "rds",
+    "redshift",
+    "redshiftdata",
+    "redshiftserverless",
+    "rekognition",
+    "resiliencehub",
+    "resourceexplorer2",
+    "resourcegroups",
+    "resourcegroupstaggingapi",
+    "rolesanywhere",
+    "route53",
+    "route53domains",
+    "route53recoverycontrolconfig",
+    "route53recoveryreadiness",
+    "route53resolver",
+    "rum",
+    "s3",
+    "s3control",
+    "s3outposts",
+    "sagemaker",
+    "scheduler",
+    "secretsmanager",
+    "securityhub",
+    "serverlessrepo",
+    "servicecatalog",
+    "servicediscovery",
+    "servicequotas",
+    "ses",
+    "sesv2",
+    "sfn",
+    "shield",
+    "signer",
+    "simpledb",
+    "sns",
+    "sqs",
+    "ssm",
+    "ssmcontacts",
+    "ssmincidents",
+    "ssoadmin",
+    "stepfunctions",
+    "storagegateway",
+    "sts",
+    "swf",
+    "synthetics",
+    "timestreamwrite",
+    "transcribe",
+    "transfer",
+    "verifiedpermissions",
+    "vpclattice",
+    "waf",
+    "wafregional",
+    "wafv2",
+    "worklink",
+    "workspaces",
+    "xray",
+]
+
+
+def _build_localstack_provider_override(ls_ep: str) -> str:
+    """
+    Build a complete provider "aws" block that routes every known AWS service
+    to the LocalStack endpoint. Using an exhaustive list avoids 403
+    InvalidClientTokenId errors that occur when a service is absent from the
+    endpoints map and Terraform falls back to the real AWS endpoint.
+    """
+    endpoint_lines = "\n".join(
+        f"    {svc:<32} = \"{ls_ep}\""
+        for svc in _LOCALSTACK_SERVICES
+    )
+    return f"""provider "aws" {{
+  region                      = "us-east-1"
+  access_key                  = "test"
+  secret_key                  = "test"
+  skip_credentials_validation = true
+  skip_metadata_api_check     = true
+  skip_requesting_account_id  = true
+  endpoints {{
+{endpoint_lines}
+  }}
+}}
+"""
+
+
+# ---------------------------------------------------------------------------
 # Terraform deploy via `terraform apply` against LocalStack
 # ---------------------------------------------------------------------------
 
@@ -421,8 +667,8 @@ def _validate_terraform_deployment(
         prevent duplicate-provider errors when the harness injects its own
         provider override block (which carries LocalStack endpoint overrides).
       - Write the sanitised template to a temp dir as main.tf.
-      - Inject a provider block that routes to LocalStack (or real AWS) via
-        environment variables consumed by the AWS provider.
+      - Inject a provider block that routes ALL known AWS services to
+        LocalStack (or nothing for real AWS) to prevent 403 fallback errors.
       - Run: terraform init -backend=false && terraform apply -auto-approve
       - Parse stdout/stderr for resource-level error lines.
       - Always run `terraform destroy -auto-approve` to clean up, mirroring
@@ -434,8 +680,6 @@ def _validate_terraform_deployment(
     target_name = deploy_config.target.value
     deploy_logs: list[str] = []
 
-    # Build provider env: LocalStack injects endpoint overrides;
-    # real AWS relies on profile/region from deploy_config.
     env_overrides: dict[str, str] = {}
     if deploy_config.target == DeployTarget.LOCALSTACK:
         ls_ep = deploy_config.localstack_endpoint  # e.g. http://localhost:4566
@@ -444,41 +688,9 @@ def _validate_terraform_deployment(
             "AWS_SECRET_ACCESS_KEY": "test",
             "AWS_DEFAULT_REGION": "us-east-1",
         }
-        # Build a provider override block that uses localstack-specific endpoints
-        provider_override = f"""
-provider "aws" {{
-  region                      = "us-east-1"
-  access_key                  = "test"
-  secret_key                  = "test"
-  skip_credentials_validation = true
-  skip_metadata_api_check     = true
-  skip_requesting_account_id  = true
-  endpoints {{
-    apigateway     = "{ls_ep}"
-    cloudformation = "{ls_ep}"
-    cloudwatch     = "{ls_ep}"
-    dynamodb       = "{ls_ep}"
-    ec2            = "{ls_ep}"
-    es             = "{ls_ep}"
-    firehose       = "{ls_ep}"
-    iam            = "{ls_ep}"
-    kinesis        = "{ls_ep}"
-    lambda         = "{ls_ep}"
-    route53        = "{ls_ep}"
-    redshift       = "{ls_ep}"
-    s3             = "{ls_ep}"
-    secretsmanager = "{ls_ep}"
-    ses            = "{ls_ep}"
-    sns            = "{ls_ep}"
-    sqs            = "{ls_ep}"
-    ssm            = "{ls_ep}"
-    stepfunctions  = "{ls_ep}"
-    sts            = "{ls_ep}"
-  }}
-}}
-"""
+        provider_override = _build_localstack_provider_override(ls_ep)
     else:
-        # Real AWS: rely on environment / instance profile
+        # Real AWS: rely on environment / instance profile; no override needed
         provider_override = ""
 
     import os
@@ -589,7 +801,6 @@ provider "aws" {{
                 if m:
                     resource_addr = f"{m.group(2)}.{m.group(3)}"
                     break
-            # Find detail lines (non-empty, non-header lines after resource ref)
             detail_lines = [
                 l.strip() for l in lines
                 if l.strip()
@@ -597,19 +808,17 @@ provider "aws" {{
                 and l.strip() != summary
                 and not re.match(r'^\d+:', l.strip())
             ]
-            detail = " ".join(detail_lines[:3])  # keep first 3 detail lines
+            detail = " ".join(detail_lines[:3])
             status_reason = f"{summary}" + (f" — {detail}" if detail else "")
             failed_resources.append({"logical_name": resource_addr, "status_reason": status_reason})
 
         if not failed_resources:
-            # Fallback: surface raw stderr
             raw_err = (apply_result.stderr or apply_result.stdout or "unknown apply error").strip()
             failed_resources = [{"logical_name": "apply", "status_reason": raw_err[:500]}]
 
         error_msg = _format_failed_resources(failed_resources)
         print(f"[Deploy] ❌ terraform apply failed: {error_msg}")
 
-        # Always destroy on failure to clean up partial state
         subprocess.run(
             ["terraform", "destroy", "-auto-approve", "-input=false", "-no-color"],
             cwd=tmpdir, capture_output=True, text=True, timeout=120, env=run_env,
@@ -642,9 +851,10 @@ def validate_deployment(
 
     The Terraform path:
       - Strips any LLM-generated provider "aws" block before writing main.tf
-        to prevent duplicate-provider errors when the harness injects its own
-        LocalStack provider override block.
-      - Injects a LocalStack provider override block when target==localstack
+        to prevent duplicate-provider errors.
+      - Injects an exhaustive LocalStack provider override (all known AWS
+        service endpoints) when target==localstack, preventing 403 fallback
+        errors for any service not previously listed.
       - Runs terraform init + terraform apply + terraform destroy (cleanup)
       - Parses Error blocks from apply output into FailedResource entries
         using Terraform resource addresses (e.g. aws_vpc.main) as logical_name
@@ -673,7 +883,6 @@ def validate_deployment(
     # Terraform deploy path
     # ------------------------------------------------------------------
     if iac_type == "terraform":
-        # Reset LocalStack state before Terraform apply too
         _reset_target_state(deploy_config)
         return _validate_terraform_deployment(template, deploy_config, start_time)
 
