@@ -346,7 +346,7 @@ def _get_active_error_types(state: GraphState) -> tuple[bool, bool]:
         has_schema = True
 
     deploy = state.get("deploy_validation_result")
-    if deploy and not deploy.get("passed") and deploy.get("target") != "skipped"):
+    if deploy and not deploy.get("passed") and deploy.get("target") != "skipped":
         has_schema = True
 
     # Check security stages

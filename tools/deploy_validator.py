@@ -219,7 +219,7 @@ def _delete_all_non_default_vpcs(deploy_config: DeployConfig) -> None:
     ec2 = session.client("ec2", region_name=deploy_config.aws_region)
 
     try:
- earlier_vpcs = ec2.describe_vpcs()["Vpcs"]
+        earlier_vpcs = ec2.describe_vpcs()["Vpcs"]
     except Exception as e:
         print(f"[Deploy] VPC pre-flight: could not list VPCs: {e}")
         return
