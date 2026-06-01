@@ -497,6 +497,11 @@ def run_all_validators(
     types. This structural parity is a requirement of the generalisation
     research hypothesis.
 
+    Skipped stages (trivy when structural stages fail, deploy when static
+    validation fails) are represented with passed=True and an empty errors
+    list so that classify_failing_stages() does not count them as failures.
+    A skipped stage is not a failed stage — it simply did not run.
+
     Checkov is wired but currently skipped in both pipelines (kept for future
     re-enablement); trivy covers the security stage.
 
@@ -520,9 +525,12 @@ def run_all_validators(
         if tflint_result["passed"] and tf_validate_result["passed"]:
             trivy_result = validate_trivy(template, iac_type="terraform")
         else:
+            # passed=True: a skipped stage is not a failed stage.
+            # The empty errors list means classify_failing_stages() will not
+            # add "security" to failing_stages, preventing spurious routing.
             trivy_result = ValidationResult(
                 stage="trivy",
-                passed=False,
+                passed=True,
                 errors=[],
                 raw_output="Skipped: tflint/terraform-validate prerequisite failed",
             )
@@ -560,9 +568,10 @@ def run_all_validators(
         if yaml_result["passed"] and cfn_lint_result["passed"]:
             trivy_result = validate_trivy(template, iac_type="cloudformation")
         else:
+            # passed=True: a skipped stage is not a failed stage.
             trivy_result = ValidationResult(
                 stage="trivy",
-                passed=False,
+                passed=True,
                 errors=[],
                 raw_output="Skipped: yaml/cfn-lint prerequisite validation failed",
             )

@@ -9,7 +9,7 @@ class PolicyStats(TypedDict):
 
 
 class ValidationResult(TypedDict):
-    stage: str          # "yaml" | "cfn-lint" | "terraform-validate" | "checkov" | "trivy"
+    stage: str          # "yaml" | "cfn-lint" | "tflint" | "terraform-validate" | "checkov" | "trivy"
     passed: bool
     errors: list[str]
     raw_output: str
@@ -75,12 +75,13 @@ class Message(TypedDict):
 # Groups:
 #   "syntax"   — structural / schema correctness
 #                CFN:       {"yaml", "cfn-lint"}
-#                Terraform: {"terraform-validate"}
-#   "security" — policy violations (checkov, trivy — currently skipped
-#                in run_all_validators but wired here for when re-enabled)
+#                Terraform: {"tflint", "terraform-validate"}
+#                Both sets are unioned here so a single STAGE_GROUPS dict
+#                covers both pipelines without branching in classify_failing_stages.
+#   "security" — policy violations (checkov, trivy)
 #   "deploy"   — live deployability (localstack / AWS)
 STAGE_GROUPS: dict[str, set[str]] = {
-    "syntax":   {"yaml", "cfn-lint", "terraform-validate"},
+    "syntax":   {"yaml", "cfn-lint", "tflint", "terraform-validate"},
     "security": {"checkov", "trivy"},
     "deploy":   {"deploy"},
 }
