@@ -1,4 +1,3 @@
-# tools/validators.py
 import subprocess
 import tempfile
 import json
@@ -131,8 +130,110 @@ def validate_cfn_lint(template: str) -> ValidationResult:
 # Terraform validators
 # ---------------------------------------------------------------------------
 
+def validate_tflint(template: str) -> ValidationResult:
+    """Stage 1 (Terraform): HCL style/best-practice linting via tflint.
+
+    Mirrors validate_yaml() (CFN Stage 1) in contract and error format.
+
+    Writes main.tf to a temp directory, then runs:
+        tflint --init --no-color          (downloads provider ruleset plugins)
+        tflint --format json --no-color   (emits structured JSON findings)
+
+    tflint JSON output shape:
+        {
+          "issues": [
+            {
+              "rule":    { "name": str, "severity": "error"|"warning"|"notice" },
+              "message": str,
+              "range":   { "start": { "line": int } }
+            }
+          ]
+        }
+
+    Severity policy (mirrors cfn-lint WARNING vs ERROR handling):
+      - ERROR-severity issues  -> cause the stage to fail.
+      - WARNING/NOTICE issues  -> reported in errors list but stage still passes
+                                  (non-blocking), allowing terraform-validate to
+                                  run and give the LLM a full picture.
+
+    Returns a ValidationResult with stage="tflint".
+    """
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tf_path = Path(tmpdir) / "main.tf"
+        tf_path.write_text(template, encoding="utf-8")
+        try:
+            # Step 1: init — downloads the AWS provider ruleset plugin.
+            # Non-fatal: plugin may already be cached or we may be offline.
+            init_result = subprocess.run(
+                ["tflint", "--init", "--no-color"],
+                cwd=tmpdir,
+                capture_output=True, text=True, timeout=120,
+            )
+            if init_result.returncode != 0:
+                print(f"[tflint] init warning: {init_result.stderr.strip()}")
+
+            # Step 2: lint — emit structured JSON findings.
+            lint_result = subprocess.run(
+                ["tflint", "--format", "json", "--no-color"],
+                cwd=tmpdir,
+                capture_output=True, text=True, timeout=60,
+            )
+            raw = lint_result.stdout or lint_result.stderr
+            errors: list[str] = []
+            error_severity_count = 0
+
+            try:
+                data = json.loads(raw)
+                for issue in data.get("issues", []):
+                    rule      = issue.get("rule", {})
+                    rule_id   = rule.get("name", "?")
+                    severity  = rule.get("severity", "error").lower()
+                    message   = (issue.get("message") or "").strip()
+                    line_num  = (
+                        issue.get("range", {})
+                             .get("start", {})
+                             .get("line")
+                    )
+
+                    # Build structured error string mirroring cfn-lint format:
+                    #   [rule_id] [SEVERITY] line N | message
+                    parts: list[str] = [f"[{rule_id}]", f"[{severity.upper()}]"]
+                    if line_num:
+                        parts.append(f"line {line_num}")
+                    if message:
+                        parts.append(message)
+                    errors.append(" | ".join(parts))
+
+                    if severity == "error":
+                        error_severity_count += 1
+
+                # Stage fails only when there are ERROR-severity issues.
+                # WARNING/NOTICE are surfaced to the LLM but are non-blocking,
+                # consistent with cfn-lint's behaviour for W-prefixed rules.
+                passed = error_severity_count == 0
+
+            except (json.JSONDecodeError, KeyError):
+                # Fallback: treat non-zero exit as failure with raw output.
+                passed = lint_result.returncode == 0
+                if not passed:
+                    errors = [raw]
+
+            return ValidationResult(
+                stage="tflint",
+                passed=passed,
+                errors=errors,
+                raw_output=raw,
+            )
+        except FileNotFoundError:
+            return ValidationResult(
+                stage="tflint", passed=False,
+                errors=["tflint not installed. See: https://github.com/terraform-linters/tflint"],
+                raw_output="TOOL_NOT_FOUND",
+            )
+
+
 def validate_terraform(template: str) -> ValidationResult:
-    """Stage 1 (Terraform): structural/syntax validation via `terraform validate`.
+    """Stage 2 (Terraform): structural/syntax validation via `terraform validate`.
 
     Writes the HCL to a temp directory as main.tf, runs:
         terraform init -backend=false -input=false
@@ -384,11 +485,17 @@ def run_all_validators(
     """
     Run the correct validation pipeline for the given IaC type.
 
-    CloudFormation pipeline:
+    CloudFormation pipeline (two structural stages):
         yaml  ->  cfn-lint  ->  trivy  ->  (deploy)
 
-    Terraform pipeline:
-        terraform-validate  ->  trivy  ->  (deploy)
+    Terraform pipeline (two structural stages, symmetric with CFN):
+        tflint  ->  terraform-validate  ->  trivy  ->  (deploy)
+
+    Stage symmetry is intentional: both pipelines have an identical number of
+    structural stages so that the multi-agent repair loop (graph.py, state.py
+    routing, retriever error-type detection) behaves identically for both IaC
+    types. This structural parity is a requirement of the generalisation
+    research hypothesis.
 
     Checkov is wired but currently skipped in both pipelines (kept for future
     re-enablement); trivy covers the security stage.
@@ -398,19 +505,26 @@ def run_all_validators(
     if iac_type == "terraform":
         # ----------------------------------------------------------------
         # Terraform pipeline
+        # Stage 1: tflint        (HCL style / best-practice linting)
+        # Stage 2: terraform-validate  (structural / provider schema check)
+        # Stage 3: trivy         (security misconfigurations)
+        # Stage 4: deploy        (terraform apply against LocalStack)
+        #
+        # trivy runs only when BOTH structural stages pass, mirroring the
+        # CFN behaviour where trivy is skipped until yaml+cfn-lint succeed.
         # ----------------------------------------------------------------
-        tf_result = validate_terraform(template)
-        results: list[ValidationResult] = [tf_result]
+        tflint_result      = validate_tflint(template)
+        tf_validate_result = validate_terraform(template)
+        results: list[ValidationResult] = [tflint_result, tf_validate_result]
 
-        # Trivy runs only after terraform-validate succeeds
-        if tf_result["passed"]:
+        if tflint_result["passed"] and tf_validate_result["passed"]:
             trivy_result = validate_trivy(template, iac_type="terraform")
         else:
             trivy_result = ValidationResult(
                 stage="trivy",
                 passed=False,
                 errors=[],
-                raw_output="Skipped: terraform-validate prerequisite failed",
+                raw_output="Skipped: tflint/terraform-validate prerequisite failed",
             )
         results.append(trivy_result)
 
