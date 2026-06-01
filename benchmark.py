@@ -24,6 +24,7 @@ class BenchmarkConfig:
     deploy_target: str
     openrouter_provider_only: str | None
     openrouter_min_quantization: str | None
+    iac_type: str           # "cloudformation" | "terraform"
 
 
 CSV_RESULT_FIELDS = [
@@ -220,6 +221,7 @@ def _build_summary(
 
     return {
         "dataset": str(config.dataset_path),
+        "iac_type": config.iac_type,
         "started_at": started_at,
         "completed_at": completed_at,
         "duration_seconds": elapsed,
@@ -336,7 +338,11 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
     }
 
     print(f"\n{'=' * 80}")
-    print(f"Benchmark start | provider={config.provider} | model={config.model or 'env default'} | rows={len(selected_rows)} | dataset={config.dataset_path}")
+    print(
+        f"Benchmark start | iac_type={config.iac_type} | provider={config.provider} "
+        f"| model={config.model or 'env default'} | rows={len(selected_rows)} "
+        f"| dataset={config.dataset_path}"
+    )
     print(f"{'=' * 80}")
 
     initial_summary = _build_summary(
@@ -428,7 +434,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
             summary_path.write_text(json.dumps(interim_summary, indent=2), encoding="utf-8")
             continue
 
-        print(f"\n[Benchmark] ({i}/{len(selected_rows)}) Running row {row_number}")
+        print(f"\n[Benchmark] ({i}/{len(selected_rows)}) Running row {row_number} [{config.iac_type}]")
 
         row_started = time.time()
         status = "ok"
@@ -444,6 +450,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 deploy_target=config.deploy_target,
                 openrouter_provider_only=config.openrouter_provider_only,
                 openrouter_min_quantization=config.openrouter_min_quantization,
+                iac_type=config.iac_type,
             )
 
             run_id = final_state["run_id"]
@@ -583,9 +590,9 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
     return {"summary": summary, "rows": rows_out}
 
 
-def _default_output_dir() -> Path:
+def _default_output_dir(iac_type: str) -> Path:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path("benchmark_runs") / ts
+    return Path("benchmark_runs") / f"{iac_type}_{ts}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -593,16 +600,26 @@ def parse_args() -> argparse.Namespace:
         description="Benchmark IaCGOD pipeline over a CSV dataset of prompts."
     )
     parser.add_argument(
+        "--iac-type",
+        choices=["cloudformation", "terraform"],
+        default="cloudformation",
+        help="IaC language to generate. Determines default dataset path when --dataset is omitted.",
+    )
+    parser.add_argument(
         "--dataset",
         type=Path,
-        default=Path("data") / "iac_basic.csv",
-        help="Path to CSV file with columns: row_number, prompt, ground_truth_path",
+        default=None,
+        help=(
+            "Path to CSV file with columns: row_number, prompt[, ground_truth_path]. "
+            "Defaults to data/iac_basic.csv for cloudformation or "
+            "data/tf_basic.csv for terraform when omitted."
+        ),
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory for benchmark artifacts (default: benchmark_runs/<timestamp>)",
+        help="Directory for benchmark artifacts (default: benchmark_runs/<iac_type>_<timestamp>)",
     )
     parser.add_argument("--start-row", type=int, default=0)
     parser.add_argument("--max-rows", type=int, default=None)
@@ -651,9 +668,19 @@ if __name__ == "__main__":
     logging.getLogger("neo4j").setLevel(logging.ERROR)
 
     args = parse_args()
-    output_dir = args.output_dir or _default_output_dir()
+
+    # Resolve dataset: explicit --dataset wins; otherwise pick by iac_type.
+    if args.dataset is not None:
+        dataset_path = args.dataset
+    elif args.iac_type == "terraform":
+        dataset_path = Path("data") / "tf_basic.csv"
+    else:
+        dataset_path = Path("data") / "iac_basic.csv"
+
+    output_dir = args.output_dir or _default_output_dir(args.iac_type)
+
     cfg = BenchmarkConfig(
-        dataset_path=args.dataset,
+        dataset_path=dataset_path,
         output_dir=output_dir,
         start_row=args.start_row,
         max_rows=args.max_rows,
@@ -663,5 +690,6 @@ if __name__ == "__main__":
         deploy_target=args.deploy_target,
         openrouter_provider_only=args.openrouter_provider_only,
         openrouter_min_quantization=args.openrouter_min_quantization,
+        iac_type=args.iac_type,
     )
     run_benchmark(cfg)
