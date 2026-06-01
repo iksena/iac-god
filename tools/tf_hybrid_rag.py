@@ -69,7 +69,8 @@ CHROMA_DISTANCE_THRESHOLD: float = DEFAULT_DISTANCE_THRESHOLD
 _CONTEXT_MODE: str = os.getenv("CHROMA_CONTEXT_MODE", "compact").lower().strip()
 
 # Maximum optional attributes shown per resource in the Neo4j block.
-# Mirrors cfn_hybrid_rag._MAX_OPTIONAL_PROPS.
+# Mirrors cfn_hybrid_rag._MAX_OPTIONAL_PROPS — same cap keeps token counts
+# directly comparable across CFN and TF benchmark runs.
 _MAX_OPTIONAL_ATTRS = 10
 
 # ChromaDB collection populated by scripts/graphrag/terraform/ ingestion pipeline.
@@ -77,6 +78,21 @@ _TF_COLLECTION_NAME = "tf_schema_properties"
 
 # Doc-link cleaner for Terraform Registry URLs.
 _DOC_LINK_RE = re.compile(r"https?://registry\.terraform\.io\S*", re.IGNORECASE)
+
+# Strip "See also / see <Xxx>." cross-reference boilerplate from resource
+# descriptions — mirrors the equivalent re.sub in cfn_hybrid_rag._format_resource_block_compact().
+# TF registry descriptions commonly end with "See the Foo resource for details."
+_SEE_ALSO_RE = re.compile(r"\s+see[^.]+\.", re.IGNORECASE)
+
+# Raw-mode description noise pattern.
+# TF registry chunks label argument/attribute descriptions as
+# "Argument Description:" or "Attribute Description:" (not bare "Description:").
+# The pattern below covers all three forms so _clean_chunk_raw() strips them
+# in raw mode, matching cfn_hybrid_rag's behaviour for the CFN "Description:" field.
+_DESC_FIELD_RE = re.compile(
+    r"(?:^|\n)(?:Argument |Attribute )?Description:\s*.+?(?=\n[A-Z]|\Z)",
+    re.DOTALL,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +178,10 @@ def _format_resource_block_compact(rc: _ResourceChunks) -> str:
     Mirrors cfn_hybrid_rag._format_resource_block_compact() exactly,
     replacing 'property' vocabulary with 'attribute'.
 
+    The resource description is printed once per resource (deduplicated
+    across all attribute chunks). "See also" cross-reference boilerplate
+    is stripped from descriptions — mirrors cfn_hybrid_rag behaviour.
+
     Format:
         #### aws_vpc
         > Provides a VPC resource.
@@ -174,7 +194,10 @@ def _format_resource_block_compact(rc: _ResourceChunks) -> str:
         else "#### (resource type unknown)"
     lines.append(header)
 
+    # Strip registry links, "See also" boilerplate, and excess whitespace —
+    # mirrors the three-step cleanup in cfn_hybrid_rag._format_resource_block_compact().
     desc = _DOC_LINK_RE.sub("", rc.description).strip()
+    desc = _SEE_ALSO_RE.sub(".", desc)
     desc = re.sub(r"\s{2,}", " ", desc).strip()
     if desc:
         lines.append(f"> {desc}")
@@ -327,13 +350,18 @@ def format_prompt_from_neo4j_result(
             lines.append(f"  ... and {len(opt) - _MAX_OPTIONAL_ATTRS} more optional attributes")
 
     if nested:
+        # Use .get() for both keys — the Cypher computed boolean
+        # (b.min_items IS NOT NULL AND b.min_items > 0) can return None
+        # when min_items is absent, so nt['required'] would KeyError.
         nt_list = ", ".join(
             f"{nt['name']}({'req' if nt.get('required') else 'opt'})"
             for nt in nested
             if nt.get("name")
         )
         if nt_list:
-            lines.append(f"NestedBlocks: {nt_list}")
+            # Label matches CFN ("NestedTypes:") so benchmark log parsing
+            # tools treat both outputs identically.
+            lines.append(f"NestedTypes: {nt_list}")
 
     if include_example and resource_data.get("example") and resource_data["example"].get("code"):
         lines.append(f"Example:\n```hcl\n{resource_data['example']['code']}\n```")
@@ -455,9 +483,19 @@ def _semantic_search(
 
 
 def _clean_chunk_raw(content: str) -> str:
-    """Legacy raw-mode cleaner: strip registry links and Description fields."""
+    """Legacy raw-mode cleaner: strip registry links and description fields.
+
+    Mirrors cfn_hybrid_rag._clean_chunk_raw() but broadens the description
+    pattern to cover all three TF registry variants:
+      - "Description:"            (bare, sometimes present)
+      - "Argument Description:"   (most common in resource argument docs)
+      - "Attribute Description:"  (exported/computed attribute docs)
+    The cfn_hybrid_rag version only strips bare "Description:" which would
+    miss the TF-specific prefixed forms, leaving full description paragraphs
+    in raw output and doubling token cost for no retrieval benefit.
+    """
     content = _DOC_LINK_RE.sub("", content)
-    content = re.sub(r"(?:^|\n)Description:\s*.+?(?=\n[A-Z]|\Z)", "", content, flags=re.DOTALL)
+    content = _DESC_FIELD_RE.sub("", content)
     return re.sub(r"\n{3,}", "\n\n", content).strip()
 
 
