@@ -1,10 +1,11 @@
+# agents/remediator.py
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
 from state import GraphState, RemediationHistory, Message, append_and_cap
 from agents.llm_client import _build_client, _call_llm_with_history
-from prompts.remediator_prompt import REMEDIATOR_SYSTEM, REMEDIATOR_USER
+from prompts.remediator_prompt import get_remediator_system_prompt, REMEDIATOR_USER
 from tools.retriever_helpers import (
     format_cfn_lint_errors,
     format_deploy_errors,
@@ -77,9 +78,10 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     # current_iteration was already incremented by validator_agent; use it
     # as-is for history labelling (reflects the iteration just completed).
     iteration = state["current_iteration"]
-    print(f"\n[Remediator] Analyzing errors (iteration {iteration})...")
+    iac_type = state.get("iac_type", "cloudformation")
+    print(f"\n[Remediator] Analyzing errors (iteration {iteration}, iac_type={iac_type})...")
 
-    system = REMEDIATOR_SYSTEM.format(
+    system = get_remediator_system_prompt(iac_type).format(
         user_request=state["user_request"],
         objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"])),
     )
@@ -99,7 +101,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         state.get("deploy_validation_result"),
     )
     annotated_template = render_annotated_template(
-        template_yaml=state.get("cloudformation_template", ""),
+        template_yaml=state.get("iac_template", ""),
         errors=flat_errors,
     )
 

@@ -1,4 +1,3 @@
-# main.py
 from datetime import datetime
 import os
 import uuid
@@ -26,6 +25,7 @@ def run_pipeline(
     localstack_endpoint: str | None = None,
     openrouter_provider_only: str | None = None,
     openrouter_min_quantization: str | None = None,
+    iac_type: str = "cloudformation",
 ) -> GraphState:
 
     # ------------------------------------------------------------------
@@ -70,9 +70,10 @@ def run_pipeline(
     graph = build_graph(recorder, deploy_config=deploy_config)
 
     initial_state: GraphState = {
+        "iac_type": iac_type,
         "user_request": user_request,
         "objectives": [],
-        "cloudformation_template": "",
+        "iac_template": "",
         "validation_results": [],
         "validation_passed": False,
         "remediation_history": [],
@@ -88,6 +89,7 @@ def run_pipeline(
         "final_template": None,
         "run_id": run_id,
         "deploy_validation_result": None,
+        "stage_error_counts": {},
     }
 
     print(f"\n{'='*60}")
@@ -95,6 +97,7 @@ def run_pipeline(
     print(f"Provider: {DEFAULT_CONFIG.provider.value}")
     print(f"Model: {DEFAULT_CONFIG.model}")
     print(f"Max iterations: {max_iterations}")
+    print(f"IaC type: {iac_type.upper()}")
     print(f"Deploy target: {deploy_target.upper()}")
     print(f"{'='*60}")
 
@@ -110,7 +113,7 @@ def run_pipeline(
         print(traceback.format_exc())
         raise
 
-    final_state["final_template"] = final_state["cloudformation_template"]
+    final_state["final_template"] = final_state["iac_template"]
     recorder.save_final_report(final_state)
 
     print(f"\n{'='*60}")
@@ -168,6 +171,12 @@ if __name__ == "__main__":
         default=None,
         help="Override LocalStack endpoint (default: http://localhost:4566)",
     )
+    parser.add_argument(
+        "--iac-type",
+        choices=["cloudformation", "terraform"],
+        default="cloudformation",
+        help="IaC language to generate. 'cloudformation' (default) or 'terraform'.",
+    )
     args = parser.parse_args()
 
     try:
@@ -180,6 +189,7 @@ if __name__ == "__main__":
             localstack_endpoint=args.localstack_endpoint,
             openrouter_provider_only=args.openrouter_provider_only,
             openrouter_min_quantization=args.openrouter_min_quantization,
+            iac_type=args.iac_type,
         )
     except Exception:
         print("\n[Main] Pipeline execution failed:")
