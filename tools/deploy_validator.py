@@ -410,16 +410,27 @@ def _strip_provider_blocks(hcl: str) -> str:
 
 # Endpoint keys valid for hashicorp/aws ~> 5.0.
 #
-# Keys removed vs. the original v3/v4 list (not recognised by provider v5):
+# Verified against the live provider source:
+#   https://github.com/hashicorp/terraform-provider-aws/blob/main/website/docs/guides/custom-service-endpoints.html.markdown
+#
+# Keys removed vs. earlier list (not recognised by provider v5):
 #   amplicationbackend  — service renamed / removed from provider
 #   codestar            — AWS CodeStar reached end-of-life; key removed in v5
-#   forecast            — replaced by forecastquery
+#   forecast            — removed entirely in v5 (no replacement key)
+#   forecastquery       — was never a valid v5 key
+#   iotanalytics        — removed from provider v5
+#   iotevents           — removed from provider v5
 #   lexruntime          — replaced by lexv2models
 #   lexruntimev2        — replaced by lexv2models
 #   lookoutequipment    — removed from provider v5
+#   lookoutmetrics      — removed from provider v5
 #   lookoutvision       — removed from provider v5
+#   opsworks            — removed from provider v5
 #   panorama            — removed from provider v5
-#   personalize         — replaced by personalizeruntime
+#   personalize         — removed from provider v5
+#   personalizeruntime  — was never a valid v5 key
+#   simpledb            — removed from provider v5
+#   worklink            — removed from provider v5
 #
 # If you upgrade the AWS provider constraint beyond ~> 5.0, re-validate this
 # list against the provider's endpoint documentation:
@@ -507,7 +518,6 @@ _LOCALSTACK_SERVICES = [
     "firehose",
     "fis",
     "fms",
-    "forecastquery",
     "fsx",
     "gamelift",
     "glacier",
@@ -525,8 +535,6 @@ _LOCALSTACK_SERVICES = [
     "inspector2",
     "internetmonitor",
     "iot",
-    "iotanalytics",
-    "iotevents",
     "ivs",
     "ivschat",
     "kafka",
@@ -547,7 +555,6 @@ _LOCALSTACK_SERVICES = [
     "lightsail",
     "location",
     "logs",
-    "lookoutmetrics",
     "macie2",
     "mediaconnect",
     "mediaconvert",
@@ -562,10 +569,8 @@ _LOCALSTACK_SERVICES = [
     "networkmanager",
     "opensearch",
     "opensearchserverless",
-    "opsworks",
     "organizations",
     "outposts",
-    "personalizeruntime",
     "pinpoint",
     "pipes",
     "polly",
@@ -605,7 +610,6 @@ _LOCALSTACK_SERVICES = [
     "sfn",
     "shield",
     "signer",
-    "simpledb",
     "sns",
     "sqs",
     "ssm",
@@ -625,7 +629,6 @@ _LOCALSTACK_SERVICES = [
     "waf",
     "wafregional",
     "wafv2",
-    "worklink",
     "workspaces",
     "xray",
 ]
