@@ -12,7 +12,10 @@ from tools.retriever_helpers import (
     format_deploy_errors,
     extract_errors,
 )
-from tools.template_annotator import render_annotated_template
+from tools.template_annotator import (
+    render_annotated_template,
+    render_annotated_terraform,
+)
 from tracking.recorder import ResearchRecorder
 
 
@@ -157,6 +160,56 @@ def _build_remediation_history_context(state: GraphState) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Annotated template builder
+# ---------------------------------------------------------------------------
+
+def _build_annotated_template(state: GraphState, iac_type: str) -> str:
+    """Return the current template annotated with inline error comments.
+
+    Branches on iac_type:
+
+    CloudFormation:
+        Uses render_annotated_template(yaml, flat_errors).  A flat list of
+        all error strings is passed; the function extracts line numbers from
+        each string and also collects lineless errors into a header block.
+
+    Terraform:
+        Uses render_annotated_terraform(hcl, stage_errors).  Only errors
+        from tflint / terraform-validate stages are annotated inline (those
+        are the only stages that embed HCL line numbers).  Security and deploy
+        errors are excluded — they carry no line reference and are already
+        surfaced in the validation_errors section of the remediator prompt.
+        The stage_errors dict is built directly from validation_results so
+        the renderer can apply its own stage-name filter.
+    """
+    template = state.get("iac_template", "")
+
+    if iac_type == "terraform":
+        stage_errors: dict[str, list[str]] = {}
+        for result in state.get("validation_results", []):
+            stage = str(result.get("stage") or "").strip()
+            if not stage:
+                continue
+            errors = [str(e) for e in result.get("errors", []) if str(e).strip()]
+            if errors:
+                stage_errors[stage] = errors
+        return render_annotated_terraform(
+            template_hcl=template,
+            stage_errors=stage_errors,
+        )
+
+    # CloudFormation path — unchanged
+    flat_errors = extract_errors(
+        state.get("validation_results", []),
+        state.get("deploy_validation_result"),
+    )
+    return render_annotated_template(
+        template_yaml=template,
+        errors=flat_errors,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
 
@@ -181,14 +234,12 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     )
 
     formatted_errors = _build_validation_errors_text(state)
+    annotated_template = _build_annotated_template(state, iac_type)
 
+    # flat_errors is still recorded in remediation history for traceability
     flat_errors = extract_errors(
         state.get("validation_results", []),
         state.get("deploy_validation_result"),
-    )
-    annotated_template = render_annotated_template(
-        template_yaml=state.get("iac_template", ""),
-        errors=flat_errors,
     )
 
     remediation_history_context = _build_remediation_history_context(state)
