@@ -98,7 +98,7 @@ class ResearchRecorder:
         snapshot = {
             "iteration": iteration,
             "objectives": state["objectives"],
-            "cloudformation_template": state["cloudformation_template"],
+            "iac_template": state["iac_template"],
             "validation_results": state["validation_results"],
             "validation_passed": state["validation_passed"],
             "policy_metrics": policy_metrics,

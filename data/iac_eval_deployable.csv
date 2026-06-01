@@ -1,0 +1,90 @@
+row_number,prompt
+21,Set up a record that maps a domain name to an IPv4 address using Route 53 resources
+22,Set up a record that maps a domain name to an IPv6 address using Route 53 resources
+24,"Set up a TXT recordfor domain ownership verification purposes using Route 53 resources. The verification string should be ""passwordpassword"" and the name of the zone should be ""example"""
+29,Create a template of an elastic beanstalk application
+30,Create a template of an elastic beanstalk application that is running a version of Go
+31,Provision a resource to deploy and scale a web application that was developed with supported programming languages.
+57,Generate a basic Amazon Kinesis stream
+59,Generate a basic Amazon Kinesis V2 Analytics Application to manage an Apache Flink Application
+79,"Set up an aws_route_53 zone named ""example53.com"""
+80,"Set up a non-alias aws_route_53 record that is linked to an aws_route53_zone resource named ""example53.com"""
+81,"Set up a non-alias aws_route_53 record that is linked to an aws_route53_zone resource called ""private_zone"" whose name paramter is set to ""internal.example53.com"" and has an aws_vpc resource called ""main"" attached to it"
+84,"Configure a health check with route 53 that uses a cloudwatch metric alarm called ""foobar"". Set the metric_name to ""CPUUtilization"", namespace to ""AWS/EC2"", statistic to ""Average"", period to ""120"", and comparison_operator to ""GreaterThanOrEqualToThreshold"". If the health check doesn't have enough info about the alarm, the status should be ""Healthy"". All resources should be provisioned in ""us-east-1"""
+85,"Configure a routing policy that navigates users to the least congested endpoint of a route 53 zone using Route 53 resources. Call the zone ""primary"" and use ""us-east-1"" and ""eu-central-1"" regions"
+86,"Configure a routing policy that utilizes a user's location to route them to the nearest endpoint of a route 53 zone using Route 53 resources. Call the zone ""primary"" and use ""US"" and ""EU"" continents"
+97,"Create a Terraform script for an AWS IAM role designed for EKS Fargate profiles. Define a role with a specific name (with the name attribute set to ""eks-fargate-profile-example"") and an assume role policy that allows actions from 'eks-fargate-pods.amazonaws.com'. Also, attach a predefined Amazon EKS Fargate Pod Execution Role Policy to this role."
+125,Create an AWS aws_ami resource for the latest Amazon Linux 2 AMI
+126,Create an AWS aws_ami for the latest Amazon Linux 2 AMI
+134,Provide a Redis Instance
+135,Provide an ElastiCache user resource with redis
+136,Provide an ElastiCache user resource with iam
+137,Provide an ElastiCache user resource with password.
+138,Provide an ElastiCache user group resource.
+139,Associate an existing ElastiCache user and an existing user group.
+140,Create a RedShift cluster resource with a single node
+144,Create a VPC in us-east-1 and create subnets in east-1a and east-1b. Create a RedShift subnet group with a subnet in east-1a and east-1b
+160,Create a CloudWatch Composite Alarm resource.
+161,Create a CloudWatch Metric Alarm resource.
+162,Generate a Terraform HCL code snippet to define an AWS CloudWatch metric alarm named 'foobar' that monitors the 'CPUUtilization' metric of AWS EC2 instances. The alarm should trigger when the average CPU utilization is greater than or equal to 80% for two consecutive 2-minute periods. Ensure that no actions are taken when there's insufficient data.
+166,Create a DynamoDB table with custom read capacity = 20 and write capacity = 20.
+167,Provide a DynamoDB table item resource using terraform
+172,Configure on-demand capacity mode for a DynamoDB table.
+173,Create a SageMaker Domain resource.
+179,Create an aws_sagemaker_model running the kmeans image.
+180,Create an aws_sagemaker_notebook_instance on an ml.t2.medium
+182,Create a SageMaker Pipeline resource.
+184,Create a SageMaker endpoint cofiguration for a sagemaker_model
+188,Create the latest Amazon Linux 2 AMI
+195,authenticate a elasticache user with redis
+196,authenticate a elasticache user with iam
+197,authenticate a elasticache user with passwords
+198,Provides an ElastiCache user group resource with 3 users
+216,Create an Aurora MySQL cluster.
+217,Create an Aurora PostgresQL cluster
+218,Create an mySQL cluster with 100 GB allocated to each zone.
+219,"Create an mySQL cluster with 100 GB allocated to us-east-1a, us-east-1b, us-east-1c."
+220,Create a mySQL instance.
+221,Create a PostgresQL instance.
+223,Create a DynamoDB table with replicas in us-east-2 and us-west-2
+224,Create a DynamoDB with point-in-time recovery enabled.
+226,Create a DynamoDB table with read and write capacity both set to 10.
+230,Enable point-in-time recovery for the DynamoDB table.
+231,Configure a custom Time to Live (TTL) attribute for data expiration.
+232,Configure a DynamoDB table with server-side encryption enabled.
+233,Create a DynamoDB table with data encryption at rest enabled for the table.
+234,Create an AWS VPC resource with an example CIDR block and IPv6 enabled
+235,Create an AWS VPC resource with an Internet Gateway attached to it
+236,Create an AWS VPC with an Egress-Only Internet Gateway attached to it
+237,Create an AWS VPC resource with one public subnet and one private subnet
+238,Create an AWS VPC resource with a subnet and associated network ACLs to control both ingress and egress traffic
+239,Create two AWS VPCs and establish a peering connection between them
+240,Create an AWS VPC resource with an Internet Gateway attached and a route to a custom route table directing traffic for a specific CIDR block through the Internet Gateway
+242,Set up a basic AWS Neptune cluster with a custom parameter group
+245,Set up a basic AWS Neptune cluster with a custom parameter group and an instance in that cluster with its own custom parameter group
+262,Create two basic AWS IAM users that are a part of a basic IAM group
+263,Make a basic AWS IAM group example with an example group policy attachment resource attaching a policy to it
+264,Create a basic AWS IAM user with a basic SSH key attached.
+265,Create a basic AWS IAM group example
+266,Create a basic AWS IAM user example
+325,Create aws RDS with randomly generated id and password
+326,Create an 20GB mysql on aws with randomly generated id and password
+351,"defines an AWS RDS option group named ""option-group-pike"" with major engine version 11, and use the sqlserver-ee engine"
+352,"defines an AWS RDS option group named ""option-group-pike"" with major engine version 11, and use the sqlserver-ee engine. It should have options for ""SQLSERVER_AUDIT"" and ""TDE"" "
+353,"defines an AWS RDS option group named ""option-group-pike"" with major engine version 11, and use the sqlserver-ee engine. It should have options for ""SQLSERVER_AUDIT"" and ""TDE"". IAM_ROLE_ARN and S3_BUCKET_ARN are included under SQLSERVER_AUDIT option"
+380,an S3 Glacier vault for long-term data archiving
+381,generate a aws storage for long term data and backup
+408,create a basic AWS SQL database
+409,Create a db.t4g.large AWS PostgresSQL
+410,create a memory optimized PostgresSQL
+411,Create an AWS mySQL instance. Any changes on it will be applied immediately
+412,Create an AWS mySQL instance that skips the final snapshot
+415,"create a basic AWS RDS instance, with gp3 storage type"
+416,"create a basic AWS RDS instance, with io1 storage type"
+418,create an AWS database that enables storage autoscaling
+419,"create an aws database that Managed Master Passwords via Secrets Manager, default KMS Key"
+420,"create an aws database that Managed Master Passwords via Secrets Manager, with specific KMS Key"
+422,create a AWS EFS File System with tags
+423,create a AWS EFS Using lifecycle policy
+424,create a AWS EFS with a system policy
+426,create a AWS EFS with mount target

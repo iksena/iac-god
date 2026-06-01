@@ -22,4 +22,5 @@ langchain-chroma
 langchain-huggingface
 langchain-core
 langchain-ollama
+datasets
 beautifulsoup4
