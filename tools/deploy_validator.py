@@ -408,16 +408,27 @@ def _strip_provider_blocks(hcl: str) -> str:
 # LocalStack provider override builder (Terraform)
 # ---------------------------------------------------------------------------
 
-# Exhaustive list of LocalStack-supported AWS service endpoint keys recognised
-# by the Terraform AWS provider. Routing every service through the LocalStack
-# endpoint prevents 403 InvalidClientTokenId errors that occur when a service
-# is missing from this map and Terraform falls back to the real AWS endpoint.
+# Endpoint keys valid for hashicorp/aws ~> 5.0.
+#
+# Keys removed vs. the original v3/v4 list (not recognised by provider v5):
+#   amplicationbackend  — service renamed / removed from provider
+#   codestar            — AWS CodeStar reached end-of-life; key removed in v5
+#   forecast            — replaced by forecastquery
+#   lexruntime          — replaced by lexv2models
+#   lexruntimev2        — replaced by lexv2models
+#   lookoutequipment    — removed from provider v5
+#   lookoutvision       — removed from provider v5
+#   panorama            — removed from provider v5
+#   personalize         — replaced by personalizeruntime
+#
+# If you upgrade the AWS provider constraint beyond ~> 5.0, re-validate this
+# list against the provider's endpoint documentation:
+#   https://registry.terraform.io/providers/hashicorp/aws/latest/docs/guides/custom-service-endpoints
 _LOCALSTACK_SERVICES = [
     "accessanalyzer",
     "account",
     "acm",
     "acmpca",
-    "amplicationbackend",
     "amplify",
     "apigateway",
     "apigatewayv2",
@@ -452,7 +463,6 @@ _LOCALSTACK_SERVICES = [
     "codecommit",
     "codedeploy",
     "codepipeline",
-    "codestar",
     "codestarconnections",
     "codestarnotifications",
     "cognitoidentity",
@@ -497,7 +507,7 @@ _LOCALSTACK_SERVICES = [
     "firehose",
     "fis",
     "fms",
-    "forecast",
+    "forecastquery",
     "fsx",
     "gamelift",
     "glacier",
@@ -532,15 +542,12 @@ _LOCALSTACK_SERVICES = [
     "lambda",
     "lexmodels",
     "lexmodelsv2",
-    "lexruntime",
-    "lexruntimev2",
+    "lexv2models",
     "licensemanager",
     "lightsail",
     "location",
     "logs",
-    "lookoutequipment",
     "lookoutmetrics",
-    "lookoutvision",
     "macie2",
     "mediaconnect",
     "mediaconvert",
@@ -558,8 +565,7 @@ _LOCALSTACK_SERVICES = [
     "opsworks",
     "organizations",
     "outposts",
-    "panorama",
-    "personalize",
+    "personalizeruntime",
     "pinpoint",
     "pipes",
     "polly",
@@ -825,11 +831,11 @@ def _validate_terraform_deployment(
         )
 
         return DeployValidationResult(
-            target=target_name, passed=False, stack_id=None,
-            completed_resources=[], failed_resources=failed_resources,
-            error_message=error_msg,
-            duration_seconds=round(time.time() - start_time, 2),
-            deployment_logs=deploy_logs,
+                target=target_name, passed=False, stack_id=None,
+                completed_resources=[], failed_resources=failed_resources,
+                error_message=error_msg,
+                duration_seconds=round(time.time() - start_time, 2),
+                deployment_logs=deploy_logs,
         )
 
 
@@ -853,8 +859,8 @@ def validate_deployment(
       - Strips any LLM-generated provider "aws" block before writing main.tf
         to prevent duplicate-provider errors.
       - Injects an exhaustive LocalStack provider override (all known AWS
-        service endpoints) when target==localstack, preventing 403 fallback
-        errors for any service not previously listed.
+        service endpoints valid for hashicorp/aws ~> 5.0) when
+        target==localstack, preventing 403 fallback errors.
       - Runs terraform init + terraform apply + terraform destroy (cleanup)
       - Parses Error blocks from apply output into FailedResource entries
         using Terraform resource addresses (e.g. aws_vpc.main) as logical_name
