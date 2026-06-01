@@ -10,6 +10,7 @@ from tools.template_annotator import (
     annotate_template,
     attach_smells,
     render_annotated_template,
+    render_annotated_terraform,
     extract_resource_types,
 )
 from tools.cfn_hybrid_rag import execute_hybrid_retrieval
@@ -168,7 +169,7 @@ def _extract_error_resources(
             f"[Retriever] Error resources scoped to: {sorted(error_resource_types)}"
         )
     else:
-        print("[Retriever] No error resources resolved — Neo4j will use full seed set.")
+        print("[Retriever] No error resources resolved \u2014 Neo4j will use full seed set.")
 
     return error_resource_types
 
@@ -181,7 +182,7 @@ def _annotate_safely(
     """Parse and annotate the template for resource-type seeding.
 
     Returns None on parse failure so callers degrade gracefully.
-    Only used to extract resource types for Neo4j seeding — rendering
+    Only used to extract resource types for Neo4j seeding \u2014 rendering
     is now done directly against the raw template string.
 
     Passes a synthetic file_path hint ('<in-memory>.tf' for Terraform) so
@@ -203,22 +204,63 @@ def _annotate_safely(
         return None
 
 
+# ---------------------------------------------------------------------------
+# Annotated template builder — iac_type-aware
+# ---------------------------------------------------------------------------
+
+def _build_retrieval_annotated_template(
+    template: str,
+    errors: list[str],
+    stage_errors: dict[str, list[str]],
+    iac_type: str,
+) -> str:
+    """Render the template with inline error annotations for the retrieval prompt.
+
+    Mirrors the remediator pattern:
+
+    CloudFormation:
+        render_annotated_template(yaml, flat_errors) \u2014 uses the existing flat
+        error list; the renderer extracts line numbers and also builds a
+        header block for lineless errors.
+
+    Terraform:
+        render_annotated_terraform(hcl, stage_errors) \u2014 only tflint /
+        terraform-validate errors are annotated inline (the only stages that
+        embed HCL line numbers).  Security and deploy errors are excluded
+        because they carry no line reference and are already surfaced in
+        the validation_errors section of the prompt.
+    """
+    if iac_type == "terraform":
+        return render_annotated_terraform(
+            template_hcl=template,
+            stage_errors=stage_errors,
+        )
+    return render_annotated_template(
+        template_yaml=template,
+        errors=errors,
+    )
+
+
 def build_retrieval_prompt(
     errors: list[str],
     template: str | None,
     annotation: TemplateAnnotation | None,
     remediation_history: list[RemediationHistory],
     iac_type: str = "cloudformation",
+    stage_errors: dict[str, list[str]] | None = None,
 ) -> str:
     """Assemble the single user-turn message for the query-generation LLM call.
 
     Sections (in order):
-      1. Validation errors — rich format: [RuleId] line N | Resource: X | message | description
+      1. Validation errors \u2014 rich format: [RuleId] line N | Resource: X | message | description
       2. Full template with inline ERROR comments at the exact reported lines
          (when errors carry line numbers), or plain template fallback.
+         Annotation is iac_type-aware: CFN uses render_annotated_template;
+         Terraform uses render_annotated_terraform (tflint/terraform-validate
+         only) via _build_retrieval_annotated_template.
       3. Prior retrieval-query history to avoid duplicate lookups.
 
-    Pure function — no I/O, no LLM calls, fully unit-testable.
+    Pure function \u2014 no I/O, no LLM calls, fully unit-testable.
     Only structural errors (cfn-lint / tflint / terraform-validate / deploy) are
     included here; security errors are routed directly to
     execute_security_retrieval() without going through the LLM.
@@ -228,9 +270,11 @@ def build_retrieval_prompt(
     ]
 
     if template and _errors_have_line_numbers(errors):
-        annotated = render_annotated_template(
-            template_yaml=template,
+        annotated = _build_retrieval_annotated_template(
+            template=template,
             errors=errors,
+            stage_errors=stage_errors or {},
+            iac_type=iac_type,
         )
         parts.append(
             "## IaC Template (errors annotated at reported lines)\n"
@@ -242,7 +286,7 @@ def build_retrieval_prompt(
     elif template:
         parts.append(
             "## IaC Template\n"
-            "No line-number annotations available — use the error messages\n"
+            "No line-number annotations available \u2014 use the error messages\n"
             "above to identify which resource types and attributes need schema retrieval.\n"
             f"```\n{template}\n```"
         )
@@ -274,7 +318,7 @@ def _get_active_error_types(state: GraphState) -> tuple[bool, bool]:
       Both:           live deployment failures
 
     Note: tflint (Terraform Stage 1) and cfn-lint (CFN Stage 2) are symmetric
-    structural linters — both trigger schema RAG so the repair loop receives
+    structural linters \u2014 both trigger schema RAG so the repair loop receives
     provider/resource schema context regardless of which structural stage
     caught the error. This parity is required for the generalisation hypothesis.
 
@@ -302,7 +346,7 @@ def _get_active_error_types(state: GraphState) -> tuple[bool, bool]:
         has_schema = True
 
     deploy = state.get("deploy_validation_result")
-    if deploy and not deploy.get("passed") and deploy.get("target") != "skipped":
+    if deploy and not deploy.get("passed") and deploy.get("target") != "skipped"):
         has_schema = True
 
     # Check security stages
@@ -348,20 +392,22 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
 
     Orchestration steps:
       1. Extract structural + deploy errors (security stages excluded).
-      2. Annotate the template to seed resource types for the RAG layer.
-      3. Build the retrieval prompt (pure, no I/O) using iac_type-aware
+      2. Build stage_errors dict from validation_results for iac_type-aware
+         template annotation (mirrors remediator pattern).
+      3. Annotate the template to seed resource types for the RAG layer.
+      4. Build the retrieval prompt (pure, no I/O) using iac_type-aware
          section headers and system prompt via get_query_gen_system().
-      4. When has_schema:
+      5. When has_schema:
            - CloudFormation: call LLM to generate schema_queries, then run
              ChromaDB + Neo4j hybrid retrieval via execute_hybrid_retrieval().
            - Terraform: call LLM to generate schema_queries, then run
              execute_terraform_retrieval() (stub today; wired for TF corpus).
-      5. When has_security: extract AVD/Trivy IDs from raw errors via regex,
-         then run a direct Neo4j graph lookup — NO LLM query generation for
+      6. When has_security: extract AVD/Trivy IDs from raw errors via regex,
+         then run a direct Neo4j graph lookup \u2014 NO LLM query generation for
          security (IDs are already explicit in the validator output).
-      6. Persist prompt, response, queries, and full context to
+      7. Persist prompt, response, queries, and full context to
          retriever_history.txt via the recorder.
-      7. Return retriever_context, retriever_queries, and updated
+      8. Return retriever_context, retriever_queries, and updated
          retriever_history into state.
     """
     iteration = state["current_iteration"]
@@ -374,6 +420,18 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         state.get("validation_results", []),
         deploy_validation_result,
     )
+
+    # Build stage_errors for iac_type-aware annotation in build_retrieval_prompt.
+    # Only stages with actual errors are included; the dict is keyed by stage
+    # name so render_annotated_terraform can apply its own stage-name filter.
+    stage_errors: dict[str, list[str]] = {}
+    for result in state.get("validation_results", []):
+        stage = str(result.get("stage") or "").strip()
+        if not stage:
+            continue
+        errs = [str(e) for e in result.get("errors", []) if str(e).strip()]
+        if errs:
+            stage_errors[stage] = errs
 
     # FIX: read from the canonical state key 'iac_template' (renamed from
     # 'cloudformation_template' when iac_type support was added to state.py).
@@ -398,7 +456,7 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     if has_schema:
         has_line_numbers = _errors_have_line_numbers(errors)
         print(
-            f"[Retriever] {'Line numbers detected — annotated template' : <45} "
+            f"[Retriever] {'Line numbers detected \u2014 annotated template' : <45} "
             f"{'included' if has_line_numbers else 'NOT included (plain template used)'}."
         )
 
@@ -413,6 +471,7 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
             annotation=annotation,
             remediation_history=state.get("remediation_history", []),
             iac_type=iac_type,
+            stage_errors=stage_errors,
         )
 
         model, raw_response, usage = _call_query_generator(
@@ -459,14 +518,14 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
                 error_resources=error_resources,
             )
     else:
-        # No schema errors — still need to record a stub for the recorder.
+        # No schema errors \u2014 still need to record a stub for the recorder.
         user_content = ""
         raw_response = ""
         model = ""
         usage = None
 
     # ------------------------------------------------------------------
-    # Security retrieval (has_security) — pure deterministic graph lookup
+    # Security retrieval (has_security) \u2014 pure deterministic graph lookup
     # No LLM, no embeddings, no ChromaDB.
     # ------------------------------------------------------------------
     security_context = ""
