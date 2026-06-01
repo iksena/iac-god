@@ -143,6 +143,54 @@ def _yaml_with_line_numbers(content: str) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# hcl2 structure helpers
+# ---------------------------------------------------------------------------
+
+def _hcl2_unwrap(value: Any) -> Any:
+    """Unwrap a single-element list produced by hcl2.
+
+    hcl2.load() wraps every dict value in a list::
+
+        {"resource": [{"aws_vpc": [{"main": {"cidr_block": ["10.0.0.0/16"]}}]}]}
+
+    This helper peels off one list layer when the list has exactly one
+    element, leaving plain dicts and other types untouched.  The result is
+    never further unwrapped here; callers chain calls as needed.
+    """
+    if isinstance(value, list) and len(value) == 1:
+        return value[0]
+    return value
+
+
+def _hcl2_lookup(raw: dict, rtype: str, rname: str) -> dict:
+    """Safely drill into the hcl2 resource structure to retrieve the raw block.
+
+    hcl2 nests resources as::
+
+        raw["resource"] -> list
+          -> dict keyed by resource type
+            -> list
+              -> dict keyed by resource name
+                -> the raw attribute dict
+
+    Each level is wrapped in a list, so we unwrap at each step.
+    Returns an empty dict on any shape mismatch so _parse_terraform
+    never raises.
+    """
+    try:
+        resources_outer = _hcl2_unwrap(raw.get("resource", []))
+        if not isinstance(resources_outer, dict):
+            return {}
+        type_outer = _hcl2_unwrap(resources_outer.get(rtype, []))
+        if not isinstance(type_outer, dict):
+            return {}
+        name_val = _hcl2_unwrap(type_outer.get(rname, {}))
+        return name_val if isinstance(name_val, dict) else {}
+    except Exception:
+        return {}
+
+
+# ---------------------------------------------------------------------------
 # Template parsers
 # ---------------------------------------------------------------------------
 
@@ -186,16 +234,28 @@ def _parse_cloudformation(content: str, file_path: str) -> TemplateAnnotation:
 
 
 def _parse_terraform(content: str, file_path: str) -> TemplateAnnotation:
-    """Minimal Terraform HCL parser using regex for resource block detection."""
+    """Minimal Terraform HCL parser using regex for resource block detection.
+
+    Uses python-hcl2 when available to extract the raw attribute dict for
+    each resource.  hcl2.load() wraps every nesting level in a list, e.g.::
+
+        {"resource": [{"aws_vpc": [{"main": {"cidr_block": ["10.0.0.0/16"]}}]}]}
+
+    _hcl2_lookup() unwraps those list layers safely so ResourceAnnotation.raw
+    receives a plain dict.  Falls back to an empty dict when hcl2 is absent
+    or the structure does not match expectations.
+    """
     resources: list[ResourceAnnotation] = []
 
+    raw: dict = {}
     try:
         import hcl2  # type: ignore
         import io
         raw = hcl2.load(io.StringIO(content))
     except ImportError:
         logger.debug("python-hcl2 not installed; using regex fallback for %s", file_path)
-        raw = {}
+    except Exception as exc:
+        logger.warning("hcl2 parse error for %s: %s", file_path, exc)
 
     pattern = re.compile(
         r'^resource\s+"(?P<type>[^"]+)"\s+"(?P<name>[^"]+)"\s*\{',
@@ -210,7 +270,7 @@ def _parse_terraform(content: str, file_path: str) -> TemplateAnnotation:
             resource_type=rtype,
             start_line=start_line,
             end_line=None,
-            raw=raw.get("resource", {}).get(rtype, {}).get(rname, {}),
+            raw=_hcl2_lookup(raw, rtype, rname),
         ))
 
     return TemplateAnnotation(
