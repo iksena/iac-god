@@ -14,39 +14,105 @@ the Generator LLM fix the error.
 Usage
 -----
     # From the scripts/graphrag/terraform/ directory, with the ChromaDB and
-    # Neo4j instances already populated by scripts 01–05:
+    # Neo4j instances already populated by scripts 01-05:
     python 06_test_rag_queries.py
 
 Environment variables (all optional, fall back to local defaults):
-    CHROMADB_PATH   path to ChromaDB persist dir  (default: ./chroma_db)
-    EMBED_MODEL     sentence-transformers model    (default: all-MiniLM-L6-v2)
-    NEO4J_URI       bolt URI                       (default: bolt://localhost:7687)
-    NEO4J_USER                                     (default: neo4j)
-    NEO4J_PASSWORD                                 (default: password)
-    TOP_K           number of ChromaDB results     (default: 5)
+    EMBEDDING_PROVIDER   'ollama' (default) | 'huggingface'
+    EMBEDDING_MODEL      model name (default per provider)
+    OLLAMA_BASE_URL      Ollama server URL     (default: http://localhost:11434)
+    CHROMA_HOST          ChromaDB host         (default: localhost)
+    CHROMA_PORT          ChromaDB port         (default: 8000)
+    NEO4J_URI            bolt URI              (default: bolt://localhost:7687)
+    NEO4J_USER                                 (default: neo4j)
+    NEO4J_PASSWORD                             (default: password)
+    TOP_K                number of ChromaDB results (default: 5)
 """
 from __future__ import annotations
 
 import os
+import sys
 import textwrap
 from dataclasses import dataclass, field
 from typing import Any
 
+import numpy as np
 import chromadb
-from chromadb.utils import embedding_functions
+from langchain_chroma import Chroma
 from neo4j import GraphDatabase
+
+# ---------------------------------------------------------------------------
+# Embedding provider — mirrors 05_build_tf_chromadb.py exactly so vectors
+# are embedded with the same model and normalisation at query time.
+# ---------------------------------------------------------------------------
+
+_PROVIDER = os.getenv("EMBEDDING_PROVIDER", "ollama").lower().strip()
+_DEFAULTS = {
+    "huggingface": "sentence-transformers/all-mpnet-base-v2",
+    "ollama":      "mxbai-embed-large",
+}
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", _DEFAULTS.get(_PROVIDER, _DEFAULTS["ollama"]))
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+
+
+class _NormalisedEmbeddings:
+    """L2-normalise every vector so cosine distance == angular distance.
+
+    Must be identical to the wrapper used during ingestion in
+    05_build_tf_chromadb.py — mismatched normalisation would silently
+    corrupt distance scores at query time.
+    """
+    def __init__(self, base):
+        self._base = base
+
+    @staticmethod
+    def _norm(vecs):
+        arr   = np.array(vecs, dtype=np.float32)
+        norms = np.linalg.norm(arr, axis=1, keepdims=True)
+        norms = np.where(norms == 0, 1.0, norms)
+        return (arr / norms).tolist()
+
+    def embed_documents(self, texts):
+        return self._norm(self._base.embed_documents(texts))
+
+    def embed_query(self, text):
+        return self._norm([self._base.embed_query(text)])[0]
+
+
+def _get_embeddings():
+    if _PROVIDER == "ollama":
+        try:
+            from langchain_ollama import OllamaEmbeddings
+        except ImportError:
+            print("ERROR: langchain-ollama not installed. Run: pip install langchain-ollama")
+            sys.exit(1)
+        print(f"[06] Embedding provider : Ollama")
+        print(f"[06] Model             : {EMBEDDING_MODEL}")
+        print(f"[06] Ollama URL        : {OLLAMA_BASE_URL}")
+        base = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=OLLAMA_BASE_URL)
+        return _NormalisedEmbeddings(base)
+
+    from langchain_huggingface import HuggingFaceEmbeddings
+    print(f"[06] Embedding provider : HuggingFace")
+    print(f"[06] Model             : {EMBEDDING_MODEL}")
+    return HuggingFaceEmbeddings(
+        model_name=EMBEDDING_MODEL,
+        model_kwargs={"device": "cpu"},
+        encode_kwargs={"normalize_embeddings": True},
+    )
+
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
 
-CHROMADB_PATH = os.getenv("CHROMADB_PATH", "./chroma_db")
-EMBED_MODEL   = os.getenv("EMBED_MODEL",   "all-MiniLM-L6-v2")
-NEO4J_URI     = os.getenv("NEO4J_URI",     "bolt://localhost:7687")
-NEO4J_USER    = os.getenv("NEO4J_USER",    "neo4j")
-NEO4J_PASSWORD= os.getenv("NEO4J_PASSWORD","password")
-TOP_K         = int(os.getenv("TOP_K", "5"))
-COLLECTION    = "tf_schema_properties"
+CHROMA_HOST     = os.getenv("CHROMA_HOST",     "localhost")
+CHROMA_PORT     = int(os.getenv("CHROMA_PORT", "8000"))
+NEO4J_URI       = os.getenv("NEO4J_URI",       "bolt://localhost:7687")
+NEO4J_USER      = os.getenv("NEO4J_USER",      "neo4j")
+NEO4J_PASSWORD  = os.getenv("NEO4J_PASSWORD",  "password")
+TOP_K           = int(os.getenv("TOP_K", "5"))
+COLLECTION     = "tf_schema_properties"
 
 # ---------------------------------------------------------------------------
 # Test cases
@@ -66,9 +132,6 @@ TEST_CASES: list[TestCase] = [
 
     # ------------------------------------------------------------------
     # CATEGORY 1: TFLint errors
-    # These are the literal error strings produced by `tflint --format=json`
-    # or the default text output. The Retriever Agent would forward these
-    # (or a compressed version) to the RAG tool.
     # ------------------------------------------------------------------
 
     TestCase(
@@ -116,8 +179,6 @@ TEST_CASES: list[TestCase] = [
 
     # ------------------------------------------------------------------
     # CATEGORY 2: terraform apply / LocalStack deploy errors
-    # These come from stderr when `terraform apply` fails, either against
-    # real AWS or the LocalStack emulator.
     # ------------------------------------------------------------------
 
     TestCase(
@@ -153,7 +214,7 @@ TEST_CASES: list[TestCase] = [
             "InvalidClientTokenId: The security token included in the request is invalid. "
             "provider aws region us-east-1"
         ),
-        resource_hints=[],  # provider-level, not resource-level
+        resource_hints=[],
     ),
 
     TestCase(
@@ -182,9 +243,6 @@ TEST_CASES: list[TestCase] = [
 
     # ------------------------------------------------------------------
     # CATEGORY 3: Retriever Agent structured queries
-    # These are what the Retriever LLM produces after reading the error —
-    # concise schema-lookup strings mixing resource names, attribute names,
-    # and functional intent. This is the most direct input format for the RAG.
     # ------------------------------------------------------------------
 
     TestCase(
@@ -241,21 +299,30 @@ TEST_CASES: list[TestCase] = [
 # ChromaDB retrieval
 # ---------------------------------------------------------------------------
 
-def chroma_search(collection, query: str, n_results: int = TOP_K) -> list[dict]:
-    """Return top-N results from the tf_schema_properties collection."""
-    results = collection.query(
-        query_texts=[query],
-        n_results=n_results,
-        include=["documents", "metadatas", "distances"],
+def build_chroma_retriever(embeddings) -> Chroma:
+    """Return a LangChain Chroma wrapper connected to the live server."""
+    chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
+    return Chroma(
+        client=chroma_client,
+        collection_name=COLLECTION,
+        embedding_function=embeddings,
+        collection_metadata={"hnsw:space": "cosine"},
     )
+
+
+def chroma_search(vectorstore: Chroma, query: str, n_results: int = TOP_K) -> list[dict]:
+    """Return top-N results with distance scores from the collection."""
+    results = vectorstore.similarity_search_with_relevance_scores(query, k=n_results)
     hits = []
-    for doc, meta, dist in zip(
-        results["documents"][0],
-        results["metadatas"][0],
-        results["distances"][0],
-    ):
-        hits.append({"text": doc, "meta": meta, "distance": round(dist, 4)})
+    for doc, score in results:
+        hits.append({
+            "text":     doc.page_content,
+            "meta":     doc.metadata,
+            # LangChain returns relevance (1 - cosine_distance); invert for display
+            "distance": round(1.0 - score, 4),
+        })
     return hits
+
 
 # ---------------------------------------------------------------------------
 # Neo4j graph retrieval
@@ -285,25 +352,22 @@ LIMIT 1
 
 
 def neo4j_lookup(driver, resource_name: str) -> dict[str, Any] | None:
-    """Pull the full schema context for one TFResource from Neo4j."""
     with driver.session() as session:
         result = session.run(_GRAPH_QUERY, resource_name=resource_name)
         record = result.single()
-        if record is None:
-            return None
-        return dict(record)
+        return dict(record) if record else None
 
 
 def infer_resource_from_chroma(hits: list[dict]) -> list[str]:
-    """Guess resource names from the ChromaDB top results."""
     seen: list[str] = []
     for h in hits:
-        r = h["meta"].get("resource", "")
+        r = h["meta"].get("resource_name", "")
         if r and r not in seen:
             seen.append(r)
         if len(seen) >= 2:
             break
     return seen
+
 
 # ---------------------------------------------------------------------------
 # Formatting helpers
@@ -325,23 +389,23 @@ def _print_chroma_hits(hits: list[dict]) -> None:
 
 def _print_neo4j_result(result: dict | None, resource_name: str) -> None:
     if result is None:
-        print(f"  ⚠  No TFResource node found for '{resource_name}'")
+        print(f"  \u26a0  No TFResource node found for '{resource_name}'")
         return
 
     print(f"  Resource : {result['resource']}")
     print(f"  Desc     : {result['resource_desc'] or '(empty)'}")
 
-    attrs = [a for a in result["attributes"] if a.get("name")]
+    attrs    = [a for a in result["attributes"] if a.get("name")]
     required = [a for a in attrs if a.get("required")]
     optional = [a for a in attrs if not a.get("required")]
 
     print(f"\n  Required attributes ({len(required)}):")
     for a in required:
-        print(f"    • {a['name']} ({a.get('type','?')}): {(a.get('description') or '')[:80]}")
+        print(f"    \u2022 {a['name']} ({a.get('type','?')}): {(a.get('description') or '')[:80]}")
 
-    print(f"\n  Optional attributes ({len(optional)}) — first 5:")
+    print(f"\n  Optional attributes ({len(optional)}) \u2014 first 5:")
     for a in optional[:5]:
-        print(f"    · {a['name']} ({a.get('type','?')}): {(a.get('description') or '')[:80]}")
+        print(f"    \u00b7 {a['name']} ({a.get('type','?')}): {(a.get('description') or '')[:80]}")
 
     blocks = [b for b in result["blocks"] if b.get("name")]
     if blocks:
@@ -350,7 +414,7 @@ def _print_neo4j_result(result: dict | None, resource_name: str) -> None:
             mode = b.get("nesting_mode", "?")
             mn, mx = b.get("min_items", 0), b.get("max_items", 0)
             cardinality = f"min={mn} max={mx}" if (mn or mx) else "unbounded"
-            print(f"    ▸ {b['name']} [{mode}, {cardinality}]")
+            print(f"    \u25b8 {b['name']} [{mode}, {cardinality}]")
         if result.get("sample_block_attrs"):
             print(f"      Block attrs sample: {', '.join(result['sample_block_attrs'])}")
 
@@ -361,48 +425,45 @@ def _print_neo4j_result(result: dict | None, resource_name: str) -> None:
         for line in preview.splitlines():
             print(f"    {line}")
 
+
 # ---------------------------------------------------------------------------
 # Verdict heuristic
 # ---------------------------------------------------------------------------
 
 def _verdict(chroma_hits: list[dict], neo4j_results: list[dict | None]) -> str:
-    """Simple heuristic: does the RAG surface anything useful?"""
-    has_chroma = any(h["distance"] < 0.6 for h in chroma_hits)
-    has_neo4j  = any(r is not None for r in neo4j_results)
+    has_chroma   = any(h["distance"] < 0.6 for h in chroma_hits)
+    has_neo4j    = any(r is not None for r in neo4j_results)
     has_required = any(
         r and any(a.get("required") for a in r.get("attributes", []) if a.get("name"))
         for r in neo4j_results
     )
 
     if has_neo4j and has_required:
-        return "✅  USEFUL — Graph has required-arg schema; LLM can remediate"
+        return "\u2705  USEFUL \u2014 Graph has required-arg schema; LLM can remediate"
     elif has_neo4j:
-        return "🟡  PARTIAL — Graph found resource but no required attrs indexed"
+        return "\U0001f7e1  PARTIAL \u2014 Graph found resource but no required attrs indexed"
     elif has_chroma:
-        return "🟡  PARTIAL — ChromaDB has relevant chunks; no graph data"
+        return "\U0001f7e1  PARTIAL \u2014 ChromaDB has relevant chunks; no graph data"
     else:
-        return "❌  WEAK — Neither path returned high-confidence context"
+        return "\u274c  WEAK \u2014 Neither path returned high-confidence context"
+
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    print("Connecting to ChromaDB ...")
-    chroma_client = chromadb.PersistentClient(path=CHROMADB_PATH)
-    embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name=EMBED_MODEL
-    )
-    try:
-        collection = chroma_client.get_collection(
-            name=COLLECTION, embedding_function=embed_fn
-        )
-    except Exception as exc:
-        print(f"ERROR: Could not open ChromaDB collection '{COLLECTION}': {exc}")
-        print("Run scripts 01–05 first to populate the knowledge base.")
-        return
+    embeddings = _get_embeddings()
 
-    print("Connecting to Neo4j ...")
+    print(f"[06] Connecting to ChromaDB at {CHROMA_HOST}:{CHROMA_PORT} ...")
+    try:
+        vectorstore = build_chroma_retriever(embeddings)
+    except Exception as exc:
+        print(f"ERROR: Could not connect to ChromaDB: {exc}")
+        print("Ensure the ChromaDB server is running and scripts 01-05 have been executed.")
+        sys.exit(1)
+
+    print(f"[06] Connecting to Neo4j at {NEO4J_URI} ...")
     try:
         driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
         driver.verify_connectivity()
@@ -411,33 +472,35 @@ def main() -> None:
         driver = None
 
     categories = sorted({tc.category for tc in TEST_CASES})
-    totals: dict[str, dict[str, int]] = {c: {"useful": 0, "partial": 0, "weak": 0, "total": 0} for c in categories}
+    totals: dict[str, dict[str, int]] = {
+        c: {"useful": 0, "partial": 0, "weak": 0, "total": 0} for c in categories
+    }
 
     for tc in TEST_CASES:
-        print(f"\n{'═' * 72}")
+        print(f"\n{'\u2550' * 72}")
         print(f"  [{tc.category.upper()}] {tc.label}")
-        print("═" * 72)
+        print("\u2550" * 72)
         print(f"\nQuery:\n{_wrap(tc.query, indent='  ')}\n")
 
-        # --- ChromaDB path ---
-        print(f"── ChromaDB (semantic, top-{TOP_K}) {'─' * 40}")
-        chroma_hits = chroma_search(collection, tc.query, n_results=TOP_K)
+        # --- ChromaDB semantic path ---
+        print(f"\u2500\u2500 ChromaDB (semantic, top-{TOP_K}) {'\u2500' * 40}")
+        chroma_hits = chroma_search(vectorstore, tc.query, n_results=TOP_K)
         _print_chroma_hits(chroma_hits)
 
-        # --- Determine resources for graph lookup ---
+        # --- Resolve resources for graph lookup ---
         resource_names = tc.resource_hints or infer_resource_from_chroma(chroma_hits)
 
-        # --- Neo4j path ---
-        print(f"\n── Neo4j (graph lookup for: {resource_names}) {'─' * 20}")
+        # --- Neo4j graph path ---
+        print(f"\n\u2500\u2500 Neo4j (graph lookup for: {resource_names}) {'\u2500' * 20}")
         neo4j_results: list[dict | None] = []
         if driver:
             for rname in resource_names:
                 result = neo4j_lookup(driver, rname)
-                print(f"\n  ▶ {rname}")
+                print(f"\n  \u25b6 {rname}")
                 _print_neo4j_result(result, rname)
                 neo4j_results.append(result)
         else:
-            print("  (Neo4j unavailable — skipped)")
+            print("  (Neo4j unavailable \u2014 skipped)")
 
         # --- Verdict ---
         verdict = _verdict(chroma_hits, neo4j_results)
@@ -445,27 +508,26 @@ def main() -> None:
         print(f"  VERDICT: {verdict}")
         print(_LINE)
 
-        # Tally
         totals[tc.category]["total"] += 1
-        if "✅" in verdict:
+        if "\u2705" in verdict:
             totals[tc.category]["useful"] += 1
-        elif "🟡" in verdict:
+        elif "\U0001f7e1" in verdict:
             totals[tc.category]["partial"] += 1
         else:
             totals[tc.category]["weak"] += 1
 
     # --- Summary ---
-    print(f"\n\n{'═' * 72}")
+    print(f"\n\n{'\u2550' * 72}")
     print("  SUMMARY")
-    print("═" * 72)
+    print("\u2550" * 72)
     for cat, counts in totals.items():
         t = counts["total"]
         u = counts["useful"]
         p = counts["partial"]
         w = counts["weak"]
         print(
-            f"  {cat:12s}  {t} queries —  "
-            f"✅ useful: {u}  🟡 partial: {p}  ❌ weak: {w}"
+            f"  {cat:12s}  {t} queries \u2014  "
+            f"\u2705 useful: {u}  \U0001f7e1 partial: {p}  \u274c weak: {w}"
         )
     print()
 
