@@ -1,4 +1,3 @@
-# agents/validator.py
 from state import GraphState, classify_failing_stages
 from tools.validators import run_all_validators
 from tracking.recorder import ResearchRecorder
@@ -11,8 +10,12 @@ def validator_agent(
     deploy_config: DeployConfig = DEFAULT_DEPLOY_CONFIG,
 ) -> GraphState:
     """
-    Runs the static validation pipeline (YAML -> cfn-lint) then optionally a
-    live deployability check against LocalStack or AWS.
+    Runs the static validation pipeline then optionally a live deployability
+    check against LocalStack or AWS.
+
+    Branches on state["iac_type"]:
+      - "cloudformation": yaml → cfn-lint → trivy → (deploy via boto3/LocalStack CFN)
+      - "terraform":      terraform-validate → trivy → (deploy via terraform apply/LocalStack)
 
     Responsibilities:
       - Run all validators and collect results.
@@ -22,23 +25,25 @@ def validator_agent(
         moderate path (validator -> retriever -> remediator -> engineer).
     """
     iteration = state["current_iteration"]
-    print(f"\n[Validator] Running validation pipeline (iteration {iteration})...")
+    iac_type = state.get("iac_type", "cloudformation")
+    print(f"\n[Validator] Running validation pipeline (iteration {iteration}, iac_type={iac_type})...")
 
     results, all_passed, deploy_result = run_all_validators(
-        state["cloudformation_template"],
+        state["iac_template"],
+        iac_type=iac_type,
         deploy_config=deploy_config,
     )
 
     for r in results:
         status = "\u2705 PASS" if r["passed"] else f"\u274c FAIL ({len(r['errors'])} errors)"
-        print(f"  [{r['stage']:10s}] {status}")
+        print(f"  [{r['stage']:20s}] {status}")
 
     if deploy_result["target"] != "skipped":
         deploy_status = (
             "\u2705 PASS" if deploy_result["passed"]
             else f"\u274c FAIL: {deploy_result['error_message']}"
         )
-        print(f"  [{'deploy':10s}] {deploy_status} ({deploy_result['duration_seconds']}s)")
+        print(f"  [{'deploy':20s}] {deploy_status} ({deploy_result['duration_seconds']}s)")
 
     # ------------------------------------------------------------------
     # Increment per-stage error counters.
@@ -54,7 +59,7 @@ def validator_agent(
         counts_str = ", ".join(
             f"{s}={updated_counts[s]}" for s in sorted(failing_stages)
         )
-        print(f"  [stage counts ] {counts_str}")
+        print(f"  [stage counts       ] {counts_str}")
 
     # ------------------------------------------------------------------
     # Advance iteration counter here so it is always incremented exactly
@@ -62,7 +67,7 @@ def validator_agent(
     # router chooses next (simple or moderate).
     # ------------------------------------------------------------------
     next_iteration = iteration + 1
-    print(f"  [iteration    ] {iteration} -> {next_iteration}")
+    print(f"  [iteration          ] {iteration} -> {next_iteration}")
 
     updated_state = {
         "validation_results": results,
