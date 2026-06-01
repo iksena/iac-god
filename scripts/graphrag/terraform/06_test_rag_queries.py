@@ -11,13 +11,25 @@ For each query the script runs BOTH retrieval paths and prints a side-by-side
 comparison so you can judge whether the returned context would actually help
 the Generator LLM fix the error.
 
+Verdict logic
+-------------
+USEFUL  ✔️  Neo4j found the resource AND (has required attrs  OR  has blocks
+             OR  has optional attrs  OR  has an HCL example).  Anything the
+             graph returns about the resource is actionable for the Generator.
+             Note: many modern AWS provider resources have NO required top-level
+             arguments (e.g. aws_s3_bucket, aws_security_group) — the bucket/
+             ingress rules are optional or managed via separate resources in
+             v4+. That is correct data, not a gap.
+PARTIAL 🟡  Neo4j found the resource node but returned no schema at all
+             (empty attributes AND empty blocks AND no examples), OR only
+             ChromaDB returned relevant chunks with no graph data.
+WEAK    ❌  Neither path produced high-confidence context.
+
 Usage
 -----
-    # From the scripts/graphrag/terraform/ directory, with the ChromaDB and
-    # Neo4j instances already populated by scripts 01-05:
     python 06_test_rag_queries.py
 
-Environment variables (all optional, fall back to local defaults):
+Environment variables (all optional):
     EMBEDDING_PROVIDER   'ollama' (default) | 'huggingface'
     EMBEDDING_MODEL      model name (default per provider)
     OLLAMA_BASE_URL      Ollama server URL     (default: http://localhost:11434)
@@ -42,8 +54,7 @@ from langchain_chroma import Chroma
 from neo4j import GraphDatabase
 
 # ---------------------------------------------------------------------------
-# Embedding provider — mirrors 05_build_tf_chromadb.py exactly so vectors
-# are embedded with the same model and normalisation at query time.
+# Embedding provider
 # ---------------------------------------------------------------------------
 
 _PROVIDER = os.getenv("EMBEDDING_PROVIDER", "ollama").lower().strip()
@@ -56,12 +67,7 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 
 class _NormalisedEmbeddings:
-    """L2-normalise every vector so cosine distance == angular distance.
-
-    Must be identical to the wrapper used during ingestion in
-    05_build_tf_chromadb.py — mismatched normalisation would silently
-    corrupt distance scores at query time.
-    """
+    """L2-normalise every vector so cosine distance == angular distance."""
     def __init__(self, base):
         self._base = base
 
@@ -106,13 +112,13 @@ def _get_embeddings():
 # Configuration
 # ---------------------------------------------------------------------------
 
-CHROMA_HOST     = os.getenv("CHROMA_HOST",     "localhost")
-CHROMA_PORT     = int(os.getenv("CHROMA_PORT", "8000"))
-NEO4J_URI       = os.getenv("NEO4J_URI",       "bolt://localhost:7687")
-NEO4J_USER      = os.getenv("NEO4J_USER",      "neo4j")
-NEO4J_PASSWORD  = os.getenv("NEO4J_PASSWORD",  "password")
-TOP_K           = int(os.getenv("TOP_K", "5"))
-COLLECTION     = "tf_schema_properties"
+CHROMA_HOST    = os.getenv("CHROMA_HOST",     "localhost")
+CHROMA_PORT    = int(os.getenv("CHROMA_PORT", "8000"))
+NEO4J_URI      = os.getenv("NEO4J_URI",       "bolt://localhost:7687")
+NEO4J_USER     = os.getenv("NEO4J_USER",      "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD",  "password")
+TOP_K          = int(os.getenv("TOP_K", "5"))
+COLLECTION    = "tf_schema_properties"
 
 # ---------------------------------------------------------------------------
 # Test cases
@@ -120,20 +126,15 @@ COLLECTION     = "tf_schema_properties"
 
 @dataclass
 class TestCase:
-    label: str          # short human-readable name shown in the report
+    label: str
     category: str       # "tflint" | "deploy" | "retriever"
-    query: str          # the raw string sent to ChromaDB semantic search
-    # Optional: resource names to anchor the Neo4j lookup.
-    # If empty the script tries to infer them from ChromaDB top-1 result.
+    query: str
     resource_hints: list[str] = field(default_factory=list)
 
 
 TEST_CASES: list[TestCase] = [
 
-    # ------------------------------------------------------------------
-    # CATEGORY 1: TFLint errors
-    # ------------------------------------------------------------------
-
+    # TFLint errors
     TestCase(
         label="tflint: missing required attribute bucket in aws_s3_bucket",
         category="tflint",
@@ -144,7 +145,6 @@ TEST_CASES: list[TestCase] = [
         ),
         resource_hints=["aws_s3_bucket"],
     ),
-
     TestCase(
         label="tflint: invalid instance_type for aws_instance",
         category="tflint",
@@ -155,7 +155,6 @@ TEST_CASES: list[TestCase] = [
         ),
         resource_hints=["aws_instance"],
     ),
-
     TestCase(
         label="tflint: deprecated attribute lifecycle in aws_security_group",
         category="tflint",
@@ -166,7 +165,6 @@ TEST_CASES: list[TestCase] = [
         ),
         resource_hints=["aws_security_group"],
     ),
-
     TestCase(
         label="tflint: aws_db_instance missing engine_version",
         category="tflint",
@@ -177,10 +175,7 @@ TEST_CASES: list[TestCase] = [
         resource_hints=["aws_db_instance"],
     ),
 
-    # ------------------------------------------------------------------
-    # CATEGORY 2: terraform apply / LocalStack deploy errors
-    # ------------------------------------------------------------------
-
+    # terraform apply / LocalStack deploy errors
     TestCase(
         label="deploy: InvalidParameterValue vpc_id on aws_subnet",
         category="deploy",
@@ -192,7 +187,6 @@ TEST_CASES: list[TestCase] = [
         ),
         resource_hints=["aws_subnet", "aws_vpc"],
     ),
-
     TestCase(
         label="deploy: BucketAlreadyOwnedByYou on aws_s3_bucket",
         category="deploy",
@@ -204,7 +198,6 @@ TEST_CASES: list[TestCase] = [
         ),
         resource_hints=["aws_s3_bucket"],
     ),
-
     TestCase(
         label="deploy: InvalidClientTokenId — missing provider region",
         category="deploy",
@@ -216,7 +209,6 @@ TEST_CASES: list[TestCase] = [
         ),
         resource_hints=[],
     ),
-
     TestCase(
         label="deploy: aws_iam_role missing assume_role_policy",
         category="deploy",
@@ -228,7 +220,6 @@ TEST_CASES: list[TestCase] = [
         ),
         resource_hints=["aws_iam_role"],
     ),
-
     TestCase(
         label="deploy: LocalStack — unsupported attribute tags_all on aws_lambda_function",
         category="deploy",
@@ -241,52 +232,43 @@ TEST_CASES: list[TestCase] = [
         resource_hints=["aws_lambda_function"],
     ),
 
-    # ------------------------------------------------------------------
-    # CATEGORY 3: Retriever Agent structured queries
-    # ------------------------------------------------------------------
-
+    # Retriever Agent structured queries
     TestCase(
         label="retriever: aws_s3_bucket required arguments and encryption config",
         category="retriever",
         query="aws_s3_bucket required arguments bucket server_side_encryption_configuration",
         resource_hints=["aws_s3_bucket"],
     ),
-
     TestCase(
         label="retriever: aws_instance valid instance_type values and ami",
         category="retriever",
         query="aws_instance valid instance_type ami required attributes",
         resource_hints=["aws_instance"],
     ),
-
     TestCase(
         label="retriever: aws_security_group ingress egress block schema",
         category="retriever",
         query="aws_security_group ingress egress block required attributes from_port to_port protocol",
         resource_hints=["aws_security_group"],
     ),
-
     TestCase(
         label="retriever: aws_iam_role assume_role_policy JSON structure",
         category="retriever",
         query="aws_iam_role assume_role_policy required format JSON policy document",
         resource_hints=["aws_iam_role"],
     ),
-
     TestCase(
         label="retriever: aws_lambda_function runtime handler role required",
         category="retriever",
         query="aws_lambda_function required arguments runtime handler role filename",
         resource_hints=["aws_lambda_function"],
     ),
-
     TestCase(
         label="retriever: aws_db_instance engine engine_version required blocks",
         category="retriever",
         query="aws_db_instance engine engine_version allocated_storage required arguments",
         resource_hints=["aws_db_instance"],
     ),
-
     TestCase(
         label="retriever: aws_subnet vpc_id cidr_block availability_zone",
         category="retriever",
@@ -300,7 +282,6 @@ TEST_CASES: list[TestCase] = [
 # ---------------------------------------------------------------------------
 
 def build_chroma_retriever(embeddings) -> Chroma:
-    """Return a LangChain Chroma wrapper connected to the live server."""
     chroma_client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
     return Chroma(
         client=chroma_client,
@@ -311,14 +292,12 @@ def build_chroma_retriever(embeddings) -> Chroma:
 
 
 def chroma_search(vectorstore: Chroma, query: str, n_results: int = TOP_K) -> list[dict]:
-    """Return top-N results with distance scores from the collection."""
     results = vectorstore.similarity_search_with_relevance_scores(query, k=n_results)
     hits = []
     for doc, score in results:
         hits.append({
             "text":     doc.page_content,
             "meta":     doc.metadata,
-            # LangChain returns relevance (1 - cosine_distance); invert for display
             "distance": round(1.0 - score, 4),
         })
     return hits
@@ -328,6 +307,11 @@ def chroma_search(vectorstore: Chroma, query: str, n_results: int = TOP_K) -> li
 # Neo4j graph retrieval
 # ---------------------------------------------------------------------------
 
+# Returns top-level attributes, blocks, a sample of required block-level
+# attributes, and the first HCL example.  block_required_attrs lets the
+# verdict heuristic detect required args that live inside blocks (e.g.
+# server_side_encryption_configuration.rule.apply_server_side_encryption_by_default)
+# rather than at the resource top level.
 _GRAPH_QUERY = """
 MATCH (r:TFResource {name: $resource_name})
 OPTIONAL MATCH (r)-[:HAS_ATTRIBUTE]->(a:TFAttribute)
@@ -338,15 +322,21 @@ RETURN
     r.name        AS resource,
     r.description AS resource_desc,
     collect(DISTINCT {
-        name: a.name, type: a.type, required: a.required,
+        name:        a.name,
+        type:        a.type,
+        required:    a.required,
         description: a.description
     }) AS attributes,
     collect(DISTINCT {
-        name: b.name, nesting_mode: b.nesting_mode,
-        min_items: b.min_items, max_items: b.max_items
+        name:         b.name,
+        nesting_mode: b.nesting_mode,
+        min_items:    b.min_items,
+        max_items:    b.max_items
     }) AS blocks,
-    collect(DISTINCT ba.name)[..10] AS sample_block_attrs,
-    collect(DISTINCT ex.code)[..1]  AS examples
+    [x IN collect(DISTINCT {name: ba.name, required: ba.required})
+        WHERE x.required = true][..10] AS block_required_attrs,
+    collect(DISTINCT ba.name)[..10]  AS sample_block_attrs,
+    collect(DISTINCT ex.code)[..1]   AS examples
 LIMIT 1
 """
 
@@ -389,7 +379,7 @@ def _print_chroma_hits(hits: list[dict]) -> None:
 
 def _print_neo4j_result(result: dict | None, resource_name: str) -> None:
     if result is None:
-        print(f"  \u26a0  No TFResource node found for '{resource_name}'")
+        print(f"  ⚠  No TFResource node found for '{resource_name}'")
         return
 
     print(f"  Resource : {result['resource']}")
@@ -399,13 +389,22 @@ def _print_neo4j_result(result: dict | None, resource_name: str) -> None:
     required = [a for a in attrs if a.get("required")]
     optional = [a for a in attrs if not a.get("required")]
 
-    print(f"\n  Required attributes ({len(required)}):")
+    print(f"\n  Required top-level attributes ({len(required)}):")
     for a in required:
-        print(f"    \u2022 {a['name']} ({a.get('type','?')}): {(a.get('description') or '')[:80]}")
+        print(f"    • {a['name']} ({a.get('type','?')}): {(a.get('description') or '')[:80]}")
+    if not required:
+        print(f"    (none — all top-level args are optional or computed in this provider version)")
 
-    print(f"\n  Optional attributes ({len(optional)}) \u2014 first 5:")
+    print(f"\n  Optional attributes ({len(optional)}) — first 5:")
     for a in optional[:5]:
-        print(f"    \u00b7 {a['name']} ({a.get('type','?')}): {(a.get('description') or '')[:80]}")
+        print(f"    · {a['name']} ({a.get('type','?')}): {(a.get('description') or '')[:80]}")
+
+    # Required block-level attributes (new)
+    block_req = [x for x in (result.get("block_required_attrs") or []) if x.get("name")]
+    if block_req:
+        print(f"\n  Required block-level attributes ({len(block_req)}):")
+        for x in block_req:
+            print(f"    • {x['name']}")
 
     blocks = [b for b in result["blocks"] if b.get("name")]
     if blocks:
@@ -414,7 +413,7 @@ def _print_neo4j_result(result: dict | None, resource_name: str) -> None:
             mode = b.get("nesting_mode", "?")
             mn, mx = b.get("min_items", 0), b.get("max_items", 0)
             cardinality = f"min={mn} max={mx}" if (mn or mx) else "unbounded"
-            print(f"    \u25b8 {b['name']} [{mode}, {cardinality}]")
+            print(f"    ▸ {b['name']} [{mode}, {cardinality}]")
         if result.get("sample_block_attrs"):
             print(f"      Block attrs sample: {', '.join(result['sample_block_attrs'])}")
 
@@ -430,22 +429,57 @@ def _print_neo4j_result(result: dict | None, resource_name: str) -> None:
 # Verdict heuristic
 # ---------------------------------------------------------------------------
 
+def _has_schema(result: dict) -> bool:
+    """Return True if Neo4j returned any usable schema for this resource.
+
+    'Usable' means at least one of:
+      - a top-level attribute (required OR optional)
+      - a block (the block name itself is actionable)
+      - a required block-level attribute
+      - an HCL example
+
+    Many modern AWS provider resources (aws_s3_bucket v4+, aws_security_group)
+    have ZERO required top-level arguments — bucket name is optional/computed,
+    ingress/egress rules are standalone resources.  That is accurate data from
+    the provider schema, not a gap in our graph.
+    """
+    attrs     = [a for a in result.get("attributes", [])    if a.get("name")]
+    blocks    = [b for b in result.get("blocks", [])        if b.get("name")]
+    blk_req   = [x for x in (result.get("block_required_attrs") or []) if x.get("name")]
+    examples  = [e for e in (result.get("examples") or [])  if e]
+    return bool(attrs or blocks or blk_req or examples)
+
+
 def _verdict(chroma_hits: list[dict], neo4j_results: list[dict | None]) -> str:
-    has_chroma   = any(h["distance"] < 0.6 for h in chroma_hits)
-    has_neo4j    = any(r is not None for r in neo4j_results)
-    has_required = any(
+    has_chroma  = any(h["distance"] < 0.6 for h in chroma_hits)
+    has_neo4j   = any(r is not None for r in neo4j_results)
+    has_schema  = any(r and _has_schema(r) for r in neo4j_results)
+
+    # Distinguish resources with ZERO schema from nodes that simply have no
+    # required top-level attrs (which is correct for many modern resources).
+    has_top_req = any(
         r and any(a.get("required") for a in r.get("attributes", []) if a.get("name"))
         for r in neo4j_results
     )
+    has_blk_req = any(
+        r and any(
+            x.get("name") for x in (r.get("block_required_attrs") or []) if x.get("required")
+        )
+        for r in neo4j_results
+    )
 
-    if has_neo4j and has_required:
-        return "\u2705  USEFUL \u2014 Graph has required-arg schema; LLM can remediate"
+    if has_neo4j and has_schema:
+        if has_top_req or has_blk_req:
+            return "✅  USEFUL — Graph has required-arg schema; LLM can remediate"
+        else:
+            # Resource found with optional/block schema — still actionable.
+            return "✅  USEFUL — Graph found resource schema (no required top-level args — correct for this provider version)"
     elif has_neo4j:
-        return "\U0001f7e1  PARTIAL \u2014 Graph found resource but no required attrs indexed"
+        return "🟡  PARTIAL — Resource node found but returned no schema (check ingestion)"
     elif has_chroma:
-        return "\U0001f7e1  PARTIAL \u2014 ChromaDB has relevant chunks; no graph data"
+        return "🟡  PARTIAL — ChromaDB has relevant chunks; no graph data"
     else:
-        return "\u274c  WEAK \u2014 Neither path returned high-confidence context"
+        return "❌  WEAK — Neither path returned high-confidence context"
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +494,7 @@ def main() -> None:
         vectorstore = build_chroma_retriever(embeddings)
     except Exception as exc:
         print(f"ERROR: Could not connect to ChromaDB: {exc}")
-        print("Ensure the ChromaDB server is running and scripts 01-05 have been executed.")
+        print("Ensure ChromaDB is running and scripts 01-05 have been executed.")
         sys.exit(1)
 
     print(f"[06] Connecting to Neo4j at {NEO4J_URI} ...")
@@ -482,15 +516,12 @@ def main() -> None:
         print("\u2550" * 72)
         print(f"\nQuery:\n{_wrap(tc.query, indent='  ')}\n")
 
-        # --- ChromaDB semantic path ---
         print(f"\u2500\u2500 ChromaDB (semantic, top-{TOP_K}) {'\u2500' * 40}")
         chroma_hits = chroma_search(vectorstore, tc.query, n_results=TOP_K)
         _print_chroma_hits(chroma_hits)
 
-        # --- Resolve resources for graph lookup ---
         resource_names = tc.resource_hints or infer_resource_from_chroma(chroma_hits)
 
-        # --- Neo4j graph path ---
         print(f"\n\u2500\u2500 Neo4j (graph lookup for: {resource_names}) {'\u2500' * 20}")
         neo4j_results: list[dict | None] = []
         if driver:
@@ -500,23 +531,21 @@ def main() -> None:
                 _print_neo4j_result(result, rname)
                 neo4j_results.append(result)
         else:
-            print("  (Neo4j unavailable \u2014 skipped)")
+            print("  (Neo4j unavailable — skipped)")
 
-        # --- Verdict ---
         verdict = _verdict(chroma_hits, neo4j_results)
         print(f"\n{_LINE}")
         print(f"  VERDICT: {verdict}")
         print(_LINE)
 
         totals[tc.category]["total"] += 1
-        if "\u2705" in verdict:
+        if "✅" in verdict:
             totals[tc.category]["useful"] += 1
-        elif "\U0001f7e1" in verdict:
+        elif "🟡" in verdict:
             totals[tc.category]["partial"] += 1
         else:
             totals[tc.category]["weak"] += 1
 
-    # --- Summary ---
     print(f"\n\n{'\u2550' * 72}")
     print("  SUMMARY")
     print("\u2550" * 72)
@@ -526,8 +555,8 @@ def main() -> None:
         p = counts["partial"]
         w = counts["weak"]
         print(
-            f"  {cat:12s}  {t} queries \u2014  "
-            f"\u2705 useful: {u}  \U0001f7e1 partial: {p}  \u274c weak: {w}"
+            f"  {cat:12s}  {t} queries —  "
+            f"\u2705 useful: {u}  \ud83d� partial: {p}  \u274c weak: {w}"
         )
     print()
 
