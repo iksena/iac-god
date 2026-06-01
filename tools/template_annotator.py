@@ -295,7 +295,7 @@ def extract_resource_types(annotation: TemplateAnnotation | None) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# Annotated YAML renderer for retriever / remediator / engineer prompts
+# CloudFormation annotated YAML renderer
 # ---------------------------------------------------------------------------
 
 # Priority 1 — cfn-lint dict-repr:  {'LineNumber': 115, 'ColumnNumber': 7}
@@ -305,8 +305,6 @@ _DICT_LINENO_RE = re.compile(r"'LineNumber'\s*:\s*(\d+)")
 _COLON_LINENO_RE = re.compile(r":(\d+)(?::\d+)?")
 
 # Priority 3 — YAML parser prose:   line 24  or  line 24, column 21
-#   Matches "line <N>" that is NOT preceded by another digit or word char so
-#   we don't accidentally match things like "baseline 24" or "outline 24".
 _PROSE_LINENO_RE = re.compile(r"(?<!\w)line\s+(\d+)", re.IGNORECASE)
 
 
@@ -336,7 +334,8 @@ def render_annotated_template(
     template_yaml: str,
     errors: list[str],
 ) -> str:
-    """Inject error comments into the raw template at the reported line numbers.
+    """Inject error comments into the raw CloudFormation template at the
+    reported line numbers.
 
     For each error that carries a LineNumber, a '# ERROR: ...' comment is
     inserted immediately BEFORE that line in the original template text.
@@ -346,11 +345,6 @@ def render_annotated_template(
     Errors without a detectable line number (e.g. deploy failures that only
     report a resource name) are collected into a header comment block above
     the template.
-
-    Line number extraction handles three formats:
-      - cfn-lint dict-repr:  {'LineNumber': N}
-      - deploy colon-ref:    :N  or  :N:M
-      - YAML parser prose:   "line N"  or  "line N, column M"
 
     Args:
         template_yaml: Raw CloudFormation template string.
@@ -362,8 +356,6 @@ def render_annotated_template(
     if not template_yaml:
         return "# No template available.\n" + "\n".join(f"# ERROR: {e}" for e in errors)
 
-    # Group errors by their target line number.
-    # Errors with no line number go into the header (line 0).
     errors_by_line: dict[int, list[str]] = defaultdict(list)
     for err in errors:
         lineno = _extract_line_number(err)
@@ -372,18 +364,126 @@ def render_annotated_template(
     source_lines = template_yaml.splitlines()
     output: list[str] = []
 
-    # Header block for errors with no detectable line number.
     if errors_by_line.get(0):
         output.append("# --- Errors without line numbers (deploy failures) ---")
         for err in errors_by_line[0]:
             output.append(f"# ERROR: {err}")
         output.append("")
 
-    # Walk source lines, injecting error comments before the target line.
+    for lineno, line in enumerate(source_lines, start=1):
+        for err in errors_by_line.get(lineno, []):
+            indent = len(line) - len(line.lstrip())
+            output.append(" " * indent + f"# ERROR: {err}")
+        output.append(line)
+
+    return "\n".join(output)
+
+
+# ---------------------------------------------------------------------------
+# Terraform annotated HCL renderer
+# ---------------------------------------------------------------------------
+
+# Stage name substrings that carry line-referenced errors worth annotating.
+# Security (checkov/trivy) and deploy stages report resource-level or
+# policy-level findings that have no HCL line number, so they are excluded.
+_TF_ANNOTATABLE_STAGES = ("tflint", "terraform-validate", "terraform validate")
+
+# Line-number extraction patterns for Terraform tool output.
+# Priority 1 — terraform validate / tflint prose:  "line N, column M"
+_TF_PROSE_LINE_RE = re.compile(r"(?<!\w)line\s+(\d+)", re.IGNORECASE)
+
+# Priority 2 — tflint --format compact:  main.tf:N:M:
+_TF_COMPACT_RE = re.compile(r"(?:main\.tf|\S+\.tf):(\d+):\d+")
+
+# Priority 3 — bare colon-ref of last resort:  :N:M  or  :N
+_TF_COLON_RE = re.compile(r":(\d+)(?::\d+)?")
+
+
+def _extract_tf_line_number(error: str) -> int | None:
+    """Extract a line number from a tflint or terraform validate error string.
+
+    Returns None when no line reference is found; such errors are silently
+    dropped by render_annotated_terraform (matching the CFN behaviour where
+    deploy errors without line numbers are not annotated inline).
+    """
+    m = _TF_PROSE_LINE_RE.search(error)
+    if m:
+        return int(m.group(1))
+    m = _TF_COMPACT_RE.search(error)
+    if m:
+        return int(m.group(1))
+    m = _TF_COLON_RE.search(error)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _collapse_to_one_line(error: str) -> str:
+    """Flatten a multi-line error message to a single line.
+
+    Consecutive whitespace (including newlines) is collapsed to a single
+    space and the result is stripped so the # ERROR: comment stays on one
+    line inside the HCL file.
+    """
+    return re.sub(r"\s+", " ", error).strip()
+
+
+def render_annotated_terraform(
+    template_hcl: str,
+    stage_errors: dict[str, list[str]],
+) -> str:
+    """Inject single-line error comments into a Terraform HCL template.
+
+    Only errors from stages whose names contain 'tflint' or
+    'terraform-validate' / 'terraform validate' are considered — these are
+    the structural and syntax stages that report line numbers.  Security
+    (checkov/trivy) and deploy stage errors are excluded entirely because
+    they carry no HCL line reference.
+
+    Each qualifying error is collapsed to one line and injected as:
+        # ERROR: <message>
+    immediately before the source line it references.  Errors without a
+    detectable line number are silently dropped (consistent with the CFN
+    renderer not annotating deploy failures inline).
+
+    Args:
+        template_hcl:  Raw HCL string (the LLM-generated main.tf content).
+        stage_errors:  Mapping of stage_name -> list[error_string], as
+                       produced by the validator pipeline.
+
+    Returns:
+        The full HCL string with inline # ERROR: comment annotations.
+    """
+    if not template_hcl:
+        return "# No template available.\n"
+
+    # Collect errors only from annotatable stages.
+    qualifying_errors: list[str] = []
+    for stage_name, errs in stage_errors.items():
+        stage_lower = stage_name.lower()
+        if any(marker in stage_lower for marker in _TF_ANNOTATABLE_STAGES):
+            qualifying_errors.extend(errs)
+
+    if not qualifying_errors:
+        return template_hcl
+
+    # Group by target line number; drop errors with no detectable line.
+    errors_by_line: dict[int, list[str]] = defaultdict(list)
+    for err in qualifying_errors:
+        lineno = _extract_tf_line_number(err)
+        if lineno is not None:
+            errors_by_line[lineno].append(_collapse_to_one_line(err))
+
+    if not errors_by_line:
+        return template_hcl
+
+    source_lines = template_hcl.splitlines()
+    output: list[str] = []
+
     for lineno, line in enumerate(source_lines, start=1):
         for err in errors_by_line.get(lineno, []):
             # Preserve the indentation of the target line so the comment
-            # sits flush with the YAML key it annotates.
+            # sits flush with the HCL attribute it annotates.
             indent = len(line) - len(line.lstrip())
             output.append(" " * indent + f"# ERROR: {err}")
         output.append(line)
