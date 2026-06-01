@@ -71,18 +71,28 @@ parameters, or external Terraform state. Every configuration you generate MUST:
 
 - Define every resource it depends on inside the same main.tf file.
   Never reference resources by hardcoded IDs.
-- NEVER use data sources to look up pre-existing infrastructure
-  (e.g. data "aws_vpc" {{}} , data "aws_subnet_ids" {{}}) — those resources do not exist.
-- NEVER use data "aws_elastic_beanstalk_solution_stack" to look up solution stacks.
-  The test harness does not support ListAvailableSolutionStacks. Instead, hardcode
-  the solution_stack_name string directly in the aws_elastic_beanstalk_environment
-  resource (e.g. solution_stack_name = "64bit Amazon Linux 2023 v4.0.1 running Go 1").
 - NEVER hardcode account-specific IDs: vpc-*, subnet-*, sg-*, ami-*,
   numeric AWS account IDs, or ARNs referencing resources not declared in this file.
 - If a resource ID is needed, CREATE the resource (e.g. resource "aws_vpc",
   resource "aws_subnet") and reference it with its Terraform address
   (e.g. aws_vpc.main.id, aws_subnet.public.id).
-- For AMI lookups use a data "aws_ami" block with a filter — do NOT hardcode AMI IDs.
+
+## Data Source Rules
+Data sources are only permitted when they perform a pure local or well-known
+static lookup that does not depend on pre-existing remote state. Permitted
+examples:
+
+  - data "aws_availability_zones" — queries the provider for static AZ metadata
+  - data "aws_ami" with an owner + filter — looks up a public/well-known AMI
+  - data "aws_caller_identity" — returns the current account ID
+  - data "aws_region" / data "aws_partition" — returns static provider metadata
+
+NEVER use a data source whose purpose is to discover or list infrastructure
+that must already exist in the account (e.g. looking up an existing VPC,
+subnet, security group, secret, SSM parameter, solution stack, hosted zone,
+certificate, cluster, or any other resource not created by this configuration).
+If the value is not derivable from the resources declared in this file or from
+static provider metadata, hardcode a sensible default or create the resource.
 
 ## Terraform Best Practices
 - Use snake_case resource labels (e.g. resource "aws_s3_bucket" "my_bucket").
@@ -101,7 +111,7 @@ parameters, or external Terraform state. Every configuration you generate MUST:
   aws_s3_bucket_server_side_encryption_configuration resource.
 - IAM policies MUST follow least-privilege. Never use "*" for both Action and
   Resource in the same statement.
-- Use aws_availability_zones data source for AZ selection instead of hardcoding.
+- Use data "aws_availability_zones" for AZ selection instead of hardcoding.
 
 ## Original User Request
 {user_request}
@@ -151,9 +161,11 @@ Iteration {iteration} — Fix ALL validation errors below in the Terraform confi
 
 ## Deployment Context (reminder)
 This is a GREENFIELD deployment — no external infrastructure exists.
-Do NOT introduce data sources for pre-existing resources, hardcoded resource IDs
-(vpc-*, subnet-*, sg-*, ami-*), or references to resources not declared in this file.
-If a resource is missing, CREATE it with a resource block.
+Do NOT introduce data sources that look up pre-existing remote infrastructure,
+hardcoded resource IDs (vpc-*, subnet-*, sg-*, ami-*), or references to
+resources not declared in this file. If a resource is missing, CREATE it with
+a resource block. Only use data sources for static provider metadata or
+well-known public AMI lookups.
 Do NOT add a provider block — it is managed by the deployment harness.
 
 ## Validation Errors
@@ -208,9 +220,11 @@ Apply them to the Terraform configuration you last generated.
 
 ## Deployment Context (reminder)
 This is a GREENFIELD deployment — no external infrastructure exists.
-Reject any fix objective that introduces data sources for pre-existing resources,
-hardcoded resource IDs, or references to state outside this file.
-Replace any such suggestion with the equivalent resource block creation approach.
+Reject any fix objective that introduces data sources querying pre-existing
+remote infrastructure, hardcoded resource IDs, or references to state outside
+this file. Only data sources for static provider metadata or well-known public
+AMI lookups are permitted. Replace any disallowed suggestion with the
+equivalent resource block creation approach.
 Do NOT add a provider block — it is managed by the deployment harness.
 
 ## Validation Errors
