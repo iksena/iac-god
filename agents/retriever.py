@@ -35,7 +35,7 @@ def _errors_have_line_numbers(errors: list[str]) -> bool:
     """Return True if at least one error string contains a line number reference.
 
     Checks three formats in priority order:
-      1. Word form:   'line 42'          (cfn-lint via _format_cfn_lint_finding)
+      1. Word form:   'line 42'          (cfn-lint / tflint / terraform-validate)
       2. Colon form:  ':115' or ':115:7' (yamllint and other validators)
       3. Dict repr:   "{'LineNumber': 42}" (legacy fallback, should not appear)
     """
@@ -160,7 +160,7 @@ def build_retrieval_prompt(
       3. Prior retrieval-query history to avoid duplicate lookups.
 
     Pure function — no I/O, no LLM calls, fully unit-testable.
-    Only structural errors (cfn-lint / terraform-validate / deploy) are
+    Only structural errors (cfn-lint / tflint / terraform-validate / deploy) are
     included here; security errors are routed directly to
     execute_security_retrieval() without going through the LLM.
     """
@@ -210,9 +210,14 @@ def _get_active_error_types(state: GraphState) -> tuple[bool, bool]:
     """Determine if active errors require schema context, security context, or both.
 
     Schema retrieval is triggered by any structural stage failure:
-      CloudFormation: "cfn-lint" stage
-      Terraform:      "terraform-validate" stage
+      CloudFormation: "yaml" or "cfn-lint" stage
+      Terraform:      "tflint" or "terraform-validate" stage
       Both:           live deployment failures
+
+    Note: tflint (Terraform Stage 1) and cfn-lint (CFN Stage 2) are symmetric
+    structural linters — both trigger schema RAG so the repair loop receives
+    provider/resource schema context regardless of which structural stage
+    caught the error. This parity is required for the generalisation hypothesis.
 
     Security retrieval is triggered by checkov / trivy stage failures.
     """
@@ -225,8 +230,14 @@ def _get_active_error_types(state: GraphState) -> tuple[bool, bool]:
         if stage:
             latest_by_stage[stage] = result
 
-    # Check structural stages: cfn-lint (CloudFormation) OR terraform-validate (Terraform)
+    # Check structural stages:
+    #   CFN:       yaml (Stage 1)  and cfn-lint (Stage 2)
+    #   Terraform: tflint (Stage 1) and terraform-validate (Stage 2)
+    if not latest_by_stage.get("yaml", {}).get("passed", True):
+        has_schema = True
     if not latest_by_stage.get("cfn-lint", {}).get("passed", True):
+        has_schema = True
+    if not latest_by_stage.get("tflint", {}).get("passed", True):
         has_schema = True
     if not latest_by_stage.get("terraform-validate", {}).get("passed", True):
         has_schema = True
