@@ -369,6 +369,42 @@ def _get_resource_type(cfn_client, stack_id: str, logical_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# HCL provider block stripper (Terraform)
+# ---------------------------------------------------------------------------
+
+def _strip_provider_blocks(hcl: str) -> str:
+    """
+    Remove all top-level provider "aws" { ... } blocks from an HCL string.
+
+    Uses a brace-depth counter to handle multi-line blocks correctly.
+    This ensures the LLM-generated provider block never collides with the
+    harness-injected LocalStack provider override.
+    """
+    lines = hcl.splitlines(keepends=True)
+    result = []
+    depth = 0
+    skipping = False
+
+    for line in lines:
+        stripped = line.strip()
+
+        if not skipping and re.match(r'^provider\s+"aws"\s*\{', stripped):
+            skipping = True
+            depth = stripped.count("{") - stripped.count("}")
+            continue  # drop opening line
+
+        if skipping:
+            depth += stripped.count("{") - stripped.count("}")
+            if depth <= 0:
+                skipping = False  # block closed — resume collecting
+            continue  # drop all lines inside the block
+
+        result.append(line)
+
+    return "".join(result)
+
+
+# ---------------------------------------------------------------------------
 # Terraform deploy via `terraform apply` against LocalStack
 # ---------------------------------------------------------------------------
 
@@ -381,7 +417,10 @@ def _validate_terraform_deployment(
     Deploy a Terraform HCL template against the configured target.
 
     Strategy:
-      - Write the template to a temp dir as main.tf.
+      - Strip any provider "aws" block from the LLM-generated template to
+        prevent duplicate-provider errors when the harness injects its own
+        provider override block (which carries LocalStack endpoint overrides).
+      - Write the sanitised template to a temp dir as main.tf.
       - Inject a provider block that routes to LocalStack (or real AWS) via
         environment variables consumed by the AWS provider.
       - Run: terraform init -backend=false && terraform apply -auto-approve
@@ -449,9 +488,15 @@ provider "aws" {{
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tf_path = Path(tmpdir) / "main.tf"
-        # Prepend provider override block so it overrides any provider block
-        # already in the generated template without duplicating it.
-        combined = provider_override + "\n" + template if provider_override else template
+
+        # Strip any provider "aws" block from the LLM output before combining
+        # with the harness-injected override to prevent duplicate-provider errors.
+        if provider_override:
+            sanitised_template = _strip_provider_blocks(template)
+            combined = provider_override + "\n" + sanitised_template
+        else:
+            combined = template
+
         tf_path.write_text(combined, encoding="utf-8")
 
         # ----------------------------------------------------------------
@@ -535,7 +580,6 @@ provider "aws" {{
         resource_re = re.compile(
             r'on \S+\.tf line (\d+), in resource "([^"]+)"\s+"([^"]+)"'
         )
-        summary_consumed = False
         for block in error_blocks[1:]:  # skip text before first Error:
             lines = block.strip().splitlines()
             summary = lines[0].strip() if lines else "unknown error"
@@ -597,6 +641,9 @@ def validate_deployment(
       - "cloudformation": original boto3/CloudFormation path (unchanged)
 
     The Terraform path:
+      - Strips any LLM-generated provider "aws" block before writing main.tf
+        to prevent duplicate-provider errors when the harness injects its own
+        LocalStack provider override block.
       - Injects a LocalStack provider override block when target==localstack
       - Runs terraform init + terraform apply + terraform destroy (cleanup)
       - Parses Error blocks from apply output into FailedResource entries

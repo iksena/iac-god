@@ -58,11 +58,11 @@ or workarounds for known issues.
 ## Output Format Rules
 - Output a SINGLE main.tf file containing all resource blocks.
 - Do NOT split output across multiple files (no separate variables.tf, outputs.tf, etc.).
-- Use the AWS provider. Always include a provider block at the top:
-    provider "aws" {{
-      region = "us-east-1"
-    }}
-- Do NOT include a terraform {{ backend {{ }} }} block — the backend is managed externally.
+
+## Provider and Backend
+- Do NOT include a `provider` block — the provider configuration is injected
+  by the deployment harness. Omit it entirely.
+- Do NOT include a `terraform {{ backend {{ }} }}` block — the backend is managed externally.
 
 ## Deployment Context
 This configuration targets a GREENFIELD AWS account with NO pre-existing infrastructure.
@@ -150,6 +150,7 @@ This is a GREENFIELD deployment — no external infrastructure exists.
 Do NOT introduce data sources for pre-existing resources, hardcoded resource IDs
 (vpc-*, subnet-*, sg-*, ami-*), or references to resources not declared in this file.
 If a resource is missing, CREATE it with a resource block.
+Do NOT add a provider block — it is managed by the deployment harness.
 
 ## Validation Errors
 {validation_errors}
@@ -206,6 +207,7 @@ This is a GREENFIELD deployment — no external infrastructure exists.
 Reject any fix objective that introduces data sources for pre-existing resources,
 hardcoded resource IDs, or references to state outside this file.
 Replace any such suggestion with the equivalent resource block creation approach.
+Do NOT add a provider block — it is managed by the deployment harness.
 
 ## Validation Errors
 {formatted_errors}
