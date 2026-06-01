@@ -4,7 +4,7 @@ import re
 
 from state import GraphState, RemediationHistory, Message, append_and_cap
 from agents.llm_client import _build_client, _call_llm_with_history
-from prompts.retriever_prompt import QUERY_GEN_SYSTEM
+from prompts.retriever_prompt import get_query_gen_system
 from tools.template_annotator import (
     TemplateAnnotation,
     annotate_template,
@@ -115,19 +115,26 @@ def _extract_error_resources(
 
 
 def _annotate_safely(
-    template_yaml: str,
+    template: str,
     smell_report: list[dict] | None,
+    iac_type: str = "cloudformation",
 ) -> TemplateAnnotation | None:
     """Parse and annotate the template for resource-type seeding.
 
     Returns None on parse failure so callers degrade gracefully.
     Only used to extract resource types for Neo4j seeding — rendering
     is now done directly against the raw template string.
+
+    Passes a synthetic file_path hint ('<in-memory>.tf' for Terraform) so
+    that annotate_template() picks the correct parser without re-detection.
     """
-    if not template_yaml:
+    if not template:
         return None
     try:
-        annotation = annotate_template(file_path="<in-memory>", content=template_yaml)
+        # Give annotate_template() a file path hint so the parser is selected
+        # deterministically rather than relying on content heuristics alone.
+        file_path_hint = "<in-memory>.tf" if iac_type == "terraform" else "<in-memory>.yaml"
+        annotation = annotate_template(file_path=file_path_hint, content=template)
         if smell_report:
             annotation = attach_smells(annotation, smell_report)
         print(f"[Retriever] Annotation: {len(annotation.resources)} resources parsed.")
@@ -139,9 +146,10 @@ def _annotate_safely(
 
 def build_retrieval_prompt(
     errors: list[str],
-    template_yaml: str | None,
+    template: str | None,
     annotation: TemplateAnnotation | None,
     remediation_history: list[RemediationHistory],
+    iac_type: str = "cloudformation",
 ) -> str:
     """Assemble the single user-turn message for the query-generation LLM call.
 
@@ -152,32 +160,32 @@ def build_retrieval_prompt(
       3. Prior retrieval-query history to avoid duplicate lookups.
 
     Pure function — no I/O, no LLM calls, fully unit-testable.
-    Only structural errors (cfn-lint / deploy) are included here; security
-    errors are routed directly to execute_security_retrieval() without going
-    through the LLM.
+    Only structural errors (cfn-lint / terraform-validate / deploy) are
+    included here; security errors are routed directly to
+    execute_security_retrieval() without going through the LLM.
     """
     parts: list[str] = [
         "## Validation Errors\n" + "\n".join(f"- {e}" for e in errors)
     ]
 
-    if template_yaml and _errors_have_line_numbers(errors):
+    if template and _errors_have_line_numbers(errors):
         annotated = render_annotated_template(
-            template_yaml=template_yaml,
+            template_yaml=template,
             errors=errors,
         )
         parts.append(
-            "## CloudFormation Template (errors annotated at reported lines)\n"
-            "Lines prefixed with `# ERROR:` mark the exact location cfn-lint\n"
-            "reported a violation. Use the Resource name and rule description\n"
+            "## IaC Template (errors annotated at reported lines)\n"
+            "Lines prefixed with `# ERROR:` mark the exact location the validator\n"
+            "reported a violation. Use the resource name and rule description\n"
             "from the error list above as the primary signal for schema retrieval.\n"
-            f"```yaml\n{annotated}\n```"
+            f"```\n{annotated}\n```"
         )
-    elif template_yaml:
+    elif template:
         parts.append(
-            "## CloudFormation Template\n"
+            "## IaC Template\n"
             "No line-number annotations available — use the error messages\n"
-            "above to identify which resource types and properties need schema retrieval.\n"
-            f"```yaml\n{template_yaml}\n```"
+            "above to identify which resource types and attributes need schema retrieval.\n"
+            f"```\n{template}\n```"
         )
 
     history_lines: list[str] = []
@@ -191,7 +199,7 @@ def build_retrieval_prompt(
         parts.append(
             "## Prior Retrieval Queries\n"
             "These queries were already used in previous iterations.\n"
-            "Generate DIFFERENT queries targeting unexplored Resource.Property combinations.\n"
+            "Generate DIFFERENT queries targeting unexplored resource.attribute combinations.\n"
             "\n" + "\n\n".join(history_lines)
         )
 
@@ -199,7 +207,15 @@ def build_retrieval_prompt(
 
 
 def _get_active_error_types(state: GraphState) -> tuple[bool, bool]:
-    """Determine if active errors require schema context, security context, or both."""
+    """Determine if active errors require schema context, security context, or both.
+
+    Schema retrieval is triggered by any structural stage failure:
+      CloudFormation: "cfn-lint" stage
+      Terraform:      "terraform-validate" stage
+      Both:           live deployment failures
+
+    Security retrieval is triggered by checkov / trivy stage failures.
+    """
     has_schema = False
     has_security = False
 
@@ -209,8 +225,10 @@ def _get_active_error_types(state: GraphState) -> tuple[bool, bool]:
         if stage:
             latest_by_stage[stage] = result
 
-    # Check structural stages
+    # Check structural stages: cfn-lint (CloudFormation) OR terraform-validate (Terraform)
     if not latest_by_stage.get("cfn-lint", {}).get("passed", True):
+        has_schema = True
+    if not latest_by_stage.get("terraform-validate", {}).get("passed", True):
         has_schema = True
 
     deploy = state.get("deploy_validation_result")
@@ -259,11 +277,15 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     """Dedicated retrieval agent.
 
     Orchestration steps:
-      1. Extract cfn-lint + deploy errors (security stages excluded).
-      2. Annotate the template to seed resource types for Neo4j.
-      3. Build the retrieval prompt (pure, no I/O) — structural errors only.
-      4. When has_schema: call the LLM to generate schema_queries, then run
-         ChromaDB + Neo4j hybrid retrieval for CFN documentation context.
+      1. Extract structural + deploy errors (security stages excluded).
+      2. Annotate the template to seed resource types for the RAG layer.
+      3. Build the retrieval prompt (pure, no I/O) using iac_type-aware
+         section headers and system prompt via get_query_gen_system().
+      4. When has_schema:
+           - CloudFormation: call LLM to generate schema_queries, then run
+             ChromaDB + Neo4j hybrid retrieval via execute_hybrid_retrieval().
+           - Terraform: call LLM to generate schema_queries, then run
+             execute_terraform_retrieval() (stub today; wired for TF corpus).
       5. When has_security: extract AVD/Trivy IDs from raw errors via regex,
          then run a direct Neo4j graph lookup — NO LLM query generation for
          security (IDs are already explicit in the validator output).
@@ -273,7 +295,8 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
          retriever_history into state.
     """
     iteration = state["current_iteration"]
-    print(f"\n[Retriever] Building context (iteration {iteration})...")
+    iac_type = state.get("iac_type", "cloudformation")
+    print(f"\n[Retriever] Building context (iteration {iteration}, iac_type={iac_type})...")
 
     deploy_validation_result = state.get("deploy_validation_result")
 
@@ -282,20 +305,24 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         deploy_validation_result,
     )
 
-    template_yaml = state.get("cloudformation_template", "")
+    # FIX: read from the canonical state key 'iac_template' (renamed from
+    # 'cloudformation_template' when iac_type support was added to state.py).
+    template = state.get("iac_template", "")
     annotation = _annotate_safely(
-        template_yaml=template_yaml,
+        template=template,
         smell_report=state.get("smell_report"),
+        iac_type=iac_type,
     )
 
     has_schema, has_security = _get_active_error_types(state)
     print(f"[Retriever] Routing -> Schema: {has_schema} | Security: {has_security}")
 
     # ------------------------------------------------------------------
-    # CFN schema retrieval (has_schema) — LLM generates schema_queries
+    # Schema retrieval (has_schema)
+    # LLM generates schema_queries; RAG backend is branched by iac_type.
     # ------------------------------------------------------------------
     schema_queries: list[str] = []
-    cfn_context = ""
+    iac_context = ""
     llm_record = None
 
     if has_schema:
@@ -305,16 +332,22 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
             f"{'included' if has_line_numbers else 'NOT included (plain template used)'}."
         )
 
+        # FIX: call the factory so the LLM receives the correct IaC-specific
+        # vocabulary (CFN: cfn-lint / !Ref / AWS::* ; TF: terraform-validate
+        # / resource addresses / aws_* types).
+        query_gen_system = get_query_gen_system(iac_type)
+
         user_content = build_retrieval_prompt(
             errors=errors,
-            template_yaml=template_yaml,
+            template=template,
             annotation=annotation,
             remediation_history=state.get("remediation_history", []),
+            iac_type=iac_type,
         )
 
         model, raw_response, usage = _call_query_generator(
             user_content=user_content,
-            system_prompt=QUERY_GEN_SYSTEM,
+            system_prompt=query_gen_system,
         )
         parsed_queries = parse_query_response(raw_response)
         schema_queries = parsed_queries.get("schema_queries", [])
@@ -328,7 +361,7 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
             state=state,
             agent="retriever",
             model=model,
-            prompt=f"SYSTEM:\n{QUERY_GEN_SYSTEM}\n\nUSER:\n{user_content}",
+            prompt=f"SYSTEM:\n{query_gen_system}\n\nUSER:\n{user_content}",
             response=raw_response,
             token_usage=usage,
         )
@@ -340,11 +373,21 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
             deploy_validation_result=deploy_validation_result,
         ) or None
 
-        cfn_context = execute_hybrid_retrieval(
-            retrieval_queries=schema_queries,
-            seed_resources=seed_resources,
-            error_resources=error_resources,
-        )
+        # FIX: branch RAG execution on iac_type so Terraform runs never
+        # receive CloudFormation schema docs from the CFN knowledge graph.
+        if iac_type == "terraform":
+            from tools.tf_hybrid_rag import execute_terraform_retrieval
+            iac_context = execute_terraform_retrieval(
+                retrieval_queries=schema_queries,
+                seed_resources=seed_resources,
+                error_resources=error_resources,
+            )
+        else:
+            iac_context = execute_hybrid_retrieval(
+                retrieval_queries=schema_queries,
+                seed_resources=seed_resources,
+                error_resources=error_resources,
+            )
     else:
         # No schema errors — still need to record a stub for the recorder.
         user_content = ""
@@ -368,20 +411,23 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     # Merge and persist
     # ------------------------------------------------------------------
     unified_context = "\n\n".join(
-        part for part in (cfn_context, security_context) if part.strip()
+        part for part in (iac_context, security_context) if part.strip()
     )
 
     # retrieval_queries tracks everything used for the audit trail.
     # Security: use extracted IDs (deterministic), not LLM queries.
     retrieval_queries = schema_queries + security_ids
 
-    user_msg: Message = {"role": "user", "content": user_content}
-    assistant_msg: Message = {"role": "assistant", "content": raw_response}
+    # Reconstruct the system prompt used (needed for recorder)
+    query_gen_system = get_query_gen_system(iac_type)
+
+    user_msg: Message = {"role": "user", "content": user_content if has_schema else ""}
+    assistant_msg: Message = {"role": "assistant", "content": raw_response if has_schema else ""}
 
     recorder.append_retriever_history_entry(
         iteration=iteration,
-        prompt=f"SYSTEM:\n{QUERY_GEN_SYSTEM}\n\nUSER:\n{user_content}",
-        response=raw_response,
+        prompt=f"SYSTEM:\n{query_gen_system}\n\nUSER:\n{user_content if has_schema else ''}",
+        response=raw_response if has_schema else "",
         retrieval_queries=retrieval_queries,
         context_chars=len(unified_context),
         retrieved_context=unified_context,
