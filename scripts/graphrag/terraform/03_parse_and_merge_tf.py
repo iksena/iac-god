@@ -22,12 +22,20 @@ Schema dictionaries processed
   resource_schemas      — managed resources  (resource "aws_s3_bucket" ...)
   data_source_schemas   — data lookup blocks (data "aws_ami" ...)
 
-Both are merged into a single tf_knowledge_graph.json.  Each node carries an
-`is_data_source` boolean so downstream consumers (Neo4j importer, ChromaDB
-builder) can distinguish them if needed.  The Remediator benefits from having
-both: managed resources to generate infrastructure, and data sources to look
-up static provider metadata (AMIs, availability zones, Beanstalk solution
-stacks, etc.) using correct syntax.
+Namespace collision prevention
+-------------------------------
+Terraform reuses the same provider-type name for both a managed resource and
+its corresponding data source (e.g. aws_vpc exists in both dictionaries).
+To prevent the data source node from silently overwriting the managed resource
+node in the knowledge graph, data source entries are keyed with an explicit
+"data." prefix:
+
+  managed resource  →  kg["aws_vpc"]           (resource "aws_vpc" ...)
+  data source       →  kg["data.aws_vpc"]       (data "aws_vpc" ...)
+
+This prefix propagates through to ChromaDB metadata and Neo4j node names so
+the Retriever can query the correct schema when the error points to a data
+block versus a managed resource block.
 
 Output shape (tf_knowledge_graph.json)
 --------------------------------------
@@ -41,8 +49,8 @@ Output shape (tf_knowledge_graph.json)
     "block_types":    { ... },
     "examples":       ["..."]
   },
-  "aws_ami": {
-    "name":           "aws_ami",
+  "data.aws_ami": {
+    "name":           "data.aws_ami",
     "is_data_source": true,
     ...
   },
@@ -131,6 +139,25 @@ def _process_schema_dict(
     """Merge one schema dictionary (resource_schemas or data_source_schemas)
     with Registry docs into the shared knowledge graph dict.
 
+    Namespace collision prevention
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    Terraform frequently defines identically-named types for both a managed
+    resource and its data-source counterpart (e.g. ``aws_vpc`` exists in
+    *both* ``resource_schemas`` and ``data_source_schemas``).  Processing
+    both dictionaries into the same ``kg`` dict using the bare ``res_name``
+    as the key would cause the data source entry to silently overwrite the
+    managed resource entry (or vice versa, depending on iteration order).
+
+    To prevent this, data source entries receive an explicit ``"data."``
+    prefix on their graph key::
+
+        managed resource  →  kg["aws_vpc"]        (no prefix)
+        data source       →  kg["data.aws_vpc"]   ("data." prefix)
+
+    The ``name`` field inside the node is set to the same prefixed key so
+    that Neo4j node labels and ChromaDB document IDs are consistent with the
+    dictionary key that the Retriever uses for lookups.
+
     Returns:
         (enriched_count, examples_count, missing_docs)
     """
@@ -139,6 +166,11 @@ def _process_schema_dict(
     missing_docs:  list[str] = []
 
     for resource_name, resource_schema in schema_dict.items():
+        # -----------------------------------------------------------------
+        # Namespace: data sources get a "data." prefix; resources stay bare.
+        # -----------------------------------------------------------------
+        graph_key = f"data.{resource_name}" if is_data_source else resource_name
+
         # Both files are keyed by the full TF name ('aws_s3_bucket', 'aws_ami').
         # Direct lookup — no slug conversion needed here.
         doc = registry_docs.get(resource_name, {})
@@ -169,8 +201,10 @@ def _process_schema_dict(
         examples = doc.get("hcl_examples", [])
         examples_count += len(examples)
 
-        kg[resource_name] = {
-            "name":           resource_name,
+        # Store using graph_key so managed resource and data source variants
+        # of the same type coexist without collision.
+        kg[graph_key] = {
+            "name":           graph_key,   # namespaced key, not bare res_name
             "is_data_source": is_data_source,
             "description":    doc.get("description", ""),
             "subcategory":    doc.get("subcategory", ""),
@@ -210,12 +244,12 @@ def build_knowledge_graph() -> None:
 
     kg: dict[str, dict] = {}
 
-    # --- Managed resources ---
+    # --- Managed resources (keyed by bare resource name, e.g. "aws_vpc") ---
     r_enriched, r_examples, r_missing = _process_schema_dict(
         resource_schemas, registry_docs, kg, is_data_source=False
     )
 
-    # --- Data sources ---
+    # --- Data sources (keyed as "data.{name}", e.g. "data.aws_vpc") ---
     d_enriched, d_examples, d_missing = _process_schema_dict(
         data_source_schemas, registry_docs, kg, is_data_source=True
     )
@@ -229,13 +263,23 @@ def build_knowledge_graph() -> None:
     print(f"\n[03] Knowledge Graph built:")
     print(f"     Managed resources          : {len(resource_schemas):,}  "
           f"({r_enriched:,} with docs, {len(r_missing):,} schema-only)")
-    print(f"     Data sources               : {len(data_source_schemas):,}  "
+    print(f"     Data sources (data.* keys) : {len(data_source_schemas):,}  "
           f"({d_enriched:,} with docs, {len(d_missing):,} schema-only)")
     print(f"     Total KG nodes             : {len(kg):,}")
     print(f"     Total with Registry docs   : {total_enriched:,}")
     print(f"     Total schema-only (no docs): {len(total_missing):,}")
     print(f"     Total HCL examples         : {total_examples:,}")
     print(f"     Saved to                   : {OUTPUT_FILE}")
+
+    # Collision check: confirm no bare key was overwritten by a data. key
+    # (would indicate a logic error in _process_schema_dict).
+    resource_keys = set(resource_schemas.keys())
+    data_keys     = {f"data.{n}" for n in data_source_schemas.keys()}
+    overlap       = resource_keys & data_keys
+    if overlap:
+        print(f"\n[03] WARNING: unexpected key overlap ({len(overlap)}): {sorted(overlap)[:5]}")
+    else:
+        print("\n[03] Collision check passed — no managed resource keys overlap with data. keys.")
 
     if total_missing:
         print(f"\n[03] Nodes with no Registry doc ({len(total_missing)}):")

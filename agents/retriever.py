@@ -40,28 +40,45 @@ _CFN_LINT_RESOURCE_RE = re.compile(r"Resource:\s*([\w-]+)", re.IGNORECASE)
 #   on main.tf line 12, in resource "aws_vpc" "main":
 #   on main.tf line 5,  in data "aws_ami" "ubuntu":
 #
-# Pattern 1 — matches both 'in resource' and 'in data' HCL block headers.
-#   Before fix:  r'in\s+resource\s+"...'  (missed data blocks entirely)
-#   After fix:   r'in\s+(?:data|resource)\s+"...'  (handles both block kinds)
+# Pattern 1 — captures the block keyword (data|resource) in its own group so
+#   the extraction loop can assemble the namespaced type string without a
+#   second regex pass.
+#
+#   Before:  r'in\s+(?:data|resource)\s+"..."'  (block_type discarded)
+#   After:   r'in\s+(?P<block_type>data|resource)\s+"..."'  (block_type kept)
+#
+#   For a managed resource error the loop yields:   rtype = "aws_vpc"
+#   For a data source error the loop yields:        rtype = "data.aws_ami"
+#   Both are then checked against known_tf_types which is built with the
+#   same "data." prefix convention (see _extract_error_resources below).
 _TF_VALIDATE_RESOURCE_RE = re.compile(
-    r'in\s+(?:data|resource)\s+"(?P<type>[a-z][a-z0-9_]*)"\s+"(?P<name>[^"]+)"',
+    r'in\s+(?P<block_type>data|resource)\s+"(?P<type>[a-z][a-z0-9_]*)"\s+"(?P<name>[^"]+)"',
     re.IGNORECASE,
 )
+
 # Pattern 2 — bare address form.
-#   Before fix:  aws_vpc.main           (no data. prefix support)
-#   After fix:   data.aws_ami.ubuntu    (optional data. prefix tolerated)
-#   The (?:data\.)? prefix is non-capturing so group("type") still yields
-#   the bare provider type (e.g. "aws_ami"), matching resource_type in the
-#   annotation where data blocks are stored with their bare type.
+#
+#   Before:  (?:data\.)?  outside the capture group → "data." always stripped,
+#            group("type") always returns bare type ("aws_ami"), so the lookup
+#            against known_tf_types (which carries "data.aws_ami") never matched.
+#   After:   (?:data\.)?  moved inside (?P<type>...) → group("type") returns
+#            "data.aws_ami" when present, "aws_vpc" when absent.
+#
+#   Managed resource address:  aws_vpc.main           → type="aws_vpc"
+#   Data source address:       data.aws_ami.ubuntu    → type="data.aws_ami"
 _TF_ADDRESS_RE = re.compile(
-    r'\b(?:data\.)?(?P<type>(?:aws|google|azurerm|random|local|null|archive|tls)_[a-z][a-z0-9_]*)\.(?P<name>[a-z][a-z0-9_-]*)\b',
+    r'\b(?P<type>(?:data\.)?(?:aws|google|azurerm|random|local|null|archive|tls)_[a-z][a-z0-9_]*)\.(?P<name>[a-z][a-z0-9_-]*)\b',
     re.IGNORECASE,
 )
+
 # Pattern 3 — tflint bracket notation.
-#   Before fix:  [aws_vpc.main]
-#   After fix:   [data.aws_ami.ubuntu]  (optional data. prefix tolerated)
+#
+#   Same fix as Pattern 2: (?:data\.)? moved inside the <type> capture group.
+#
+#   Managed resource bracket:  [aws_vpc.main]           → type="aws_vpc"
+#   Data source bracket:       [data.aws_ami.ubuntu]    → type="data.aws_ami"
 _TF_BRACKET_RE = re.compile(
-    r'\[(?:data\.)?(?P<type>(?:aws|google|azurerm|random|local|null|archive|tls)_[a-z][a-z0-9_]*)\.(?P<name>[a-z][a-z0-9_-]*)\]',
+    r'\[(?P<type>(?:data\.)?(?:aws|google|azurerm|random|local|null|archive|tls)_[a-z][a-z0-9_]*)\.(?P<name>[a-z][a-z0-9_-]*)\]',
     re.IGNORECASE,
 )
 
@@ -95,29 +112,38 @@ def _extract_error_resources(
       Logical IDs are mapped to AWS types via the annotation
       (e.g. "WebServerSG" -> "AWS::EC2::SecurityGroup").
 
-    Terraform (resource address -> provider type):
+    Terraform (resource address -> namespaced provider type):
       terraform-validate and tflint emit resource *addresses*, not logical IDs.
-      Managed resources and data sources are both handled:
+      Managed resources and data sources are both handled with explicit
+      namespace prefixing that mirrors the knowledge graph key convention:
 
-        Managed resources:
-          - HCL block header: in resource "aws_vpc" "main"
-          - Bare address:     aws_vpc.main
-          - tflint bracket:   [aws_vpc.main]
+        Managed resources  →  bare type       (e.g. "aws_vpc")
+        Data sources       →  "data." prefix  (e.g. "data.aws_ami")
 
-        Data sources:
-          - HCL block header: in data "aws_elastic_beanstalk_solution_stack" "go"
-          - Bare address:     data.aws_elastic_beanstalk_solution_stack.go
-          - tflint bracket:   [data.aws_elastic_beanstalk_solution_stack.go]
+      This matches the keys used in tf_knowledge_graph.json (written by
+      03_parse_and_merge_tf.py) and the values stored in known_tf_types
+      (built by the loop below from annotation.resources).
 
-      Pattern 1 now matches both 'in resource' and 'in data' header forms.
-      Patterns 2 and 3 now tolerate an optional 'data.' prefix so the type
-      component is extracted cleanly in all cases.
+      Pattern 1 captures block_type (data|resource) and assembles rtype:
+        in resource "aws_vpc" "main"                        → "aws_vpc"
+        in data "aws_elastic_beanstalk_solution_stack" "go" → "data.aws_elastic_beanstalk_solution_stack"
 
-      The resource *type* component is matched against known_tf_types, which
-      is now populated by _parse_terraform for both resource and data blocks.
-      This means a data source type like 'aws_elastic_beanstalk_solution_stack'
-      is found in known_tf_types and correctly scopes the RAG query, preventing
-      the fallback to querying the full template seed set.
+      Patterns 2 & 3 now include (?:data\.)? *inside* the <type> group:
+        aws_vpc.main           → type="aws_vpc"
+        data.aws_ami.ubuntu    → type="data.aws_ami"
+        [data.aws_ami.ubuntu]  → type="data.aws_ami"
+
+    known_tf_types construction
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    template_annotator._parse_terraform() sets:
+      resource_id  = "data.{rtype}.{rname}"  for data blocks
+      resource_id  = "{rtype}.{rname}"       for managed resources
+      resource_type = bare type (no prefix)  in both cases
+
+    The loop below reads resource_id to detect data blocks and adds the
+    "data." prefix to resource_type before inserting into known_tf_types,
+    producing a set whose members are directly comparable to the rtype
+    strings assembled by the three regex patterns above.
 
     Returns an empty set when annotation is unavailable or no resource
     identifiers are found, which causes execute_*_retrieval() to fall back to
@@ -156,34 +182,50 @@ def _extract_error_resources(
             error_resource_types.add(resource_type)
 
     # -----------------------------------------------------------------
-    # Terraform path: extract resource type directly from error address
+    # Terraform path: extract namespaced resource type from error address
     # -----------------------------------------------------------------
-    # known_tf_types is now populated by _parse_terraform for BOTH resource
-    # and data blocks, so data source types (e.g.
-    # "aws_elastic_beanstalk_solution_stack") are present and the membership
-    # check below succeeds where it previously failed and discarded the type.
-    known_tf_types: set[str] = {
-        r.resource_type
-        for r in annotation.resources
-        if r.resource_type
-    }
+    # Build known_tf_types with explicit namespace prefixing.
+    #
+    # template_annotator stores:
+    #   resource_id  = "data.{rtype}.{rname}"  for data blocks
+    #   resource_id  = "{rtype}.{rname}"        for managed resources
+    #   resource_type = bare type (no prefix)   in both cases
+    #
+    # We detect data blocks via the "data." prefix on resource_id and add
+    # the same prefix to resource_type so known_tf_types mirrors the
+    # "data." convention used in tf_knowledge_graph.json.
+    known_tf_types: set[str] = set()
+    for r in annotation.resources:
+        if not r.resource_type:
+            continue
+        if r.resource_id and r.resource_id.startswith("data."):
+            known_tf_types.add(f"data.{r.resource_type}")
+        else:
+            known_tf_types.add(r.resource_type)
 
     if known_tf_types and not any(t.startswith("AWS::") for t in known_tf_types):
         for error_str in errors:
-            # Pattern 1: in resource "aws_vpc" "main"  OR
-            #            in data "aws_elastic_beanstalk_solution_stack" "go"
+            # Pattern 1: in resource "aws_vpc" "main"
+            #         or in data "aws_elastic_beanstalk_solution_stack" "go"
+            # block_type group drives the "data." prefix decision.
             for m in _TF_VALIDATE_RESOURCE_RE.finditer(error_str):
                 rtype = m.group("type").lower()
+                if m.group("block_type").lower() == "data":
+                    rtype = f"data.{rtype}"
                 if rtype in known_tf_types:
                     error_resource_types.add(rtype)
 
-            # Pattern 2: aws_vpc.main  OR  data.aws_ami.ubuntu
+            # Pattern 2: aws_vpc.main       → type="aws_vpc"
+            #            data.aws_ami.ubuntu → type="data.aws_ami"
+            # (?:data\.)? is now inside the capture group, so rtype already
+            # carries the prefix when present — no manual assembly needed.
             for m in _TF_ADDRESS_RE.finditer(error_str):
                 rtype = m.group("type").lower()
                 if rtype in known_tf_types:
                     error_resource_types.add(rtype)
 
-            # Pattern 3: [aws_vpc.main]  OR  [data.aws_ami.ubuntu]
+            # Pattern 3: [aws_vpc.main]         → type="aws_vpc"
+            #            [data.aws_ami.ubuntu]   → type="data.aws_ami"
             for m in _TF_BRACKET_RE.finditer(error_str):
                 rtype = m.group("type").lower()
                 if rtype in known_tf_types:
@@ -413,9 +455,10 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
       2. Build stage_errors dict from validation_results for iac_type-aware
          template annotation (mirrors remediator pattern).
       3. Annotate the template to seed resource types for the RAG layer.
-         For Terraform, _parse_terraform now includes both resource AND data
-         blocks in the unified resources list, so known_tf_types is fully
-         populated with data source types as well as managed resource types.
+         For Terraform, _parse_terraform includes both resource AND data
+         blocks in the unified resources list, with resource_id formatted as
+         "data.{rtype}.{rname}" for data blocks and "{rtype}.{rname}" for
+         managed resources.
       4. Build the retrieval prompt (pure, no I/O) using iac_type-aware
          section headers and system prompt via get_query_gen_system().
       5. When has_schema:
