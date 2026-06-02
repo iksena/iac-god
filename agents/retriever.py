@@ -447,6 +447,39 @@ def _call_query_generator(
     return model, raw_response, usage
 
 
+def _build_tf_seed_resources(annotation: TemplateAnnotation | None) -> set[str]:
+    """Build the seed_resources set for Terraform RAG with correct data. prefixing.
+
+    extract_resource_types() returns bare resource_type strings for all
+    resources — it has no knowledge of the data. prefix convention used in
+    the TF knowledge graph (tf_knowledge_graph.json, Neo4j TFResource nodes).
+
+    This function mirrors the prefixing logic in known_tf_types inside
+    _extract_error_resources() so both seed_resources (full-template fallback)
+    and known_tf_types (error-scoped lookups) use the same namespace keys.
+
+    Canonical mapping (from template_annotator._parse_terraform):
+      resource_id  = "data.{rtype}.{rname}"  for data blocks
+      resource_id  = "{rtype}.{rname}"        for managed resources
+      resource_type = bare type (no prefix)   in both cases
+
+    Result:
+      data "aws_vpc" "default"    → seed entry: "data.aws_vpc"
+      resource "aws_s3_bucket" "x" → seed entry: "aws_s3_bucket"
+    """
+    if not annotation:
+        return set()
+    seed: set[str] = set()
+    for r in annotation.resources:
+        if not r.resource_type:
+            continue
+        if r.resource_id and r.resource_id.startswith("data."):
+            seed.add(f"data.{r.resource_type}")
+        else:
+            seed.add(r.resource_type)
+    return seed
+
+
 def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     """Dedicated retrieval agent.
 
@@ -547,7 +580,35 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
             token_usage=usage,
         )
 
-        seed_resources = extract_resource_types(annotation)
+        # -----------------------------------------------------------------
+        # Build seed_resources
+        # -----------------------------------------------------------------
+        # For CloudFormation: use extract_resource_types() directly — it
+        # returns AWS:: type strings which are the correct Neo4j node keys.
+        #
+        # For Terraform: use _build_tf_seed_resources() which applies the
+        # same "data." prefix logic used in known_tf_types.  This is the
+        # fix for Bug 1 — data sources were previously passed as bare type
+        # strings (e.g. "aws_availability_zones") but Neo4j TFResource
+        # nodes are keyed as "data.aws_availability_zones" after the
+        # 03_parse_and_merge_tf.py Phase 1 fix.
+        #
+        # Both paths must produce sets whose members directly match the
+        # TFResource / Resource node names in Neo4j.
+        if iac_type == "terraform":
+            seed_resources = _build_tf_seed_resources(annotation)
+        else:
+            seed_resources = extract_resource_types(annotation)
+
+        # Diagnostic: log seed_resources so missing providers (e.g. random_id)
+        # are immediately visible in the run output without a debugger.
+        # This also serves as the diagnostic for Bug 2 — if random_id is
+        # absent here, the root cause is in template_annotator (resource-type
+        # regex does not recognise the random_ provider prefix); if present,
+        # the gap is in the ingestion pipeline (random provider schema JSON
+        # not ingested into Neo4j).
+        print(f"[Retriever] seed_resources ({len(seed_resources)}): {sorted(seed_resources)}")
+
         error_resources = _extract_error_resources(
             errors=errors,
             annotation=annotation,
