@@ -1,4 +1,6 @@
 import re
+import os
+import copy
 import time
 import uuid
 import boto3
@@ -10,6 +12,18 @@ from pathlib import Path
 from botocore.exceptions import ClientError
 from config import DeployConfig, DeployTarget
 from state import DeployValidationResult
+
+
+# ---------------------------------------------------------------------------
+# Persistent Terraform provider plugin cache (module-level singleton)
+# ---------------------------------------------------------------------------
+# Placing the cache in the system temp directory keeps it out of the repo
+# while surviving across all benchmark rows within the same process.
+# The AWS provider binary is ~500 MB; without this each TemporaryDirectory
+# invocation triggers a full re-download, which eventually exceeds the 120 s
+# init timeout under slow registry responses or repeated iteration.
+_TF_PLUGIN_CACHE_DIR = Path(tempfile.gettempdir()) / "iac-god-tf-plugin-cache"
+_TF_PLUGIN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -428,9 +442,6 @@ def _validate_terraform_deployment(
     The stdout format for terraform apply errors is:
         Error: <summary>\\n\\n  on main.tf line N, in resource "type" "name":\\n  <detail>
     """
-    import os
-    import copy
-
     target_name = deploy_config.target.value
     deploy_logs: list[str] = []
     tf_bin = _terraform_bin(deploy_config)
@@ -446,6 +457,10 @@ def _validate_terraform_deployment(
             "AWS_DEFAULT_REGION":    "us-east-1",
         })
 
+    # Point Terraform at the persistent cache so the provider binary is
+    # downloaded once per process rather than once per TemporaryDirectory.
+    run_env["TF_PLUGIN_CACHE_DIR"] = str(_TF_PLUGIN_CACHE_DIR)
+
     with tempfile.TemporaryDirectory() as tmpdir:
         tf_path = Path(tmpdir) / "main.tf"
         # Write the LLM-generated template as-is.
@@ -455,13 +470,26 @@ def _validate_terraform_deployment(
         tf_path.write_text(template, encoding="utf-8")
 
         # ----------------------------------------------------------------
-        # terraform / tflocal init
+        # terraform / tflocal init — with timeout guard (mirrors apply path)
         # ----------------------------------------------------------------
         print(f"[Deploy] Running {tf_bin} init in {tmpdir}...")
-        init_result = subprocess.run(
-            [tf_bin, "init", "-backend=false", "-input=false", "-no-color"],
-            cwd=tmpdir, capture_output=True, text=True, timeout=120, env=run_env,
-        )
+        try:
+            init_result = subprocess.run(
+                [tf_bin, "init", "-backend=false", "-input=false", "-no-color"],
+                cwd=tmpdir, capture_output=True, text=True, timeout=120, env=run_env,
+            )
+        except subprocess.TimeoutExpired:
+            timeout_msg = f"{tf_bin} init timed out after 120s — provider download stalled"
+            deploy_logs.append(timeout_msg)
+            return DeployValidationResult(
+                target=target_name, passed=False, stack_id=None,
+                completed_resources=[],
+                failed_resources=[{"logical_name": "init", "status_reason": timeout_msg}],
+                error_message=timeout_msg,
+                duration_seconds=round(time.time() - start_time, 2),
+                deployment_logs=deploy_logs,
+            )
+
         if init_result.returncode != 0:
             err = (init_result.stderr or init_result.stdout).strip()
             deploy_logs.append(f"{tf_bin} init failed: {err}")
