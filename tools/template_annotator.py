@@ -9,6 +9,7 @@ them with metadata needed by the engineer and remediation agents:
 """
 from __future__ import annotations
 
+import itertools
 import json
 import re
 import logging
@@ -163,7 +164,7 @@ def _hcl2_unwrap(value: Any) -> Any:
 
 
 def _hcl2_lookup(raw: dict, rtype: str, rname: str) -> dict:
-    """Safely drill into the hcl2 resource structure to retrieve the raw block.
+    """Safely drill into the hcl2 resource block structure.
 
     hcl2 nests resources as::
 
@@ -185,6 +186,33 @@ def _hcl2_lookup(raw: dict, rtype: str, rname: str) -> dict:
         if not isinstance(type_outer, dict):
             return {}
         name_val = _hcl2_unwrap(type_outer.get(rname, {}))
+        return name_val if isinstance(name_val, dict) else {}
+    except Exception:
+        return {}
+
+
+def _hcl2_data_lookup(raw: dict, dtype: str, dname: str) -> dict:
+    """Safely drill into the hcl2 data block structure.
+
+    Symmetric with _hcl2_lookup but reads from raw["data"] instead of
+    raw["resource"].  hcl2 nests data sources identically::
+
+        raw["data"] -> list
+          -> dict keyed by data source type
+            -> list
+              -> dict keyed by data source name
+                -> the raw attribute dict
+
+    Returns an empty dict on any shape mismatch.
+    """
+    try:
+        data_outer = _hcl2_unwrap(raw.get("data", []))
+        if not isinstance(data_outer, dict):
+            return {}
+        type_outer = _hcl2_unwrap(data_outer.get(dtype, []))
+        if not isinstance(type_outer, dict):
+            return {}
+        name_val = _hcl2_unwrap(type_outer.get(dname, {}))
         return name_val if isinstance(name_val, dict) else {}
     except Exception:
         return {}
@@ -234,16 +262,27 @@ def _parse_cloudformation(content: str, file_path: str) -> TemplateAnnotation:
 
 
 def _parse_terraform(content: str, file_path: str) -> TemplateAnnotation:
-    """Minimal Terraform HCL parser using regex for resource block detection.
+    """Minimal Terraform HCL parser using regex for resource and data block detection.
+
+    Parses both ``resource`` blocks (managed resources) and ``data`` blocks
+    (data sources) into a unified TemplateAnnotation.resources list.  This
+    mirrors CloudFormation's single ``Resources:`` key, where every block—
+    regardless of whether it is a managed resource or a lookup—is represented
+    identically in the annotation.  The downstream retriever and RAG layers
+    are therefore oblivious to whether a failing block is a resource or a
+    data source.
+
+    resource block:  resource_id = "<type>.<name>"   (e.g. "aws_vpc.main")
+    data block:      resource_id = "data.<type>.<name>"  (e.g. "data.aws_ami.ubuntu")
+
+    Both block kinds populate resource_type with the bare provider type string
+    (e.g. "aws_vpc", "aws_ami") so known_tf_types in the retriever contains
+    the same token that error-message regex patterns extract after stripping
+    the optional ``data.`` prefix.
 
     Uses python-hcl2 when available to extract the raw attribute dict for
-    each resource.  hcl2.load() wraps every nesting level in a list, e.g.::
-
-        {"resource": [{"aws_vpc": [{"main": {"cidr_block": ["10.0.0.0/16"]}}]}]}
-
-    _hcl2_lookup() unwraps those list layers safely so ResourceAnnotation.raw
-    receives a plain dict.  Falls back to an empty dict when hcl2 is absent
-    or the structure does not match expectations.
+    each block.  Falls back to an empty dict when hcl2 is absent or the
+    structure does not match expectations.
     """
     resources: list[ResourceAnnotation] = []
 
@@ -257,20 +296,55 @@ def _parse_terraform(content: str, file_path: str) -> TemplateAnnotation:
     except Exception as exc:
         logger.warning("hcl2 parse error for %s: %s", file_path, exc)
 
-    pattern = re.compile(
+    # ------------------------------------------------------------------
+    # Regex patterns for block-header detection
+    # ------------------------------------------------------------------
+    # Managed resource blocks:  resource "<type>" "<name>" {
+    resource_pattern = re.compile(
         r'^resource\s+"(?P<type>[^"]+)"\s+"(?P<name>[^"]+)"\s*\{',
         re.MULTILINE,
     )
-    for match in pattern.finditer(content):
+    # Data source blocks:  data "<type>" "<name>" {
+    data_pattern = re.compile(
+        r'^data\s+"(?P<type>[^"]+)"\s+"(?P<name>[^"]+)"\s*\{',
+        re.MULTILINE,
+    )
+
+    # ------------------------------------------------------------------
+    # Chain resource and data block iterators so they are processed
+    # identically—symmetric with CloudFormation's single Resources: loop.
+    # Each entry carries (match, is_data) so we can build the correct
+    # resource_id and use the right hcl2 lookup helper.
+    # ------------------------------------------------------------------
+    block_iter = itertools.chain(
+        ((m, False) for m in resource_pattern.finditer(content)),
+        ((m, True)  for m in data_pattern.finditer(content)),
+    )
+
+    for match, is_data in block_iter:
         rtype = match.group("type")
         rname = match.group("name")
         start_line = content[: match.start()].count("\n") + 1
+
+        # resource_id convention:
+        #   managed resource  ->  "aws_vpc.main"
+        #   data source       ->  "data.aws_ami.ubuntu"
+        # The prefix distinguishes block kinds in logs and smell mappings
+        # while resource_type stays as the bare type for RAG seeding.
+        resource_id = f"data.{rtype}.{rname}" if is_data else f"{rtype}.{rname}"
+
+        raw_block = (
+            _hcl2_data_lookup(raw, rtype, rname)
+            if is_data
+            else _hcl2_lookup(raw, rtype, rname)
+        )
+
         resources.append(ResourceAnnotation(
-            resource_id=f"{rtype}.{rname}",
+            resource_id=resource_id,
             resource_type=rtype,
             start_line=start_line,
             end_line=None,
-            raw=_hcl2_lookup(raw, rtype, rname),
+            raw=raw_block,
         ))
 
     return TemplateAnnotation(

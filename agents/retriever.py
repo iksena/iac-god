@@ -38,21 +38,30 @@ _CFN_LINT_RESOURCE_RE = re.compile(r"Resource:\s*([\w-]+)", re.IGNORECASE)
 
 # Terraform: terraform-validate HCL error header:
 #   on main.tf line 12, in resource "aws_vpc" "main":
-#   Error: Invalid argument ... aws_vpc.main ...
-# Pattern 1 — on ... in resource "<type>" "<name>"
+#   on main.tf line 5,  in data "aws_ami" "ubuntu":
+#
+# Pattern 1 — matches both 'in resource' and 'in data' HCL block headers.
+#   Before fix:  r'in\s+resource\s+"...'  (missed data blocks entirely)
+#   After fix:   r'in\s+(?:data|resource)\s+"...'  (handles both block kinds)
 _TF_VALIDATE_RESOURCE_RE = re.compile(
-    r'in\s+resource\s+"(?P<type>[a-z][a-z0-9_]*)"\s+"(?P<name>[^"]+)"',
+    r'in\s+(?:data|resource)\s+"(?P<type>[a-z][a-z0-9_]*)"\s+"(?P<name>[^"]+)"',
     re.IGNORECASE,
 )
-# Pattern 2 — bare address form: aws_vpc.main  (used by tflint and some
-#   terraform-validate messages that don't carry the full HCL header)
+# Pattern 2 — bare address form.
+#   Before fix:  aws_vpc.main           (no data. prefix support)
+#   After fix:   data.aws_ami.ubuntu    (optional data. prefix tolerated)
+#   The (?:data\.)? prefix is non-capturing so group("type") still yields
+#   the bare provider type (e.g. "aws_ami"), matching resource_type in the
+#   annotation where data blocks are stored with their bare type.
 _TF_ADDRESS_RE = re.compile(
-    r'\b(?P<type>(?:aws|google|azurerm|random|local|null|archive|tls)_[a-z][a-z0-9_]*)\.(?P<name>[a-z][a-z0-9_-]*)\b',
+    r'\b(?:data\.)?(?P<type>(?:aws|google|azurerm|random|local|null|archive|tls)_[a-z][a-z0-9_]*)\.(?P<name>[a-z][a-z0-9_-]*)\b',
     re.IGNORECASE,
 )
-# Pattern 3 — tflint bracket notation: [aws_vpc.main]
+# Pattern 3 — tflint bracket notation.
+#   Before fix:  [aws_vpc.main]
+#   After fix:   [data.aws_ami.ubuntu]  (optional data. prefix tolerated)
 _TF_BRACKET_RE = re.compile(
-    r'\[(?P<type>(?:aws|google|azurerm|random|local|null|archive|tls)_[a-z][a-z0-9_]*)\.(?P<name>[a-z][a-z0-9_-]*)\]',
+    r'\[(?:data\.)?(?P<type>(?:aws|google|azurerm|random|local|null|archive|tls)_[a-z][a-z0-9_]*)\.(?P<name>[a-z][a-z0-9_-]*)\]',
     re.IGNORECASE,
 )
 
@@ -87,13 +96,28 @@ def _extract_error_resources(
       (e.g. "WebServerSG" -> "AWS::EC2::SecurityGroup").
 
     Terraform (resource address -> provider type):
-      terraform-validate and tflint emit resource *addresses*, not logical IDs:
-        - HCL block header: in resource "aws_vpc" "main"
-        - Bare address:     aws_vpc.main
-        - tflint bracket:   [aws_vpc.main]
-      The resource *type* component (e.g. "aws_vpc") is extracted directly and
-      matched against annotation.resource_type (set to the type string by
-      _parse_terraform()).  No logical-ID-to-type translation step is needed.
+      terraform-validate and tflint emit resource *addresses*, not logical IDs.
+      Managed resources and data sources are both handled:
+
+        Managed resources:
+          - HCL block header: in resource "aws_vpc" "main"
+          - Bare address:     aws_vpc.main
+          - tflint bracket:   [aws_vpc.main]
+
+        Data sources:
+          - HCL block header: in data "aws_elastic_beanstalk_solution_stack" "go"
+          - Bare address:     data.aws_elastic_beanstalk_solution_stack.go
+          - tflint bracket:   [data.aws_elastic_beanstalk_solution_stack.go]
+
+      Pattern 1 now matches both 'in resource' and 'in data' header forms.
+      Patterns 2 and 3 now tolerate an optional 'data.' prefix so the type
+      component is extracted cleanly in all cases.
+
+      The resource *type* component is matched against known_tf_types, which
+      is now populated by _parse_terraform for both resource and data blocks.
+      This means a data source type like 'aws_elastic_beanstalk_solution_stack'
+      is found in known_tf_types and correctly scopes the RAG query, preventing
+      the fallback to querying the full template seed set.
 
     Returns an empty set when annotation is unavailable or no resource
     identifiers are found, which causes execute_*_retrieval() to fall back to
@@ -107,7 +131,6 @@ def _extract_error_resources(
     # -----------------------------------------------------------------
     # CloudFormation path: resolve logical IDs -> AWS resource types
     # -----------------------------------------------------------------
-    # Build lookup: resource_id (logical ID) -> AWS resource type
     logical_to_type: dict[str, str] = {
         r.resource_id: r.resource_type
         for r in annotation.resources
@@ -135,31 +158,32 @@ def _extract_error_resources(
     # -----------------------------------------------------------------
     # Terraform path: extract resource type directly from error address
     # -----------------------------------------------------------------
-    # Build a set of known resource types present in the template so we
-    # only emit types that are actually in scope.
+    # known_tf_types is now populated by _parse_terraform for BOTH resource
+    # and data blocks, so data source types (e.g.
+    # "aws_elastic_beanstalk_solution_stack") are present and the membership
+    # check below succeeds where it previously failed and discarded the type.
     known_tf_types: set[str] = {
         r.resource_type
         for r in annotation.resources
         if r.resource_type
     }
 
-    # Only run TF extraction when the annotation actually contains TF resources
-    # (resource_type == "aws_vpc" style), avoiding false positives on CFN runs.
     if known_tf_types and not any(t.startswith("AWS::") for t in known_tf_types):
         for error_str in errors:
-            # Pattern 1: in resource "aws_vpc" "main"
+            # Pattern 1: in resource "aws_vpc" "main"  OR
+            #            in data "aws_elastic_beanstalk_solution_stack" "go"
             for m in _TF_VALIDATE_RESOURCE_RE.finditer(error_str):
                 rtype = m.group("type").lower()
                 if rtype in known_tf_types:
                     error_resource_types.add(rtype)
 
-            # Pattern 2: bare address aws_vpc.main
+            # Pattern 2: aws_vpc.main  OR  data.aws_ami.ubuntu
             for m in _TF_ADDRESS_RE.finditer(error_str):
                 rtype = m.group("type").lower()
                 if rtype in known_tf_types:
                     error_resource_types.add(rtype)
 
-            # Pattern 3: tflint bracket [aws_vpc.main]
+            # Pattern 3: [aws_vpc.main]  OR  [data.aws_ami.ubuntu]
             for m in _TF_BRACKET_RE.finditer(error_str):
                 rtype = m.group("type").lower()
                 if rtype in known_tf_types:
@@ -192,8 +216,6 @@ def _annotate_safely(
     if not template:
         return None
     try:
-        # Give annotate_template() a file path hint so the parser is selected
-        # deterministically rather than relying on content heuristics alone.
         file_path_hint = "<in-memory>.tf" if iac_type == "terraform" else "<in-memory>.yaml"
         annotation = annotate_template(file_path=file_path_hint, content=template)
         if smell_report:
@@ -334,9 +356,6 @@ def _get_active_error_types(state: GraphState) -> tuple[bool, bool]:
         if stage:
             latest_by_stage[stage] = result
 
-    # Check structural stages:
-    #   CFN:       yaml (Stage 1)  and cfn-lint (Stage 2)
-    #   Terraform: tflint (Stage 1) and terraform-validate (Stage 2)
     if not latest_by_stage.get("yaml", {}).get("passed", True):
         has_schema = True
     if not latest_by_stage.get("cfn-lint", {}).get("passed", True):
@@ -350,13 +369,11 @@ def _get_active_error_types(state: GraphState) -> tuple[bool, bool]:
     if deploy and not deploy.get("passed") and deploy.get("target") != "skipped":
         has_schema = True
 
-    # Check security stages
     if not latest_by_stage.get("checkov", {}).get("passed", True):
         has_security = True
     if not latest_by_stage.get("trivy", {}).get("passed", True):
         has_security = True
 
-    # Fallback to both if state is somehow empty
     if not has_schema and not has_security:
         has_schema, has_security = True, True
 
@@ -396,6 +413,9 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
       2. Build stage_errors dict from validation_results for iac_type-aware
          template annotation (mirrors remediator pattern).
       3. Annotate the template to seed resource types for the RAG layer.
+         For Terraform, _parse_terraform now includes both resource AND data
+         blocks in the unified resources list, so known_tf_types is fully
+         populated with data source types as well as managed resource types.
       4. Build the retrieval prompt (pure, no I/O) using iac_type-aware
          section headers and system prompt via get_query_gen_system().
       5. When has_schema:
@@ -424,9 +444,6 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         deploy_validation_result,
     )
 
-    # Build stage_errors for iac_type-aware annotation in build_retrieval_prompt.
-    # Only stages with actual errors are included; the dict is keyed by stage
-    # name so render_annotated_terraform can apply its own stage-name filter.
     stage_errors: dict[str, list[str]] = {}
     for result in state.get("validation_results", []):
         stage = str(result.get("stage") or "").strip()
@@ -436,8 +453,6 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         if errs:
             stage_errors[stage] = errs
 
-    # FIX: read from the canonical state key 'iac_template' (renamed from
-    # 'cloudformation_template' when iac_type support was added to state.py).
     template = state.get("iac_template", "")
     annotation = _annotate_safely(
         template=template,
@@ -448,10 +463,6 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     has_schema, has_security = _get_active_error_types(state)
     print(f"[Retriever] Routing -> Schema: {has_schema} | Security: {has_security}")
 
-    # ------------------------------------------------------------------
-    # Schema retrieval (has_schema)
-    # LLM generates schema_queries; RAG backend is branched by iac_type.
-    # ------------------------------------------------------------------
     schema_queries: list[str] = []
     iac_context = ""
     llm_record = None
@@ -463,9 +474,6 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
             f"{'included' if has_line_numbers else 'NOT included (plain template used)'}."
         )
 
-        # FIX: call the factory so the LLM receives the correct IaC-specific
-        # vocabulary (CFN: cfn-lint / !Ref / AWS::* ; TF: terraform-validate
-        # / resource addresses / aws_* types).
         query_gen_system = get_query_gen_system(iac_type)
 
         user_content = build_retrieval_prompt(
@@ -484,11 +492,9 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         parsed_queries = parse_query_response(raw_response)
         schema_queries = parsed_queries.get("schema_queries", [])
 
-        # Fallback to raw errors when LLM produces nothing useful
         if not schema_queries:
             schema_queries = errors[:8]
 
-        # Capture the log record so it can be appended to state below.
         llm_record = recorder.record_llm_call(
             state=state,
             agent="retriever",
@@ -505,8 +511,6 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
             deploy_validation_result=deploy_validation_result,
         ) or None
 
-        # FIX: branch RAG execution on iac_type so Terraform runs never
-        # receive CloudFormation schema docs from the CFN knowledge graph.
         if iac_type == "terraform":
             from tools.tf_hybrid_rag import execute_terraform_retrieval
             iac_context = execute_terraform_retrieval(
@@ -521,19 +525,11 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
                 error_resources=error_resources,
             )
     else:
-        # No schema errors — still need to record a stub for the recorder.
         user_content = ""
         raw_response = ""
         model = ""
         usage = None
 
-    # ------------------------------------------------------------------
-    # Security retrieval (has_security) — pure deterministic graph lookup
-    # No LLM, no embeddings, no ChromaDB.
-    # iac_type is forwarded so Neo4j filters on the correct framework nodes:
-    #   terraform  -> frameworks=['terraform', 'tf']
-    #   cloudformation -> frameworks=['cfn', 'cloudformation']
-    # ------------------------------------------------------------------
     security_context = ""
     security_ids: list[str] = []
 
@@ -545,18 +541,12 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
             iac_type=iac_type,
         )
 
-    # ------------------------------------------------------------------
-    # Merge and persist
-    # ------------------------------------------------------------------
     unified_context = "\n\n".join(
         part for part in (iac_context, security_context) if part.strip()
     )
 
-    # retrieval_queries tracks everything used for the audit trail.
-    # Security: use extracted IDs (deterministic), not LLM queries.
     retrieval_queries = schema_queries + security_ids
 
-    # Reconstruct the system prompt used (needed for recorder)
     query_gen_system = get_query_gen_system(iac_type)
 
     user_msg: Message = {"role": "user", "content": user_content if has_schema else ""}
@@ -580,8 +570,6 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     return {
         "retriever_context":  unified_context,
         "retriever_queries":  retrieval_queries,
-        # Append the LLM record when a schema retrieval call was made;
-        # security retrieval is deterministic and produces no LLM record.
         "llm_call_log":       state["llm_call_log"] + ([llm_record] if llm_record else []),
         "retriever_history":  append_and_cap(
             state.get("retriever_history", []), user_msg, assistant_msg
