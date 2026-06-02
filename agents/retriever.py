@@ -1,3 +1,4 @@
+# agents/retriever.py
 from __future__ import annotations
 
 import re
@@ -169,7 +170,7 @@ def _extract_error_resources(
             f"[Retriever] Error resources scoped to: {sorted(error_resource_types)}"
         )
     else:
-        print("[Retriever] No error resources resolved \u2014 Neo4j will use full seed set.")
+        print("[Retriever] No error resources resolved — Neo4j will use full seed set.")
 
     return error_resource_types
 
@@ -182,7 +183,7 @@ def _annotate_safely(
     """Parse and annotate the template for resource-type seeding.
 
     Returns None on parse failure so callers degrade gracefully.
-    Only used to extract resource types for Neo4j seeding \u2014 rendering
+    Only used to extract resource types for Neo4j seeding — rendering
     is now done directly against the raw template string.
 
     Passes a synthetic file_path hint ('<in-memory>.tf' for Terraform) so
@@ -219,12 +220,12 @@ def _build_retrieval_annotated_template(
     Mirrors the remediator pattern:
 
     CloudFormation:
-        render_annotated_template(yaml, flat_errors) \u2014 uses the existing flat
+        render_annotated_template(yaml, flat_errors) — uses the existing flat
         error list; the renderer extracts line numbers and also builds a
         header block for lineless errors.
 
     Terraform:
-        render_annotated_terraform(hcl, stage_errors) \u2014 only tflint /
+        render_annotated_terraform(hcl, stage_errors) — only tflint /
         terraform-validate errors are annotated inline (the only stages that
         embed HCL line numbers).  Security and deploy errors are excluded
         because they carry no line reference and are already surfaced in
@@ -252,7 +253,7 @@ def build_retrieval_prompt(
     """Assemble the single user-turn message for the query-generation LLM call.
 
     Sections (in order):
-      1. Validation errors \u2014 rich format: [RuleId] line N | Resource: X | message | description
+      1. Validation errors — rich format: [RuleId] line N | Resource: X | message | description
       2. Full template with inline ERROR comments at the exact reported lines
          (when errors carry line numbers), or plain template fallback.
          Annotation is iac_type-aware: CFN uses render_annotated_template;
@@ -260,7 +261,7 @@ def build_retrieval_prompt(
          only) via _build_retrieval_annotated_template.
       3. Prior retrieval-query history to avoid duplicate lookups.
 
-    Pure function \u2014 no I/O, no LLM calls, fully unit-testable.
+    Pure function — no I/O, no LLM calls, fully unit-testable.
     Only structural errors (cfn-lint / tflint / terraform-validate / deploy) are
     included here; security errors are routed directly to
     execute_security_retrieval() without going through the LLM.
@@ -286,7 +287,7 @@ def build_retrieval_prompt(
     elif template:
         parts.append(
             "## IaC Template\n"
-            "No line-number annotations available \u2014 use the error messages\n"
+            "No line-number annotations available — use the error messages\n"
             "above to identify which resource types and attributes need schema retrieval.\n"
             f"```\n{template}\n```"
         )
@@ -318,7 +319,7 @@ def _get_active_error_types(state: GraphState) -> tuple[bool, bool]:
       Both:           live deployment failures
 
     Note: tflint (Terraform Stage 1) and cfn-lint (CFN Stage 2) are symmetric
-    structural linters \u2014 both trigger schema RAG so the repair loop receives
+    structural linters — both trigger schema RAG so the repair loop receives
     provider/resource schema context regardless of which structural stage
     caught the error. This parity is required for the generalisation hypothesis.
 
@@ -403,8 +404,10 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
            - Terraform: call LLM to generate schema_queries, then run
              execute_terraform_retrieval() (stub today; wired for TF corpus).
       6. When has_security: extract AVD/Trivy IDs from raw errors via regex,
-         then run a direct Neo4j graph lookup \u2014 NO LLM query generation for
+         then run a direct Neo4j graph lookup — NO LLM query generation for
          security (IDs are already explicit in the validator output).
+         iac_type is forwarded so Neo4j queries the correct framework nodes
+         (frameworks=['terraform','tf'] vs ['cfn','cloudformation']).
       7. Persist prompt, response, queries, and full context to
          retriever_history.txt via the recorder.
       8. Return retriever_context, retriever_queries, and updated
@@ -456,7 +459,7 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     if has_schema:
         has_line_numbers = _errors_have_line_numbers(errors)
         print(
-            f"[Retriever] {'Line numbers detected \u2014 annotated template' : <45} "
+            f"[Retriever] {'Line numbers detected — annotated template' : <45} "
             f"{'included' if has_line_numbers else 'NOT included (plain template used)'}."
         )
 
@@ -518,15 +521,18 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
                 error_resources=error_resources,
             )
     else:
-        # No schema errors \u2014 still need to record a stub for the recorder.
+        # No schema errors — still need to record a stub for the recorder.
         user_content = ""
         raw_response = ""
         model = ""
         usage = None
 
     # ------------------------------------------------------------------
-    # Security retrieval (has_security) \u2014 pure deterministic graph lookup
+    # Security retrieval (has_security) — pure deterministic graph lookup
     # No LLM, no embeddings, no ChromaDB.
+    # iac_type is forwarded so Neo4j filters on the correct framework nodes:
+    #   terraform  -> frameworks=['terraform', 'tf']
+    #   cloudformation -> frameworks=['cfn', 'cloudformation']
     # ------------------------------------------------------------------
     security_context = ""
     security_ids: list[str] = []
@@ -534,7 +540,10 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
     if has_security:
         from tools.security_hybrid_rag import execute_security_retrieval, extract_trivy_check_ids
         security_ids = extract_trivy_check_ids(errors)
-        security_context = execute_security_retrieval(raw_errors=errors)
+        security_context = execute_security_retrieval(
+            raw_errors=errors,
+            iac_type=iac_type,
+        )
 
     # ------------------------------------------------------------------
     # Merge and persist
