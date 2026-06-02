@@ -2,8 +2,8 @@
 
 Pure-graph deterministic security retrieval.
 
-All security context is now sourced exclusively from the Neo4j SecurityCheck
-subgraph that was built by scripts/graphrag/security/04_import_security_to_neo4j.py.
+All security context is sourced exclusively from the Neo4j SecurityCheck
+subgraph built by scripts/graphrag/security/04_import_security_to_neo4j.py.
 ChromaDB semantic search has been removed because Trivy/Checkov validators
 always emit explicit rule IDs (e.g. AVD-AWS-0086) — there is no ambiguity to
 resolve with vector search.
@@ -14,13 +14,24 @@ Retrieval pipeline
        Regex-extracts every AVD-AWS-XXXX / AWS-XXXX ID from the raw validator
        output strings. Deterministic, no LLM, no embedding.
 
-  2. _security_graph_lookup(check_ids)
-       One Cypher query per ID. Returns description, impact, CFN remediation
-       instructions, CFN good example, and Rego policy source.
+  2. _security_graph_lookup(check_ids, iac_type)
+       One Cypher query per ID. Returns description, impact, remediation
+       instructions, good example, and Rego policy source for the target
+       IaC framework (cloudformation or terraform).
 
-  3. _assemble_security_context(checks)
+  3. _assemble_security_context(checks, iac_type)
        Sorts by severity (CRITICAL first), applies a character budget, and
        returns the formatted context block for the remediator prompt.
+
+Framework filtering
+-------------------
+  _FRAMEWORK_FILTERS maps iac_type → list of framework strings stored in the
+  Remediation.framework / GoodExample.framework node properties:
+    'cloudformation' → ['cfn', 'cloudformation']
+    'terraform'      → ['terraform', 'tf']
+
+  The Cypher parameter $frameworks is passed to the query so a single query
+  template handles both IaC languages without duplication.
 
 Dependency direction (strictly unidirectional, no cycles):
   remediator_agent  →  security_hybrid_rag  (no agent imports)
@@ -50,8 +61,16 @@ _SEVERITY_RANK: dict[str, int] = {
 
 # Approximate character budget for the full security context block.
 # ~3 000 tokens at 4 chars/token; leaves headroom in a 16k context window
-# for the CFN schema block and the prompt frame.
+# for the IaC schema block and the prompt frame.
 _SECURITY_CHAR_BUDGET: int = int(os.getenv("SECURITY_CHAR_BUDGET", "12000"))
+
+# Maps iac_type → the framework tag(s) stored on Remediation / GoodExample
+# nodes.  Both short ('tf', 'cfn') and long forms are included so that
+# historical data loaded with either naming convention still matches.
+_FRAMEWORK_FILTERS: dict[str, list[str]] = {
+    "cloudformation": ["cfn", "cloudformation"],
+    "terraform":      ["terraform", "tf"],
+}
 
 # Compiled once at module level — used by is_known_avd_id and extract_trivy_check_ids.
 _AVD_ID_RE  = re.compile(r"\b(?:AVD-)?AWS-\d{4}\b", re.IGNORECASE)
@@ -115,39 +134,57 @@ def _neo4j_driver():
 
 
 # ---------------------------------------------------------------------------
-# Graph lookup — check_ids → full security subgraph
+# Graph lookup — check_ids + iac_type → full security subgraph
 # ---------------------------------------------------------------------------
 
+# Parameterised Cypher: $frameworks is a list of framework tags to match
+# against Remediation.framework and GoodExample.framework.
+# For cloudformation: ['cfn', 'cloudformation']
+# For terraform:      ['terraform', 'tf']
 _SECURITY_CYPHER = """
 MATCH (s:SecurityCheck {check_id: $check_id})
 
 OPTIONAL MATCH (s)-[:HAS_IMPACT]->(imp:Impact)
 OPTIONAL MATCH (s)-[:HAS_REMEDIATION]->(rem:Remediation)
-    WHERE rem.framework IN ['cfn', 'cloudformation']
+    WHERE rem.framework IN $frameworks
 OPTIONAL MATCH (s)-[:HAS_GOOD_EXAMPLE]->(ex:GoodExample)
-    WHERE ex.framework  IN ['cfn', 'cloudformation']
+    WHERE ex.framework  IN $frameworks
 OPTIONAL MATCH (s)-[:ENFORCED_BY]->(rp:RegoPolicy)
 
-RETURN s.check_id   AS check_id,
-       s.check_name AS check_name,
-       s.severity   AS severity,
+RETURN s.check_id    AS check_id,
+       s.check_name  AS check_name,
+       s.severity    AS severity,
        s.description AS description,
-       imp.text     AS impact,
-       collect(DISTINCT rem.instruction) AS cfn_remediations,
-       collect(DISTINCT ex.code)         AS cfn_examples,
+       imp.text      AS impact,
+       collect(DISTINCT rem.instruction) AS iac_remediations,
+       collect(DISTINCT ex.code)         AS iac_examples,
        rp.code                           AS rego_code
 """
 
 
-def _query_security_check(driver, check_id: str) -> dict[str, Any] | None:
+def _query_security_check(
+    driver,
+    check_id: str,
+    frameworks: list[str],
+) -> dict[str, Any] | None:
     """Fetch one SecurityCheck subgraph row from Neo4j.
 
     Tries all ID variants (AVD-AWS-XXXX and AWS-XXXX) so callers never need
     to normalise the ID form before calling.
+
+    Args:
+        driver:     Active Neo4j driver instance.
+        check_id:   The check identifier to look up.
+        frameworks: List of framework tag strings to filter Remediation and
+                    GoodExample nodes (e.g. ['terraform', 'tf']).
     """
     with driver.session() as session:
         for variant in _id_variants(check_id):
-            row = session.run(_SECURITY_CYPHER, check_id=variant).single()
+            row = session.run(
+                _SECURITY_CYPHER,
+                check_id=variant,
+                frameworks=frameworks,
+            ).single()
             if row:
                 return {
                     "check_id":         row["check_id"],
@@ -155,19 +192,33 @@ def _query_security_check(driver, check_id: str) -> dict[str, Any] | None:
                     "severity":         row["severity"],
                     "description":      row["description"],
                     "impact":           row["impact"],
-                    "cfn_remediations": [r for r in (row["cfn_remediations"] or []) if r],
-                    "cfn_examples":     [e for e in (row["cfn_examples"] or []) if e],
+                    "iac_remediations": [r for r in (row["iac_remediations"] or []) if r],
+                    "iac_examples":     [e for e in (row["iac_examples"] or []) if e],
                     "rego_code":        row["rego_code"],
                 }
     return None
 
 
-def _security_graph_lookup(check_ids: list[str]) -> list[dict[str, Any]]:
-    """Fetch full subgraph rows for each check_id from Neo4j."""
+def _security_graph_lookup(
+    check_ids: list[str],
+    iac_type: str = "cloudformation",
+) -> list[dict[str, Any]]:
+    """Fetch full subgraph rows for each check_id from Neo4j.
+
+    Args:
+        check_ids: Extracted AVD/Trivy check IDs.
+        iac_type:  'cloudformation' or 'terraform'. Controls which
+                   Remediation and GoodExample nodes are returned.
+    """
     results: list[dict] = []
     if not check_ids:
         return results
-    print(f"[SecurityRAG] Graph lookup: querying Neo4j for {len(check_ids)} check(s)...")
+
+    frameworks = _FRAMEWORK_FILTERS.get(iac_type, _FRAMEWORK_FILTERS["cloudformation"])
+    print(
+        f"[SecurityRAG] Graph lookup: querying Neo4j for {len(check_ids)} check(s) "
+        f"(iac_type={iac_type}, frameworks={frameworks})..."
+    )
     try:
         with _neo4j_driver() as driver:
             seen: set[str] = set()
@@ -176,7 +227,7 @@ def _security_graph_lookup(check_ids: list[str]) -> list[dict[str, Any]]:
                 if norm in seen:
                     continue
                 seen.add(norm)
-                row = _query_security_check(driver, norm)
+                row = _query_security_check(driver, norm, frameworks)
                 if row:
                     results.append(row)
     except Exception as exc:
@@ -189,20 +240,25 @@ def _security_graph_lookup(check_ids: list[str]) -> list[dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Format — build LLM-ready context block (no URLs)
+# Format — build LLM-ready context block
 # ---------------------------------------------------------------------------
 
-def _format_one_check(chk: dict[str, Any]) -> str:
+def _format_one_check(chk: dict[str, Any], iac_type: str = "cloudformation") -> str:
     """Format a single SecurityCheck graph row into a prompt-ready block.
 
     Design rules:
-      - No URLs of any kind (avd_url, rego_source_url, links) — this context
-        goes directly to the LLM and URLs add noise without semantic value.
+      - No URLs of any kind — URLs add noise without semantic value in a prompt.
       - Fields: check_id, check_name, severity, description, impact,
-        CFN remediation instructions, CFN good example, Rego source code.
+        remediation instructions (framework-matched), good example
+        (framework-matched), Rego source code.
       - Rego code is included because it contains the exact condition the
-        policy enforces, which guides the LLM to produce a compliant fix.
+        policy enforces, guiding the LLM to produce a compliant fix.
+      - The remediation label includes the IaC language name so the LLM
+        prompt is unambiguous about which language the instruction targets.
     """
+    fw_label = "Terraform" if iac_type == "terraform" else "CloudFormation"
+    code_fence = "hcl" if iac_type == "terraform" else "yaml"
+
     lines: list[str] = []
     severity = (chk.get("severity") or "UNKNOWN").upper()
     name     = chk.get("check_name") or chk.get("check_id", "")
@@ -216,15 +272,15 @@ def _format_one_check(chk: dict[str, Any]) -> str:
     if impact:
         lines.append(f"Impact: {impact}")
 
-    for rem in chk.get("cfn_remediations") or []:
+    for rem in chk.get("iac_remediations") or []:
         rem = rem.strip()
         if rem:
-            lines.append(f"Remediation (CloudFormation): {rem}")
+            lines.append(f"Remediation ({fw_label}): {rem}")
 
-    for code in chk.get("cfn_examples") or []:
+    for code in chk.get("iac_examples") or []:
         code = code.strip()
         if code:
-            lines.append(f"CloudFormation Good Example:\n```yaml\n{code}\n```")
+            lines.append(f"{fw_label} Good Example:\n```{code_fence}\n{code}\n```")
             break  # one example is enough to guide the LLM
 
     rego = (chk.get("rego_code") or "").strip()
@@ -236,6 +292,7 @@ def _format_one_check(chk: dict[str, Any]) -> str:
 
 def _assemble_security_context(
     checks: list[dict[str, Any]],
+    iac_type: str = "cloudformation",
     char_budget: int = _SECURITY_CHAR_BUDGET,
 ) -> str:
     """Sort by severity, apply char budget, return formatted context block.
@@ -257,7 +314,7 @@ def _assemble_security_context(
     skipped_unknown = 0
 
     for chk in sorted_checks:
-        block = _format_one_check(chk)
+        block = _format_one_check(chk, iac_type)
         severity = (chk.get("severity") or "UNKNOWN").upper()
         if total_chars + len(block) > char_budget:
             if severity == "UNKNOWN":
@@ -286,7 +343,10 @@ def _assemble_security_context(
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def execute_security_retrieval(raw_errors: list[str]) -> str:
+def execute_security_retrieval(
+    raw_errors: list[str],
+    iac_type: str = "cloudformation",
+) -> str:
     """Execute deterministic Security G-Retrieval: ID extraction → Neo4j → formatted context.
 
     All security context is sourced directly from the Neo4j SecurityCheck graph.
@@ -296,6 +356,11 @@ def execute_security_retrieval(raw_errors: list[str]) -> str:
     Args:
         raw_errors: Raw violation strings from trivy / checkov validators.
                     AVD-AWS-XXXX and AWS-XXXX IDs are extracted by regex.
+        iac_type:   'cloudformation' (default) or 'terraform'. Controls which
+                    Remediation and GoodExample nodes are returned from Neo4j.
+                    Remediation nodes with framework='cloudformation'/'cfn' are
+                    returned for the CFN path; nodes with framework='terraform'/'tf'
+                    are returned for the Terraform path.
 
     Returns:
         A formatted context string suitable for injection into the remediator
@@ -316,7 +381,7 @@ def execute_security_retrieval(raw_errors: list[str]) -> str:
         f"{len(raw_errors)} raw error string(s): {check_ids}"
     )
 
-    checks = _security_graph_lookup(check_ids)
+    checks = _security_graph_lookup(check_ids, iac_type)
     if not checks:
         print(
             f"[SecurityRAG] 0/{len(check_ids)} IDs resolved from Neo4j. "
@@ -324,6 +389,6 @@ def execute_security_retrieval(raw_errors: list[str]) -> str:
         )
         return ""
 
-    context = _assemble_security_context(checks)
+    context = _assemble_security_context(checks, iac_type)
     print(f"[SecurityRAG] Context assembled: {len(context)} char(s).")
     return context

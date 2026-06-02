@@ -65,27 +65,24 @@ Advantages over vector-only:
      traversal assembles the full structured context. Neither step pollutes
      the other.
   2. Selective field inclusion: the Cypher query in security_hybrid_rag.py
-     explicitly pulls description, impact, cfn remediation, cfn example, and
-     rego code — and strips everything else (avd_url, tf example, links).
-     A flat vector store would require manual post-processing.
+     explicitly pulls description, impact, remediation, and example for the
+     target framework, stripping everything else (avd_url, links).
   3. Cross-graph traversal: (SecurityCheck)-[:APPLIES_TO_RESOURCE]->(Resource)
      is unrepresentable in a vector store without a separate query + join.
   4. Research auditability: the traversal path is a deterministic Cypher
-     statement, not a probabilistic similarity score. This is important for
-     reproducibility in a research context — you can log the exact subgraph
-     returned for each finding.
+     statement, not a probabilistic similarity score.
   5. Idempotent updates: MERGE semantics mean re-running after a CSV update
      only changes the modified nodes, not the whole graph.
 
 When vector-only WOULD be sufficient:
-  - If the remediation context never needs cross-graph linking to CFN schema.
+  - If the remediation context never needs cross-graph linking to IaC schema.
   - If all checks have short, self-contained remediation text (< 400 tokens).
   - If research reproducibility is not a concern.
 
 Conclusion: for IaC generation with security remediation, where the
 remediator needs (a) *why* a resource is non-compliant, (b) *how* to fix it
-in CloudFormation, (c) *what* the CFN schema allows, and (d) *what* the Rego
-policy enforces — the graph structure is load-bearing, not optional.
+in the target IaC language, (c) *what* the schema allows, and (d) *what* the
+Rego policy enforces — the graph structure is load-bearing, not optional.
 
 The CSV (trivy_enriched.csv) is still read by 01_load_trivy_csv.py to
 populate security_checks.json, but once this Neo4j import runs, the
@@ -100,15 +97,17 @@ Node schema
   AwsService     {name}  (e.g. 'ec2', 's3')
   Impact         {id, text}
   Remediation    {id, framework, instruction}
+                   framework is one of: 'cloudformation', 'terraform'
   GoodExample    {id, framework, code}
+                   framework is one of: 'cloudformation', 'terraform'
   RegoPolicy     {id, code, source_file_url}
 
 Edges
 -----
   (SecurityCheck)-[:AFFECTS_SERVICE]     ->(AwsService)
   (SecurityCheck)-[:HAS_IMPACT]          ->(Impact)
-  (SecurityCheck)-[:HAS_REMEDIATION]     ->(Remediation)
-  (SecurityCheck)-[:HAS_GOOD_EXAMPLE]    ->(GoodExample)
+  (SecurityCheck)-[:HAS_REMEDIATION]     ->(Remediation)   # both frameworks
+  (SecurityCheck)-[:HAS_GOOD_EXAMPLE]    ->(GoodExample)   # both frameworks
   (SecurityCheck)-[:ENFORCED_BY]         ->(RegoPolicy)
   (SecurityCheck)-[:APPLIES_TO_RESOURCE] ->(Resource)  # cross-graph to CFN nodes
 
@@ -168,8 +167,6 @@ TEXT_MAX_CHARS = 2000
 # ---------------------------------------------------------------------------
 # Plain indexes created by the old script that conflict with constraints.
 # We drop them first so CREATE CONSTRAINT can create the backing index itself.
-# This list must match exactly what the old 04_import_security_to_neo4j.py
-# created (see: CREATE INDEX security_check_id, aws_service_name, etc.)
 # ---------------------------------------------------------------------------
 _LEGACY_INDEXES = [
     "security_check_id",
@@ -186,19 +183,12 @@ _LEGACY_INDEXES = [
 def create_schema(session) -> None:
     print("Creating indexes and constraints...")
 
-    # Drop any plain indexes left by the previous script version that would
-    # block CREATE CONSTRAINT (Neo4j won't promote a plain index to a unique
-    # constraint — it requires the index to not exist at all first).
     for index_name in _LEGACY_INDEXES:
         try:
             session.run(f"DROP INDEX {index_name} IF EXISTS")
         except Exception as exc:  # noqa: BLE001
-            # Non-fatal: if the index doesn't exist the IF EXISTS clause
-            # already handles it; any other error is logged and skipped.
             print(f"  WARNING: could not drop legacy index '{index_name}': {exc}")
 
-    # Uniqueness constraints create an implicit backing index.
-    # MERGE on the constrained property is then safe and efficient.
     constraints = [
         ("SecurityCheck", "check_id"),
         ("AwsService",    "name"),
@@ -213,21 +203,30 @@ def create_schema(session) -> None:
             f"FOR (n:{label}) REQUIRE n.{prop} IS UNIQUE"
         )
 
-    # Extra composite index on (severity, service) to support Cypher filters
-    # like: WHERE sc.severity = 'CRITICAL' AND sc.service = 's3'
     session.run(
         "CREATE INDEX security_check_severity_service IF NOT EXISTS "
         "FOR (s:SecurityCheck) ON (s.severity, s.service)"
+    )
+    # Index on Remediation.framework and GoodExample.framework so that
+    # framework-filtered queries (WHERE rem.framework IN $frameworks) can use
+    # an index scan rather than a full label scan.
+    session.run(
+        "CREATE INDEX remediation_framework IF NOT EXISTS "
+        "FOR (r:Remediation) ON (r.framework)"
+    )
+    session.run(
+        "CREATE INDEX good_example_framework IF NOT EXISTS "
+        "FOR (g:GoodExample) ON (g.framework)"
     )
     print("  Schema ready.")
 
 
 # ---------------------------------------------------------------------------
-# Per-check batched import (all nodes + edges for one check in one tx)
+# Per-check batched import
 # ---------------------------------------------------------------------------
 
 _IMPORT_CHECK_CYPHER = """
-// ── 1. SecurityCheck node ────────────────────────────────────────────────
+// ── 1. SecurityCheck node ────────────────────────────────────────────
 MERGE (sc:SecurityCheck {check_id: $check_id})
 SET sc.check_name      = $check_name,
     sc.severity        = $severity,
@@ -237,14 +236,14 @@ SET sc.check_name      = $check_name,
     sc.framework       = $framework,
     sc.source_file_url = $source_file_url
 
-// ── 2. AwsService ────────────────────────────────────────────────────────
+// ── 2. AwsService ─────────────────────────────────────────────────
 WITH sc
 FOREACH (svc IN CASE WHEN $service <> '' THEN [$service] ELSE [] END |
     MERGE (a:AwsService {name: svc})
     MERGE (sc)-[:AFFECTS_SERVICE]->(a)
 )
 
-// ── 3. Impact ─────────────────────────────────────────────────────────────
+// ── 3. Impact ─────────────────────────────────────────────────────
 WITH sc
 FOREACH (txt IN CASE WHEN $impact <> '' THEN [$impact] ELSE [] END |
     MERGE (imp:Impact {id: $impact_id})
@@ -252,7 +251,7 @@ FOREACH (txt IN CASE WHEN $impact <> '' THEN [$impact] ELSE [] END |
     MERGE (sc)-[:HAS_IMPACT]->(imp)
 )
 
-// ── 4. GoodExample (CFN only — TF example excluded from runtime context) ─
+// ── 4. GoodExample (CloudFormation) ─────────────────────────────────
 WITH sc
 FOREACH (code IN CASE WHEN $cfn_example <> '' THEN [$cfn_example] ELSE [] END |
     MERGE (ge:GoodExample {id: $cfn_example_id})
@@ -261,7 +260,16 @@ FOREACH (code IN CASE WHEN $cfn_example <> '' THEN [$cfn_example] ELSE [] END |
     MERGE (sc)-[:HAS_GOOD_EXAMPLE]->(ge)
 )
 
-// ── 5. RegoPolicy ─────────────────────────────────────────────────────────
+// ── 5. GoodExample (Terraform) ──────────────────────────────────────
+WITH sc
+FOREACH (code IN CASE WHEN $tf_example <> '' THEN [$tf_example] ELSE [] END |
+    MERGE (ge:GoodExample {id: $tf_example_id})
+    SET ge.framework = 'terraform',
+        ge.code      = code
+    MERGE (sc)-[:HAS_GOOD_EXAMPLE]->(ge)
+)
+
+// ── 6. RegoPolicy ────────────────────────────────────────────────────
 WITH sc
 FOREACH (code IN CASE WHEN $rego_code <> '' THEN [$rego_code] ELSE [] END |
     MERGE (rp:RegoPolicy {id: $rego_id})
@@ -273,8 +281,6 @@ FOREACH (code IN CASE WHEN $rego_code <> '' THEN [$rego_code] ELSE [] END |
 RETURN sc.check_id AS check_id
 """
 
-# Remediation instructions are multi-valued so they get a separate
-# per-instruction write to keep the main Cypher clean.
 _IMPORT_REMEDIATION_CYPHER = """
 MATCH (sc:SecurityCheck {check_id: $check_id})
 MERGE (r:Remediation {id: $rem_id})
@@ -283,7 +289,6 @@ SET r.framework   = $framework,
 MERGE (sc)-[:HAS_REMEDIATION]->(r)
 """
 
-# Cross-graph edge: SecurityCheck → CFN Resource nodes
 _CROSS_GRAPH_CYPHER = """
 MATCH (sc:SecurityCheck {check_id: $check_id})
 MATCH (res:Resource)
@@ -297,14 +302,15 @@ def _import_one_check(session, check_id: str, check: dict) -> bool:
     service    = check.get("service", "").strip().lower()
     cfn_prefix = check.get("cfn_resource_prefix", "").strip()
 
-    impact_text  = (check.get("impact",   "") or "").strip()[:TEXT_MAX_CHARS]
-    cfn_example  = (check.get("cfn_good_example", "") or "").strip()[:CODE_MAX_CHARS]
-    rego_code    = (check.get("source_code", "") or "").strip()[:CODE_MAX_CHARS]
-    source_url   = (check.get("source_file_url", "") or "").strip()
-    description  = (check.get("description", "") or "").strip()[:TEXT_MAX_CHARS]
+    impact_text  = (check.get("impact",            "") or "").strip()[:TEXT_MAX_CHARS]
+    cfn_example  = (check.get("cfn_good_example",  "") or "").strip()[:CODE_MAX_CHARS]
+    tf_example   = (check.get("tf_good_example",   "") or "").strip()[:CODE_MAX_CHARS]
+    rego_code    = (check.get("source_code",        "") or "").strip()[:CODE_MAX_CHARS]
+    source_url   = (check.get("source_file_url",    "") or "").strip()
+    description  = (check.get("description",        "") or "").strip()[:TEXT_MAX_CHARS]
 
     try:
-        # ── Main node + Impact + GoodExample + RegoPolicy ──────────────
+        # ── Main node + Impact + GoodExamples (both frameworks) + RegoPolicy ──
         session.run(
             _IMPORT_CHECK_CYPHER,
             check_id       = check_id,
@@ -319,11 +325,13 @@ def _import_one_check(session, check_id: str, check: dict) -> bool:
             impact_id      = f"{check_id}_impact",
             cfn_example    = cfn_example,
             cfn_example_id = f"{check_id}_ex_cfn",
+            tf_example     = tf_example,
+            tf_example_id  = f"{check_id}_ex_tf",
             rego_code      = rego_code,
             rego_id        = f"{check_id}_rego",
         )
 
-        # ── Remediation instructions (CFN only; TF excluded from runtime) ──
+        # ── CloudFormation remediation instructions ─────────────────────────
         cfn_remediations = check.get("remediation_cfn", [])
         if isinstance(cfn_remediations, str):
             cfn_remediations = [cfn_remediations] if cfn_remediations.strip() else []
@@ -339,7 +347,23 @@ def _import_one_check(session, check_id: str, check: dict) -> bool:
                 instruction = instruction,
             )
 
-        # ── Cross-graph edge to CFN Resource nodes ─────────────────────
+        # ── Terraform remediation instructions ─────────────────────────────
+        tf_remediations = check.get("remediation_tf", [])
+        if isinstance(tf_remediations, str):
+            tf_remediations = [tf_remediations] if tf_remediations.strip() else []
+        for j, instruction in enumerate(tf_remediations):
+            instruction = instruction.strip()[:TEXT_MAX_CHARS]
+            if not instruction:
+                continue
+            session.run(
+                _IMPORT_REMEDIATION_CYPHER,
+                check_id    = check_id,
+                rem_id      = f"{check_id}_rem_tf_{j}",
+                framework   = "terraform",
+                instruction = instruction,
+            )
+
+        # ── Cross-graph edge to CFN Resource nodes ───────────────────────
         if cfn_prefix:
             result = session.run(
                 _CROSS_GRAPH_CYPHER,
@@ -367,6 +391,14 @@ def verify_import(session, expected: int) -> None:
         result = session.run(f"MATCH (n:{label}) RETURN count(n) AS c")
         counts[label] = result.single()["c"]
 
+    # Per-framework breakdown for Remediation and GoodExample
+    for label, fw in (("Remediation", "cloudformation"), ("Remediation", "terraform"),
+                      ("GoodExample", "cloudformation"), ("GoodExample", "terraform")):
+        result = session.run(
+            f"MATCH (n:{label} {{framework: $fw}}) RETURN count(n) AS c", fw=fw
+        )
+        counts[f"{label}[{fw}]"] = result.single()["c"]
+
     edge_counts = {}
     for rel in ("AFFECTS_SERVICE", "HAS_IMPACT", "HAS_REMEDIATION",
                 "HAS_GOOD_EXAMPLE", "ENFORCED_BY", "APPLIES_TO_RESOURCE"):
@@ -376,22 +408,21 @@ def verify_import(session, expected: int) -> None:
     print("  Node counts:")
     for label, count in counts.items():
         status = "✓" if (label != "SecurityCheck" or count == expected) else "✗"
-        print(f"    {status} {label:<20} {count:>6}")
+        print(f"    {status} {label:<35} {count:>6}")
 
     print("  Edge counts:")
     for rel, count in edge_counts.items():
         indicator = "✓" if count > 0 else "⚠ (0 — may be expected if nodes are missing)"
         print(f"    {indicator} {rel:<30} {count:>6}")
 
-    # Cross-graph coverage report
     cross = edge_counts.get("APPLIES_TO_RESOURCE", 0)
     sc    = counts.get("SecurityCheck", 0)
     if sc > 0:
         pct = 100.0 * cross / sc
-        print(f"\n  Cross-graph coverage: {cross}/{sc} checks linked to CFN resources ({pct:.1f}%)")
+        print(f"\n  Cross-graph coverage: {cross}/{sc} checks linked to IaC resources ({pct:.1f}%)")
         if pct < 50:
             print(
-                "  ⚠  Less than 50% of checks are linked to CFN resources.\n"
+                "  ⚠  Less than 50% of checks are linked to IaC resources.\n"
                 "     Run 01_load_trivy_csv.py and check the service→CFN prefix mapping.\n"
                 "     Also ensure 04_import_cfn_to_neo4j.py has been run first."
             )
@@ -440,7 +471,7 @@ def main() -> None:
 
     driver.close()
 
-    print(f"\n{'✓' if failed == 0 else '✗'} Import complete: {succeeded} ok, {failed} errors.")
+    print(f"\n{'\u2713' if failed == 0 else '\u2717'} Import complete: {succeeded} ok, {failed} errors.")
     if failed:
         print(f"  {failed} checks failed — review ERROR lines above.", file=sys.stderr)
         sys.exit(1)
@@ -448,10 +479,10 @@ def main() -> None:
     print("\nNode labels written:")
     print("  SecurityCheck, AwsService, Impact, Remediation, GoodExample, RegoPolicy")
     print("\nEdge types written:")
-    print("  AFFECTS_SERVICE, HAS_IMPACT, HAS_REMEDIATION (CFN only),")
-    print("  HAS_GOOD_EXAMPLE (CFN only), ENFORCED_BY, APPLIES_TO_RESOURCE")
-    print("\nNote: TF remediations and TF examples are intentionally excluded")
-    print("  from the graph — this pipeline targets CloudFormation generation only.")
+    print("  AFFECTS_SERVICE, HAS_IMPACT,")
+    print("  HAS_REMEDIATION (framework: cloudformation + terraform),")
+    print("  HAS_GOOD_EXAMPLE (framework: cloudformation + terraform),")
+    print("  ENFORCED_BY, APPLIES_TO_RESOURCE")
     print("\nNext steps:")
     print("  3. Run scripts/graphrag/security/03_build_security_chromadb.py")
     print("  4. Run scripts/graphrag/security/05_execute_security_g_retrieval.py")
