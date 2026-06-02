@@ -17,34 +17,34 @@ tf_registry_docs.json → also keyed by full resource name: 'aws_s3_bucket'
 The merge is therefore a direct identity lookup: registry_docs[resource_name].
 No slug conversion is needed here.
 
+Schema dictionaries processed
+------------------------------
+  resource_schemas      — managed resources  (resource "aws_s3_bucket" ...)
+  data_source_schemas   — data lookup blocks (data "aws_ami" ...)
+
+Both are merged into a single tf_knowledge_graph.json.  Each node carries an
+`is_data_source` boolean so downstream consumers (Neo4j importer, ChromaDB
+builder) can distinguish them if needed.  The Remediator benefits from having
+both: managed resources to generate infrastructure, and data sources to look
+up static provider metadata (AMIs, availability zones, Beanstalk solution
+stacks, etc.) using correct syntax.
+
 Output shape (tf_knowledge_graph.json)
 --------------------------------------
 {
   "aws_s3_bucket": {
-    "name":        "aws_s3_bucket",
-    "description": "...",
-    "subcategory": "S3 (Simple Storage)",
-    "attributes": {
-      "bucket": {
-        "type":        "string",
-        "optional":    true,
-        "computed":    true,
-        "sensitive":   false,
-        "description": "..."
-      },
-      ...
-    },
-    "block_types": {
-      "server_side_encryption_configuration": {
-        "nesting_mode": "list",
-        "min_items":    0,
-        "max_items":    1,
-        "attributes":   { ... },
-        "block_types":  { ... }   # recursively nested
-      },
-      ...
-    },
-    "examples": ["..."]
+    "name":           "aws_s3_bucket",
+    "is_data_source": false,
+    "description":    "...",
+    "subcategory":    "S3 (Simple Storage)",
+    "attributes":     { ... },
+    "block_types":    { ... },
+    "examples":       ["..."]
+  },
+  "aws_ami": {
+    "name":           "aws_ami",
+    "is_data_source": true,
+    ...
   },
   ...
 }
@@ -119,33 +119,28 @@ def _parse_block_types(block_types: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Main merge
+# Core processing helper — handles both managed resources and data sources
 # ---------------------------------------------------------------------------
 
-def build_knowledge_graph() -> None:
-    print("[03] Loading tf_schema_raw.json ...")
-    raw_schema = json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
+def _process_schema_dict(
+    schema_dict: dict,
+    registry_docs: dict,
+    kg: dict,
+    is_data_source: bool,
+) -> tuple[int, int, list[str]]:
+    """Merge one schema dictionary (resource_schemas or data_source_schemas)
+    with Registry docs into the shared knowledge graph dict.
 
-    provider_block = (
-        raw_schema
-        .get("provider_schemas", {})
-        .get(_PROVIDER_KEY, {})
-    )
-    resource_schemas: dict = provider_block.get("resource_schemas", {})
-    print(f"[03] Found {len(resource_schemas):,} resource types in schema.")
-
-    print("[03] Loading tf_registry_docs.json ...")
-    registry_docs: dict = json.loads(DOCS_FILE.read_text(encoding="utf-8"))
-    print(f"[03] Found {len(registry_docs):,} registry doc entries.")
-
-    kg: dict[str, dict] = {}
+    Returns:
+        (enriched_count, examples_count, missing_docs)
+    """
     enriched_count = 0
     examples_count = 0
-    missing_docs   = []
+    missing_docs:  list[str] = []
 
-    for resource_name, resource_schema in resource_schemas.items():
-        # Both files are keyed by the full TF resource name ('aws_s3_bucket').
-        # Direct lookup — no slug conversion needed.
+    for resource_name, resource_schema in schema_dict.items():
+        # Both files are keyed by the full TF name ('aws_s3_bucket', 'aws_ami').
+        # Direct lookup — no slug conversion needed here.
         doc = registry_docs.get(resource_name, {})
 
         if doc:
@@ -175,29 +170,79 @@ def build_knowledge_graph() -> None:
         examples_count += len(examples)
 
         kg[resource_name] = {
-            "name":        resource_name,
-            "description": doc.get("description", ""),
-            "subcategory": doc.get("subcategory", ""),
-            "attributes":  attributes,
-            "block_types": block_types,
-            "examples":    examples,
+            "name":           resource_name,
+            "is_data_source": is_data_source,
+            "description":    doc.get("description", ""),
+            "subcategory":    doc.get("subcategory", ""),
+            "attributes":     attributes,
+            "block_types":    block_types,
+            "examples":       examples,
         }
+
+    return enriched_count, examples_count, missing_docs
+
+
+# ---------------------------------------------------------------------------
+# Main merge
+# ---------------------------------------------------------------------------
+
+def build_knowledge_graph() -> None:
+    print("[03] Loading tf_schema_raw.json ...")
+    raw_schema = json.loads(SCHEMA_FILE.read_text(encoding="utf-8"))
+
+    provider_block = (
+        raw_schema
+        .get("provider_schemas", {})
+        .get(_PROVIDER_KEY, {})
+    )
+
+    # Extract BOTH schema dictionaries from the provider block.
+    # resource_schemas    → managed resources  (resource "aws_s3_bucket" ...)
+    # data_source_schemas → data lookup blocks (data "aws_ami" ...)
+    resource_schemas:     dict = provider_block.get("resource_schemas", {})
+    data_source_schemas:  dict = provider_block.get("data_source_schemas", {})
+    print(f"[03] Found {len(resource_schemas):,} managed resource types in schema.")
+    print(f"[03] Found {len(data_source_schemas):,} data source types in schema.")
+
+    print("[03] Loading tf_registry_docs.json ...")
+    registry_docs: dict = json.loads(DOCS_FILE.read_text(encoding="utf-8"))
+    print(f"[03] Found {len(registry_docs):,} registry doc entries.")
+
+    kg: dict[str, dict] = {}
+
+    # --- Managed resources ---
+    r_enriched, r_examples, r_missing = _process_schema_dict(
+        resource_schemas, registry_docs, kg, is_data_source=False
+    )
+
+    # --- Data sources ---
+    d_enriched, d_examples, d_missing = _process_schema_dict(
+        data_source_schemas, registry_docs, kg, is_data_source=True
+    )
 
     OUTPUT_FILE.write_text(json.dumps(kg, indent=2), encoding="utf-8")
 
-    print(f"\n[03] Knowledge Graph built:")
-    print(f"     Total resources          : {len(kg):,}")
-    print(f"     With Registry docs       : {enriched_count:,}")
-    print(f"     Schema-only (no docs)    : {len(missing_docs):,}")
-    print(f"     Total HCL examples       : {examples_count:,}")
-    print(f"     Saved to                 : {OUTPUT_FILE}")
+    total_enriched = r_enriched + d_enriched
+    total_missing  = r_missing  + d_missing
+    total_examples = r_examples + d_examples
 
-    if missing_docs:
-        print(f"\n[03] Resources with no Registry doc ({len(missing_docs)}):")
-        for r in missing_docs[:20]:
+    print(f"\n[03] Knowledge Graph built:")
+    print(f"     Managed resources          : {len(resource_schemas):,}  "
+          f"({r_enriched:,} with docs, {len(r_missing):,} schema-only)")
+    print(f"     Data sources               : {len(data_source_schemas):,}  "
+          f"({d_enriched:,} with docs, {len(d_missing):,} schema-only)")
+    print(f"     Total KG nodes             : {len(kg):,}")
+    print(f"     Total with Registry docs   : {total_enriched:,}")
+    print(f"     Total schema-only (no docs): {len(total_missing):,}")
+    print(f"     Total HCL examples         : {total_examples:,}")
+    print(f"     Saved to                   : {OUTPUT_FILE}")
+
+    if total_missing:
+        print(f"\n[03] Nodes with no Registry doc ({len(total_missing)}):")
+        for r in total_missing[:20]:
             print(f"       - {r}")
-        if len(missing_docs) > 20:
-            print(f"       ... and {len(missing_docs) - 20} more.")
+        if len(total_missing) > 20:
+            print(f"       ... and {len(total_missing) - 20} more.")
 
 
 if __name__ == "__main__":

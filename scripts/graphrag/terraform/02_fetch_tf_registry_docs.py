@@ -1,6 +1,7 @@
 """02_fetch_tf_registry_docs.py
 
-Fetch resource documentation from the Terraform Registry REST API (v2).
+Fetch resource AND data-source documentation from the Terraform Registry
+REST API (v2).
 
 How the Registry v2 API actually works
 ---------------------------------------
@@ -9,13 +10,14 @@ offset-based pagination via `page[number]`.
 
     GET /v2/provider-docs
         ?filter[provider-version]=<numeric-id>
-        &filter[category]=resources
+        &filter[category]=resources          # or data-sources
         &filter[language]=hcl
         &page[size]=100
         &page[number]=<N>
 
 Slug format: slugs in this API have NO leading 'aws_'.
     e.g.  's3_bucket' → terraform resource 'aws_s3_bucket'
+          'ami'       → terraform data source 'aws_ami'
 
 The list response only has stub fields (slug, title, subcategory, path).
 Full markdown content requires a separate fetch per doc:
@@ -24,11 +26,16 @@ Full markdown content requires a separate fetch per doc:
 Code fence format: the Registry uses ```terraform (NOT ```hcl).
     Both are accepted by extract_hcl_examples for safety.
 
-Total docs for hashicorp/aws@6.47.0: 1,657 resources across 17 pages.
+Categories fetched
+------------------
+  resources    — managed resources  (resource "aws_s3_bucket" ...)
+  data-sources — data lookup blocks (data "aws_ami" ...)
 
 Output
 ------
-tf_registry_docs.json — dict keyed by terraform resource name ('aws_s3_bucket')
+tf_registry_docs.json — dict keyed by terraform name ('aws_s3_bucket',
+                         'aws_ami', etc.)  Each entry carries an
+                         is_data_source boolean for downstream tracing.
 """
 from __future__ import annotations
 
@@ -47,6 +54,10 @@ PROVIDER_NAMESPACE = "hashicorp"
 PROVIDER_NAME      = "aws"
 PROVIDER_VERSION   = "6.47.0"
 OUTPUT_FILE        = Path("tf_registry_docs.json")
+
+# Both categories must be ingested so the Remediator has schema docs for
+# every block type the engineer_prompt.py permits.
+CATEGORIES = ["resources", "data-sources"]
 
 _BASE      = "https://registry.terraform.io"
 _PAGE_SIZE = 100
@@ -79,24 +90,33 @@ def _resolve_version_id(client: httpx.Client) -> str:
 # Step 1 — collect all doc stubs via page[number] pagination
 # ---------------------------------------------------------------------------
 
-def _fetch_doc_stubs(client: httpx.Client, version_id: str) -> list[dict]:
-    """Page through all resource docs and return stub list.
+def _fetch_doc_stubs(
+    client: httpx.Client,
+    version_id: str,
+    category: str,
+) -> list[dict]:
+    """Page through all docs for *category* and return stub list.
 
     The v2 API uses page[number]=N (1-indexed), NOT cursor/links.next.
     Stop when a page returns fewer than page[size] items.
+
+    Args:
+        client:     shared httpx.Client
+        version_id: numeric provider-version ID from _resolve_version_id()
+        category:   'resources' or 'data-sources'
     """
     stubs: list[dict] = []
     page = 0
 
     while True:
         page += 1
-        print(f"[02] List page {page} … ", end="", flush=True)
+        print(f"[02] [{category}] List page {page} … ", end="", flush=True)
 
         r = client.get(
             f"{_BASE}/v2/provider-docs",
             params={
                 "filter[provider-version]": version_id,
-                "filter[category]":        "resources",
+                "filter[category]":        category,
                 "filter[language]":        "hcl",
                 "page[size]":              _PAGE_SIZE,
                 "page[number]":            page,
@@ -108,14 +128,15 @@ def _fetch_doc_stubs(client: httpx.Client, version_id: str) -> list[dict]:
         for item in items:
             attrs = item["attributes"]
             stubs.append({
-                "id":          item["id"],
-                "slug":        attrs.get("slug", ""),
-                "title":       attrs.get("title", ""),
-                "subcategory": attrs.get("subcategory", ""),
-                "path":        attrs.get("path", ""),
+                "id":             item["id"],
+                "slug":           attrs.get("slug", ""),
+                "title":          attrs.get("title", ""),
+                "subcategory":    attrs.get("subcategory", ""),
+                "path":           attrs.get("path", ""),
+                "is_data_source": category == "data-sources",
             })
 
-        print(f"{len(items)} stubs (total: {len(stubs)})")
+        print(f"{len(items)} stubs (total this category: {len(stubs)})")
 
         if len(items) < _PAGE_SIZE:
             break  # last page
@@ -168,6 +189,7 @@ def _slug_to_tf_name(slug: str) -> str:
 
     's3_bucket'  → 'aws_s3_bucket'
     'instance'   → 'aws_instance'
+    'ami'        → 'aws_ami'
     """
     return slug if slug.startswith("aws_") else f"aws_{slug}"
 
@@ -209,27 +231,42 @@ def extract_hcl_examples(markdown: str) -> list[str]:
 if __name__ == "__main__":
     with httpx.Client(follow_redirects=True, timeout=_TIMEOUT) as client:
         version_id = _resolve_version_id(client)
-        stubs      = _fetch_doc_stubs(client, version_id)
 
-    print(f"\n[02] {len(stubs)} stubs collected. Fetching full content …\n")
-    contents = _fetch_all_contents(stubs)  # {doc_id: markdown}
+        all_stubs: list[dict] = []
+        for category in CATEGORIES:
+            print(f"\n[02] === Fetching category: {category} ===")
+            category_stubs = _fetch_doc_stubs(client, version_id, category)
+            all_stubs.extend(category_stubs)
+            print(f"[02] {len(category_stubs)} stubs collected for '{category}'")
+
+    print(f"\n[02] {len(all_stubs)} total stubs collected. Fetching full content …\n")
+    contents = _fetch_all_contents(all_stubs)  # {doc_id: markdown}
 
     docs: dict[str, dict] = {}
-    for stub in stubs:
+    for stub in all_stubs:
         tf_name = _slug_to_tf_name(stub["slug"])
         content = contents.get(stub["id"], "")
         docs[tf_name] = {
-            "title":        stub["title"],
-            "subcategory":  stub["subcategory"],
-            "content":      content,
-            "hcl_examples": extract_hcl_examples(content),
+            "title":          stub["title"],
+            "subcategory":    stub["subcategory"],
+            "is_data_source": stub["is_data_source"],
+            "content":        content,
+            "hcl_examples":   extract_hcl_examples(content),
         }
 
     OUTPUT_FILE.write_text(json.dumps(docs, indent=2), encoding="utf-8")
-    print(f"\n[02] Saved {len(docs)} resource docs → {OUTPUT_FILE}")
+
+    resource_count     = sum(1 for d in docs.values() if not d["is_data_source"])
+    data_source_count  = sum(1 for d in docs.values() if d["is_data_source"])
+    print(f"\n[02] Saved {len(docs)} total docs → {OUTPUT_FILE}")
+    print(f"     Managed resources : {resource_count}")
+    print(f"     Data sources      : {data_source_count}")
 
     # Sanity checks
     s3 = docs.get("aws_s3_bucket", {})
-    print(f"[02] Sanity aws_s3_bucket: {len(s3.get('hcl_examples', []))} HCL examples, "
+    print(f"[02] Sanity aws_s3_bucket   : {len(s3.get('hcl_examples', []))} HCL examples, "
           f"{len(s3.get('content', ''))} content chars")
-    print(f"[02] Sample resource names: {list(docs.keys())[:5]}")
+    ebs = docs.get("aws_elastic_beanstalk_solution_stack", {})
+    print(f"[02] Sanity aws_elastic_beanstalk_solution_stack: "
+          f"is_data_source={ebs.get('is_data_source')}, "
+          f"{len(ebs.get('hcl_examples', []))} HCL examples")
