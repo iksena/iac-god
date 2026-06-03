@@ -90,6 +90,80 @@ class ResearchRecorder:
             f.write(json.dumps(record) + "\n")
         return record
 
+    def record_deployment_log(
+        self,
+        iteration: int,
+        iac_type: str,
+        target: str,
+        deployment_logs: list[str],
+        passed: bool,
+        duration_seconds: float,
+        failed_resources: list[dict] | None = None,
+    ) -> None:
+        """Persist the full raw deployment log for a single validator run.
+
+        Writes to deployment_log_<iteration:03d>.txt so every tflocal/terraform
+        apply stdout+stderr is available for offline analysis, independent of
+        what the LLM-facing format_deploy_errors() chooses to surface.
+
+        File format:
+          Header block  — run metadata (iteration, iac_type, target, result)
+          Failed block  — failed resource addresses + reasons (if any)
+          Raw log       — every line from deployment_logs, line-numbered
+
+        Args:
+            iteration:         Graph iteration number at time of deploy call.
+            iac_type:          "terraform" or "cloudformation".
+            target:            Deploy target string (e.g. "localstack", "aws").
+            deployment_logs:   Raw log lines from DeployValidationResult.
+            passed:            Whether the deployment succeeded.
+            duration_seconds:  Wall-clock seconds the deploy stage took.
+            failed_resources:  List of {"logical_name", "status_reason"} dicts.
+        """
+        log_path = self.output_dir / f"deployment_log_{iteration:03d}.txt"
+        timestamp = datetime.now(timezone.utc).isoformat()
+        status_label = "PASSED" if passed else "FAILED"
+
+        header_lines = [
+            f"{'=' * 72}",
+            f"Deployment Log",
+            f"Run ID    : {self.run_id}",
+            f"Iteration : {iteration}",
+            f"Timestamp : {timestamp}",
+            f"IAC Type  : {iac_type}",
+            f"Target    : {target.upper()}",
+            f"Result    : {status_label}",
+            f"Duration  : {duration_seconds:.2f}s",
+            f"{'=' * 72}",
+            "",
+        ]
+
+        failed_lines: list[str] = []
+        if failed_resources:
+            failed_lines.append("Failed Resources:")
+            for fr in failed_resources:
+                name = fr.get("logical_name") or "unknown"
+                reason = fr.get("status_reason") or "no reason provided"
+                failed_lines.append(f"  {name}: {reason}")
+            failed_lines.append("")
+
+        raw_log_lines = [
+            "Raw Deployment Log:",
+            f"  ({len(deployment_logs)} lines total)",
+            "",
+        ]
+        for i, line in enumerate(deployment_logs, start=1):
+            raw_log_lines.append(f"  {i:>4}: {line}")
+
+        content = (
+            "\n".join(header_lines)
+            + "\n".join(failed_lines)
+            + "\n".join(raw_log_lines)
+            + "\n"
+        )
+        log_path.write_text(content, encoding="utf-8")
+        print(f"[Recorder] Deployment log saved: {log_path.name} ({len(deployment_logs)} lines, {status_label})")
+
     def save_iteration_snapshot(self, state: GraphState):
         """Save full state snapshot at each iteration boundary."""
         iteration = state["current_iteration"]
