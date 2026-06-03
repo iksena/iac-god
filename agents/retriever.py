@@ -36,49 +36,73 @@ _DICT_LINE_RE  = re.compile(r"'LineNumber'\s*:\s*\d+")
 # CFN: cfn-lint error format: "[W3687] | line 109 | Resource: WebServerSecurityGroup | ..."
 _CFN_LINT_RESOURCE_RE = re.compile(r"Resource:\s*([\w-]+)", re.IGNORECASE)
 
-# Terraform: terraform-validate HCL error header:
+# Terraform Pattern 1 — raw terraform-validate HCL error header (multi-line stderr):
 #   on main.tf line 12, in resource "aws_vpc" "main":
 #   on main.tf line 5,  in data "aws_ami" "ubuntu":
 #
-# Pattern 1 — captures the block keyword (data|resource) in its own group so
-#   the extraction loop can assemble the namespaced type string without a
-#   second regex pass.
-#
-#   Before:  r'in\s+(?:data|resource)\s+"..."'  (block_type discarded)
-#   After:   r'in\s+(?P<block_type>data|resource)\s+"..."'  (block_type kept)
-#
-#   For a managed resource error the loop yields:   rtype = "aws_vpc"
-#   For a data source error the loop yields:        rtype = "data.aws_ami"
-#   Both are then checked against known_tf_types which is built with the
-#   same "data." prefix convention (see _extract_error_resources below).
+# This pattern fires when the raw stderr form is stored directly in
+# validation_results (uncommon — most paths store the formatted string).
 _TF_VALIDATE_RESOURCE_RE = re.compile(
     r'in\s+(?P<block_type>data|resource)\s+"(?P<type>[a-z][a-z0-9_]*)"\s+"(?P<name>[^"]+)"',
     re.IGNORECASE,
 )
 
-# Pattern 2 — bare address form.
-#
-#   Before:  (?:data\.)?  outside the capture group → "data." always stripped,
-#            group("type") always returns bare type ("aws_ami"), so the lookup
-#            against known_tf_types (which carries "data.aws_ami") never matched.
-#   After:   (?:data\.)?  moved inside (?P<type>...) → group("type") returns
-#            "data.aws_ami" when present, "aws_vpc" when absent.
-#
-#   Managed resource address:  aws_vpc.main           → type="aws_vpc"
-#   Data source address:       data.aws_ami.ubuntu    → type="data.aws_ami"
+# Terraform Pattern 2 — bare address form (raw stderr or tflint output).
+#   Managed resource address:  aws_vpc.main           -> type="aws_vpc"
+#   Data source address:       data.aws_ami.ubuntu    -> type="data.aws_ami"
 _TF_ADDRESS_RE = re.compile(
     r'\b(?P<type>(?:data\.)?(?:aws|google|azurerm|random|local|null|archive|tls)_[a-z][a-z0-9_]*)\.(?P<name>[a-z][a-z0-9_-]*)\b',
     re.IGNORECASE,
 )
 
-# Pattern 3 — tflint bracket notation.
-#
-#   Same fix as Pattern 2: (?:data\.)? moved inside the <type> capture group.
-#
-#   Managed resource bracket:  [aws_vpc.main]           → type="aws_vpc"
-#   Data source bracket:       [data.aws_ami.ubuntu]    → type="data.aws_ami"
+# Terraform Pattern 3 — tflint bracket notation.
+#   Managed resource bracket:  [aws_vpc.main]           -> type="aws_vpc"
+#   Data source bracket:       [data.aws_ami.ubuntu]    -> type="data.aws_ami"
 _TF_BRACKET_RE = re.compile(
     r'\[(?P<type>(?:data\.)?(?:aws|google|azurerm|random|local|null|archive|tls)_[a-z][a-z0-9_]*)\.(?P<name>[a-z][a-z0-9_-]*)\]',
+    re.IGNORECASE,
+)
+
+# Terraform Pattern 4 — formatted [ERROR] strings produced by format_tflint_errors().
+#
+# extract_errors() collects errors from validation_results[*].errors which
+# already hold the post-formatted string emitted by format_tflint_errors():
+#
+#   '[ERROR] | line 287 | Reference to undeclared resource | A data resource
+#    "aws_partition" "current" has not been declared in the root module.'
+#
+#   '[ERROR] | line 353 | Unsupported attribute | This object has no argument,
+#    nested block, or exported attribute named "region".'
+#
+#   '[ERROR] | line 12 | Invalid reference | A managed resource
+#    "aws_vpc" "main" has not been declared.'
+#
+# Patterns 1-3 match raw terraform-validate multi-line stderr; they will
+# NEVER match these formatted strings because the 'in resource ...' header
+# line is stripped during formatting and only the prose description remains.
+#
+# This pattern extracts the resource type from two description templates
+# terraform-validate uses in its natural-language messages:
+#
+#   Template A (undeclared / unknown resource):
+#     'A data resource "<type>" "<name>" has not been declared'
+#     'A managed resource "<type>" "<name>" ...'     (rare but valid)
+#
+#   Template B (attribute / block errors — no block_type keyword):
+#     'resource "<type>" "<name>" does not have attribute'
+#     'resource "<type>" "<name>" is ...'            (general)
+#
+# Group layout:
+#   block_type  — 'data' or 'resource' or 'managed' (normalised below)
+#   type        — bare resource type string (e.g. 'aws_partition')
+#   name        — resource instance name   (e.g. 'current')
+#
+# The extraction loop below maps:
+#   block_type == 'data'           -> rtype = 'data.<type>'
+#   block_type == 'resource'|'managed' -> rtype = '<type>'
+_TF_FORMATTED_ERROR_RE = re.compile(
+    r'(?:A\s+)?(?P<block_type>data|managed|resource)\s+resource\s+'
+    r'"(?P<type>[a-z][a-z0-9_]*)"\s+"(?P<name>[^"]+)"',
     re.IGNORECASE,
 )
 
@@ -113,25 +137,41 @@ def _extract_error_resources(
       (e.g. "WebServerSG" -> "AWS::EC2::SecurityGroup").
 
     Terraform (resource address -> namespaced provider type):
-      terraform-validate and tflint emit resource *addresses*, not logical IDs.
-      Managed resources and data sources are both handled with explicit
-      namespace prefixing that mirrors the knowledge graph key convention:
+      Four patterns cover the full range of error string formats:
 
-        Managed resources  →  bare type       (e.g. "aws_vpc")
-        Data sources       →  "data." prefix  (e.g. "data.aws_ami")
+      Pattern 1 (_TF_VALIDATE_RESOURCE_RE) — raw terraform-validate stderr:
+        'in resource "aws_vpc" "main"'         -> rtype = "aws_vpc"
+        'in data "aws_ami" "ubuntu"'           -> rtype = "data.aws_ami"
+        Fires only when raw multi-line stderr is stored verbatim in state
+        (uncommon — most validators pre-format before writing to state).
 
-      This matches the keys used in tf_knowledge_graph.json (written by
-      03_parse_and_merge_tf.py) and the values stored in known_tf_types
-      (built by the loop below from annotation.resources).
+      Pattern 2 (_TF_ADDRESS_RE) — bare Terraform address:
+        'aws_vpc.main'           -> type="aws_vpc"
+        'data.aws_ami.ubuntu'    -> type="data.aws_ami"
+        Common in tflint output and deploy failed_resources.
 
-      Pattern 1 captures block_type (data|resource) and assembles rtype:
-        in resource "aws_vpc" "main"                        → "aws_vpc"
-        in data "aws_elastic_beanstalk_solution_stack" "go" → "data.aws_elastic_beanstalk_solution_stack"
+      Pattern 3 (_TF_BRACKET_RE) — tflint bracket notation:
+        '[aws_vpc.main]'         -> type="aws_vpc"
+        '[data.aws_ami.ubuntu]'  -> type="data.aws_ami"
 
-      Patterns 2 & 3 now include (?:data\.)? *inside* the <type> group:
-        aws_vpc.main           → type="aws_vpc"
-        data.aws_ami.ubuntu    → type="data.aws_ami"
-        [data.aws_ami.ubuntu]  → type="data.aws_ami"
+      Pattern 4 (_TF_FORMATTED_ERROR_RE) — formatted [ERROR] strings:
+        extract_errors() collects from validation_results[*].errors which
+        store the post-formatted string produced by format_tflint_errors():
+
+          '[ERROR] | line 287 | Reference to undeclared resource | A data
+           resource "aws_partition" "current" has not been declared in the
+           root module.'
+
+        Patterns 1-3 will NEVER match this form because the raw
+        'in data "aws_partition" "current"' header line is consumed during
+        formatting and only the prose description survives.  Pattern 4
+        extracts the type from the natural-language description:
+
+          'A data resource "aws_partition" "current" has not been declared'
+          -> block_type="data", type="aws_partition" -> rtype="data.aws_partition"
+
+          'resource "aws_vpc" "main" does not have attribute "region"'
+          -> block_type="resource", type="aws_vpc" -> rtype="aws_vpc"
 
     known_tf_types construction
     ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -143,7 +183,7 @@ def _extract_error_resources(
     The loop below reads resource_id to detect data blocks and adds the
     "data." prefix to resource_type before inserting into known_tf_types,
     producing a set whose members are directly comparable to the rtype
-    strings assembled by the three regex patterns above.
+    strings assembled by the four patterns above.
 
     Returns an empty set when annotation is unavailable or no resource
     identifiers are found, which causes execute_*_retrieval() to fall back to
@@ -205,9 +245,11 @@ def _extract_error_resources(
 
     if known_tf_types and not any(t.startswith("AWS::") for t in known_tf_types):
         for error_str in errors:
-            # Pattern 1: in resource "aws_vpc" "main"
-            #         or in data "aws_elastic_beanstalk_solution_stack" "go"
-            # block_type group drives the "data." prefix decision.
+            # ----------------------------------------------------------
+            # Pattern 1: raw 'in resource "aws_vpc" "main"' form
+            #            or 'in data "aws_ami" "ubuntu"'
+            # Fires when raw terraform-validate stderr is stored in state.
+            # ----------------------------------------------------------
             for m in _TF_VALIDATE_RESOURCE_RE.finditer(error_str):
                 rtype = m.group("type").lower()
                 if m.group("block_type").lower() == "data":
@@ -215,19 +257,48 @@ def _extract_error_resources(
                 if rtype in known_tf_types:
                     error_resource_types.add(rtype)
 
-            # Pattern 2: aws_vpc.main       → type="aws_vpc"
-            #            data.aws_ami.ubuntu → type="data.aws_ami"
-            # (?:data\.)? is now inside the capture group, so rtype already
-            # carries the prefix when present — no manual assembly needed.
+            # ----------------------------------------------------------
+            # Pattern 2: bare address  aws_vpc.main / data.aws_ami.ubuntu
+            # (?:data\.)? is inside the capture group, prefix preserved.
+            # ----------------------------------------------------------
             for m in _TF_ADDRESS_RE.finditer(error_str):
                 rtype = m.group("type").lower()
                 if rtype in known_tf_types:
                     error_resource_types.add(rtype)
 
-            # Pattern 3: [aws_vpc.main]         → type="aws_vpc"
-            #            [data.aws_ami.ubuntu]   → type="data.aws_ami"
+            # ----------------------------------------------------------
+            # Pattern 3: bracket  [aws_vpc.main] / [data.aws_ami.ubuntu]
+            # ----------------------------------------------------------
             for m in _TF_BRACKET_RE.finditer(error_str):
                 rtype = m.group("type").lower()
+                if rtype in known_tf_types:
+                    error_resource_types.add(rtype)
+
+            # ----------------------------------------------------------
+            # Pattern 4: formatted [ERROR] string from format_tflint_errors()
+            #
+            # extract_errors() feeds errors from validation_results[*].errors
+            # which are already the formatted single-line strings:
+            #
+            #   '[ERROR] | line 287 | Reference to undeclared resource |
+            #    A data resource "aws_partition" "current" has not been
+            #    declared in the root module.'
+            #
+            # Patterns 1-3 never match this form.  This pattern extracts
+            # the resource type from the prose description embedded in the
+            # last pipe-delimited field.
+            #
+            # block_type normalisation:
+            #   'data'              -> prefix with 'data.'
+            #   'resource'/'managed' -> no prefix (managed resource)
+            # ----------------------------------------------------------
+            for m in _TF_FORMATTED_ERROR_RE.finditer(error_str):
+                rtype = m.group("type").lower()
+                block_type = m.group("block_type").lower()
+                if block_type == "data":
+                    rtype = f"data.{rtype}"
+                # 'resource' and 'managed' both mean a managed resource
+                # — no prefix needed.
                 if rtype in known_tf_types:
                     error_resource_types.add(rtype)
 
@@ -464,8 +535,8 @@ def _build_tf_seed_resources(annotation: TemplateAnnotation | None) -> set[str]:
       resource_type = bare type (no prefix)   in both cases
 
     Result:
-      data "aws_vpc" "default"    → seed entry: "data.aws_vpc"
-      resource "aws_s3_bucket" "x" → seed entry: "aws_s3_bucket"
+      data "aws_vpc" "default"    -> seed entry: "data.aws_vpc"
+      resource "aws_s3_bucket" "x" -> seed entry: "aws_s3_bucket"
     """
     if not annotation:
         return set()
@@ -602,11 +673,6 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
 
         # Diagnostic: log seed_resources so missing providers (e.g. random_id)
         # are immediately visible in the run output without a debugger.
-        # This also serves as the diagnostic for Bug 2 — if random_id is
-        # absent here, the root cause is in template_annotator (resource-type
-        # regex does not recognise the random_ provider prefix); if present,
-        # the gap is in the ingestion pipeline (random provider schema JSON
-        # not ingested into Neo4j).
         print(f"[Retriever] seed_resources ({len(seed_resources)}): {sorted(seed_resources)}")
 
         error_resources = _extract_error_resources(
