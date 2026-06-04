@@ -249,12 +249,13 @@ def validate_terraform(template: str) -> ValidationResult:
         tf_path.write_text(template, encoding="utf-8")
         try:
             # Step 1: init (no backend, no input prompts)
+            # Timeout increased to 600s (10 min) to allow provider plugin downloads
             init_result = subprocess.run(
                 ["terraform", "init", "-backend=false", "-input=false", "-no-color"],
                 cwd=tmpdir,
                 capture_output=True,
                 text=True,
-                timeout=120,
+                timeout=600,
             )
             if init_result.returncode != 0:
                 err_text = (init_result.stderr or init_result.stdout).strip()

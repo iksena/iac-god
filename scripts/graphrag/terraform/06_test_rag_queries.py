@@ -556,7 +556,7 @@ def main() -> None:
         w = counts["weak"]
         print(
             f"  {cat:12s}  {t} queries —  "
-            f"\u2705 useful: {u}  \ud83d� partial: {p}  \u274c weak: {w}"
+            f" useful: {u} partial: {p} weak: {w}"
         )
     print()
 

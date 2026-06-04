@@ -422,21 +422,21 @@ def move_run_folders_from_csv(
 
 if __name__ == "__main__":
     # merge_results_from_directory(
-    #     base_dir="./benchmark_runs/20260527_002230 Deepseek V4 Flash Security",
+    #     base_dir="./benchmark_runs/terraform_20260601_182648 Deepseek V4 Flash",
     # )
 
     # move_run_folders_from_csv(
-    #     input_csv='benchmark_runs/20260527_002230 Deepseek V4 Flash Security/results_merged.csv',
+    #     input_csv='benchmark_runs/terraform_20260601_182648 Deepseek V4 Flash/results_merged.csv',
     #     runs_dir='runs',
-    #     target_subfolder_name='DeepseekV4Flash_security_runs',
+    #     target_subfolder_name='Terraform_DeepseekV4Flash_security_runs',
     #     run_id_col='run_id',
     #     dry_run=False,
     # )
 
     merge_results_with_reports(
-        input_csv="benchmark_runs/20260527_002230 Deepseek V4 Flash Security/results_merged.csv", 
-        base_dir="runs/DeepseekV4Flash_security_runs", 
-        output_csv="benchmark_runs/20260527_002230 Deepseek V4 Flash Security/DeepseekV4Flash_security.csv"
+        input_csv="benchmark_runs/terraform_20260601_182648 Deepseek V4 Flash/results_merged.csv", 
+        base_dir="runs/Terraform_DeepseekV4Flash_security_runs", 
+        output_csv="benchmark_runs/terraform_20260601_182648 Deepseek V4 Flash/Terraform_DeepseekV4Flash_security.csv"
     )
 
     # merge_results(
