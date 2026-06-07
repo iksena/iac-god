@@ -18,6 +18,7 @@ class BenchmarkConfig:
     output_dir: Path
     start_row: int
     max_rows: int | None
+    rows: list[int] | None
     max_iterations: int
     provider: str           # "openrouter" | "claude" | "openai"
     model: str | None
@@ -312,7 +313,11 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         reader = csv.DictReader(fh)
         all_rows = list(reader)
 
-    selected_rows = _row_slice(all_rows, config.start_row, config.max_rows)
+    if config.rows:
+        selected_rows = [row for row in all_rows if _safe_int(row.get("row_number")) in config.rows]
+    else:
+        selected_rows = _row_slice(all_rows, config.start_row, config.max_rows)
+
     started_at = datetime.now().isoformat()
     started_ts = time.time()
 
@@ -623,6 +628,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--start-row", type=int, default=0)
     parser.add_argument("--max-rows", type=int, default=None)
+    parser.add_argument(
+        "--rows", 
+        type=str, 
+        default=None, 
+        help="Comma-separated list of specific row numbers to execute (e.g., 1,6,7,142)"
+    )
     parser.add_argument("--max-iterations", type=int, default=30)
     parser.add_argument(
         "--provider",
@@ -679,11 +690,16 @@ if __name__ == "__main__":
 
     output_dir = args.output_dir or _default_output_dir(args.iac_type)
 
+    specific_rows = None
+    if args.rows:
+        specific_rows = [int(r.strip()) for r in args.rows.split(",") if r.strip().isdigit()]
+
     cfg = BenchmarkConfig(
         dataset_path=dataset_path,
         output_dir=output_dir,
         start_row=args.start_row,
         max_rows=args.max_rows,
+        rows=specific_rows,
         max_iterations=args.max_iterations,
         provider=args.provider,
         model=args.model,

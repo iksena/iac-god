@@ -10,3 +10,4 @@ tf_schema_raw.json
 tf_knowledge_graph.json
 tf_registry_docs.json
 *.sqlite*
+**/volume/**

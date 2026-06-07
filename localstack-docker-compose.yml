@@ -7,15 +7,20 @@ services:
     ports:
       - '127.0.0.1:4566:4566' # LocalStack Gateway
       - '127.0.0.1:4510-4559:4510-4559' # external services port range
-      - '127.0.0.1:443:443' # LocalStack HTTPS Gateway (Pro)
     environment:
       - DEBUG=1
       - DOCKER_HOST=unix:///var/run/docker.sock
       - LOCALSTACK_AUTH_TOKEN=${LOCALSTACK_AUTH_TOKEN}
       - CFN_IGNORE_UNSUPPORTED_RESOURCE_TYPES=1
       - LOCALSTACK_EC2_VM_MANAGER=mock
-      - LOCALSTACK_APP_INSPECTOR=1
+      # - LOCALSTACK_APP_INSPECTOR=1
+      - DISABLE_CUSTOM_CORS_S3=1
+      - SKIP_SSL_CERT_DOWNLOAD=1
+      - LOCALSTACK_HTTPS_SERVER=0
+      - EAGER_SERVICE_LOADING=1
+      - PERSISTENCE=0
     volumes:
+      - "${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack"
       - "/var/run/docker.sock:/var/run/docker.sock"
       # - "./localstack-mock:/opt/ext/localstack-mock"
       # - "./localstack-mock/install-ext.sh:/etc/localstack/init/boot.d/install_ext.sh"
