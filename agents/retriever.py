@@ -469,8 +469,9 @@ def _get_active_error_types(state: GraphState) -> tuple[bool, bool]:
         if stage:
             latest_by_stage[stage] = result
 
-    if not latest_by_stage.get("yaml", {}).get("passed", True):
-        has_schema = True
+    # YAML errors are not necessarily a sign of schema issues — they could be simple formatting problems
+    # if not latest_by_stage.get("yaml", {}).get("passed", True):
+    #     has_schema = True
     if not latest_by_stage.get("cfn-lint", {}).get("passed", True):
         has_schema = True
     if not latest_by_stage.get("tflint", {}).get("passed", True):

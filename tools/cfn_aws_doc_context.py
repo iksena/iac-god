@@ -45,7 +45,7 @@ Usage:
     context_str = get_cfn_aws_doc_context_for_state(
         validation_results=state["validation_results"],
         deploy_validation_result=state.get("deploy_validation_result"),
-        template_yaml=state["cloudformation_template"],
+        template_yaml=state["iac_template"],
     )
 """
 from __future__ import annotations
@@ -371,7 +371,7 @@ def get_cfn_aws_doc_context_for_state(
     Args:
         validation_results:       state["validation_results"]
         deploy_validation_result: state.get("deploy_validation_result")
-        template_yaml:            state["cloudformation_template"]
+        template_yaml:            state["iac_template"]
         max_resource_types:       cap on how many resource types to fetch
         max_workers:              parallel HTTP workers (default 4)
 
