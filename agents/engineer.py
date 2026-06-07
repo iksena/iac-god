@@ -8,6 +8,7 @@ from prompts.engineer_prompt import (
     get_engineer_user_initial,
     get_engineer_user_simple_fix,
     get_engineer_user_remediation,
+    get_engineer_user_no_remediator,
 )
 from tools.retriever_helpers import (
     extract_errors,
@@ -15,6 +16,22 @@ from tools.retriever_helpers import (
     format_deploy_errors,
 )
 from tracking.recorder import ResearchRecorder
+
+# ---------------------------------------------------------------------------
+# Ablation tuning
+# ---------------------------------------------------------------------------
+
+# Maximum characters of retriever_context injected into the no-remediator
+# prompt.  Keeping this below the full context size (~20-30k chars) ensures
+# the ablation tests the Engineer's *diagnostic* capability rather than its
+# ability to process an arbitrarily large schema dump.
+#
+# If the Engineer fails even with 8k of directly relevant schema, the
+# Remediator's *synthesis* value is proven — not just its token-reduction value.
+# Raise toward 16_000 to give the Engineer more rope; lower to 4_000 for a
+# stricter test.  Override at runtime: ABLATION_CONTEXT_LIMIT=12000 python main.py
+import os as _os
+_ABLATION_CONTEXT_LIMIT: int = int(_os.getenv("ABLATION_CONTEXT_LIMIT", "8000"))
 
 
 def _build_simple_fix_errors(state: GraphState) -> str:
@@ -106,25 +123,39 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
 
     else:
         # ----------------------------------------------------------------
-        # Path C — Moderate mode: remediator has produced an RCA + fix
-        # objectives in remediation_history[-1].suggestion.
-        # User turn contains ONLY the formatted errors + remediator suggestion.
-        # The template and all prior context are already in engineer_history.
+        # Path C (ABLATION: no-remediator) — Engineer ingests errors +
+        # RAG context directly. No Remediator RCA is available.
+        #
+        # Three clearly labelled sections are passed to the LLM:
+        #   1. Validation Errors  — live errors from current validator output,
+        #                           never stale Remediator history.
+        #   2. Schema & Remediation Reference — raw retriever_context, capped
+        #                           at _ABLATION_CONTEXT_LIMIT chars so the
+        #                           test isolates diagnostic capability from
+        #                           context-window size effects.
+        #   3. Output instruction — produce a corrected template only.
         # ----------------------------------------------------------------
-        print("[Engineer] Path C (ABLATION): Ingesting raw RAG context directly.")
-        
-        # 1. Format the errors natively (just like Path B)
+        print("[Engineer] Path C (ABLATION): Ingesting errors + RAG context directly.")
+
+        # Always read live errors — never rely on remediation_history["formatted_errors"]
+        # which is written by the Remediator (absent in this ablation branch).
         validation_errors = _build_simple_fix_errors(state)
-        user_content = get_engineer_user_simple_fix(iac_type).format(
+
+        retriever_context = state.get("retriever_context", "") or "No schema context available."
+        if len(retriever_context) > _ABLATION_CONTEXT_LIMIT:
+            retriever_context = (
+                retriever_context[:_ABLATION_CONTEXT_LIMIT]
+                + f"\n\n... [context truncated at {_ABLATION_CONTEXT_LIMIT} chars for ablation] ..."
+            )
+            print(
+                f"[Engineer] RAG context truncated to {_ABLATION_CONTEXT_LIMIT} chars "
+                f"(set ABLATION_CONTEXT_LIMIT env var to adjust)."
+            )
+
+        user_content = get_engineer_user_no_remediator(iac_type).format(
             iteration=iteration,
             validation_errors=validation_errors,
-        )
-        latest = state["remediation_history"][-1]
-        retriever_context = state.get("retriever_context", "")
-        user_content = get_engineer_user_remediation(iac_type).format(
-            iteration=latest["iteration"],
-            formatted_errors=latest["formatted_errors"],
-            remediation_suggestion=retriever_context or "No remediation suggestion provided.",
+            retriever_context=retriever_context,
         )
         history_to_pass = state.get("engineer_history", [])
 
