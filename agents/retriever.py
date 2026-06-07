@@ -621,36 +621,52 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
             f"[Retriever] {'Line numbers detected — annotated template' : <45} "
             f"{'included' if has_line_numbers else 'NOT included (plain template used)'}."
         )
+        
+        print("[Retriever] ABLATION MODE: Bypassing HyDE LLM. Using raw errors as dense queries.")
+        
+        # Use the raw compiler/linter error messages directly as the semantic search queries.
+        # We cap it at 8 to prevent blowing up the ChromaDB query batch limits if there are many errors.
+        schema_queries = [str(e) for e in errors[:8]]
+        
+        # Dummy variables to satisfy the state updater and recorder at the end of the function
+        user_content = "ABLATION: Bypassed HyDE prompt generation."
+        raw_response = "ABLATION: Bypassed HyDE query generation."
+        llm_record = None
 
-        query_gen_system = get_query_gen_system(iac_type)
+        # -----------------------------------------------------------------
+        # Original HyDE LLM query generation code is commented out below for reference
+        # -----------------------------------------------------------------
+        # query_gen_system = get_query_gen_system(iac_type)
 
-        user_content = build_retrieval_prompt(
-            errors=errors,
-            template=template,
-            annotation=annotation,
-            remediation_history=state.get("remediation_history", []),
-            iac_type=iac_type,
-            stage_errors=stage_errors,
-        )
+        # user_content = build_retrieval_prompt(
+        #     errors=errors,
+        #     template=template,
+        #     annotation=annotation,
+        #     remediation_history=state.get("remediation_history", []),
+        #     iac_type=iac_type,
+        #     stage_errors=stage_errors,
+        # )
 
-        model, raw_response, usage = _call_query_generator(
-            user_content=user_content,
-            system_prompt=query_gen_system,
-        )
-        parsed_queries = parse_query_response(raw_response)
-        schema_queries = parsed_queries.get("schema_queries", [])
+        # model, raw_response, usage = _call_query_generator(
+        #     user_content=user_content,
+        #     system_prompt=query_gen_system,
+        # )
+        # parsed_queries = parse_query_response(raw_response)
+        # schema_queries = parsed_queries.get("schema_queries", [])
 
-        if not schema_queries:
-            schema_queries = errors[:8]
+        # if not schema_queries:
+        #     schema_queries = errors[:8]
 
-        llm_record = recorder.record_llm_call(
-            state=state,
-            agent="retriever",
-            model=model,
-            prompt=f"SYSTEM:\n{query_gen_system}\n\nUSER:\n{user_content}",
-            response=raw_response,
-            token_usage=usage,
-        )
+        # llm_record = recorder.record_llm_call(
+        #     state=state,
+        #     agent="retriever",
+        #     model=model,
+        #     prompt=f"SYSTEM:\n{query_gen_system}\n\nUSER:\n{user_content}",
+        #     response=raw_response,
+        #     token_usage=usage,
+        # )
+        
+        # -----------------------------------------------------------------
 
         # -----------------------------------------------------------------
         # Build seed_resources
