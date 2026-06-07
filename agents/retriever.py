@@ -1,6 +1,7 @@
 # agents/retriever.py
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import re
 
 from state import GraphState, RemediationHistory, Message, append_and_cap
@@ -738,6 +739,18 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         f"{len(security_ids)} security ID(s) resolved."
     )
 
+    history_entry = {
+        "iteration": iteration,
+        "errors": state.get("validation_results", []),
+        "flat_errors": [],
+        "formatted_errors": "ABLATION: Bypassed.",
+        "suggestion": "ABLATION: Bypassed.",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "retrieval_queries": retrieval_queries,
+        "retrieved_context_chars": len(unified_context),
+        "retriever_context": unified_context,
+    }
+
     return {
         "retriever_context":  unified_context,
         "retriever_queries":  retrieval_queries,
@@ -745,4 +758,5 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         "retriever_history":  append_and_cap(
             state.get("retriever_history", []), user_msg, assistant_msg
         ),
+        "remediation_history": state.get("remediation_history", []) + [history_entry]
     }

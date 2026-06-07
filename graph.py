@@ -8,7 +8,7 @@ from agents.planner import planner_agent
 from agents.engineer import engineer_agent
 from agents.validator import validator_agent
 from agents.retriever import retriever_agent
-from agents.remediator import remediator_agent
+# from agents.remediator import remediator_agent
 # from agents.remediator import should_include_remediation_context
 from tracking.recorder import ResearchRecorder
 
@@ -80,7 +80,7 @@ def build_graph(
     graph.add_node("engineer_simple", partial(engineer_agent,   recorder=recorder))
     graph.add_node("validator",       partial(validator_agent,  recorder=recorder, deploy_config=deploy_config))
     graph.add_node("retriever",       partial(retriever_agent,  recorder=recorder))
-    graph.add_node("remediator",      partial(remediator_agent, recorder=recorder))
+    # graph.add_node("remediator",      partial(remediator_agent, recorder=recorder))
 
     graph.set_entry_point("planner")
     graph.add_edge("planner",         "engineer")
@@ -93,12 +93,12 @@ def build_graph(
         {
             "end":             END,
             "retriever":       "retriever",
-            "remediator":      "remediator",
+            # "remediator":      "remediator",
             "engineer_simple": "engineer_simple",
         },
     )
 
-    graph.add_edge("retriever",  "remediator")
-    graph.add_edge("remediator", "engineer")
+    graph.add_edge("retriever",  "engineer")
+    # graph.add_edge("remediator", "engineer")
 
     return graph.compile(checkpointer=MemorySaver())

@@ -111,12 +111,20 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         # User turn contains ONLY the formatted errors + remediator suggestion.
         # The template and all prior context are already in engineer_history.
         # ----------------------------------------------------------------
-        print("[Engineer] Path C: moderate remediation with RCA & fix objectives.")
+        print("[Engineer] Path C (ABLATION): Ingesting raw RAG context directly.")
+        
+        # 1. Format the errors natively (just like Path B)
+        validation_errors = _build_simple_fix_errors(state)
+        user_content = get_engineer_user_simple_fix(iac_type).format(
+            iteration=iteration,
+            validation_errors=validation_errors,
+        )
         latest = state["remediation_history"][-1]
+        retriever_context = state.get("retriever_context", "")
         user_content = get_engineer_user_remediation(iac_type).format(
             iteration=latest["iteration"],
             formatted_errors=latest["formatted_errors"],
-            remediation_suggestion=latest["suggestion"],
+            remediation_suggestion=retriever_context or "No remediation suggestion provided.",
         )
         history_to_pass = state.get("engineer_history", [])
 

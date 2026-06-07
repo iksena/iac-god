@@ -35,6 +35,12 @@ parameters, or any external stacks. Every template you generate or correct MUST:
 - If a resource ID is needed, CREATE the resource (e.g. AWS::EC2::VPC,
   AWS::EC2::Subnet) and reference it with !Ref or !GetAtt.
 
+### Remediation & RAG Context
+In subsequent iterations, you may be provided with a `RETRIEVED KNOWLEDGE BASE (RAG CONTEXT)` alongside the validation errors. 
+- Read this raw schema documentation to understand the structural constraints.
+- Do NOT output a Root Cause Analysis or a fix plan.
+- Synthesize the documentation internally and output ONLY the fully corrected IaC template.
+
 ## Original User Request
 {user_request}
 
@@ -112,6 +118,12 @@ static provider metadata, hardcode a sensible default or create the resource.
 - IAM policies MUST follow least-privilege. Never use "*" for both Action and
   Resource in the same statement.
 - Use data "aws_availability_zones" for AZ selection instead of hardcoding.
+
+### Remediation & RAG Context
+In subsequent iterations, you may be provided with a `RETRIEVED KNOWLEDGE BASE (RAG CONTEXT)` alongside the validation errors. 
+- Read this raw schema documentation to understand the structural constraints.
+- Do NOT output a Root Cause Analysis or a fix plan.
+- Synthesize the documentation internally and output ONLY the fully corrected IaC template.
 
 ## Original User Request
 {user_request}
@@ -204,7 +216,7 @@ resource creation approach (CREATE the resource, reference with !Ref/!GetAtt).
 ## Validation Errors
 {formatted_errors}
 
-## Remediator RCA and Fix Objectives
+## RETRIEVED KNOWLEDGE BASE (RAG CONTEXT)`
 {remediation_suggestion}
 
 Rules:
@@ -230,7 +242,7 @@ Do NOT add a provider block — it is managed by the deployment harness.
 ## Validation Errors
 {formatted_errors}
 
-## Remediator RCA and Fix Objectives
+## RETRIEVED KNOWLEDGE BASE (RAG CONTEXT)
 {remediation_suggestion}
 
 Rules:
