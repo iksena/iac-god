@@ -42,9 +42,6 @@ this constraint:
 ## Original User Request
 {user_request}
 
-## Grounded Objectives
-{objectives}
-
 ## Output Rules
 1. Do NOT output CloudFormation YAML or code snippets
 2. Return only concise fix objectives with rationale
@@ -90,9 +87,6 @@ MUST respect this constraint:
 
 ## Original User Request
 {user_request}
-
-## Grounded Objectives
-{objectives}
 
 ## Output Rules
 1. Do NOT output HCL code blocks or Terraform snippets

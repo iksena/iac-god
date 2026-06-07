@@ -72,7 +72,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
 
     system = get_engineer_system_prompt(iac_type).format(
         user_request=state["user_request"],
-        objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"]))
+        # objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"]))
     )
 
     has_remediation_history = bool(state.get("remediation_history"))

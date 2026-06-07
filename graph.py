@@ -74,7 +74,7 @@ def build_graph(
 ) -> StateGraph:
     graph = StateGraph(GraphState)
 
-    graph.add_node("planner",         partial(planner_agent,    recorder=recorder))
+    # graph.add_node("planner",         partial(planner_agent,    recorder=recorder))
     graph.add_node("engineer",        partial(engineer_agent,   recorder=recorder))
     # engineer_simple is the same agent function — mode is detected from state
     graph.add_node("engineer_simple", partial(engineer_agent,   recorder=recorder))
@@ -82,8 +82,8 @@ def build_graph(
     graph.add_node("retriever",       partial(retriever_agent,  recorder=recorder))
     graph.add_node("remediator",      partial(remediator_agent, recorder=recorder))
 
-    graph.set_entry_point("planner")
-    graph.add_edge("planner",         "engineer")
+    graph.set_entry_point("engineer")
+    # graph.add_edge("planner",         "engineer")
     graph.add_edge("engineer",        "validator")
     graph.add_edge("engineer_simple", "validator")
 

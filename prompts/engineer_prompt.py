@@ -38,9 +38,6 @@ parameters, or any external stacks. Every template you generate or correct MUST:
 ## Original User Request
 {user_request}
 
-## Grounded Objectives
-{objectives}
-
 Output ONLY the raw CloudFormation YAML. No explanation, no markdown fences.
 """
 
@@ -116,9 +113,6 @@ static provider metadata, hardcode a sensible default or create the resource.
 ## Original User Request
 {user_request}
 
-## Grounded Objectives
-{objectives}
-
 Output ONLY the raw HCL. No explanation, no markdown fences.
 """
 
@@ -152,7 +146,7 @@ ami-*) as fixes. If a resource is missing, CREATE it inside the template.
 Rules:
 - Fix every error listed. Do not suppress or comment out any check.
 - Keep all resources, properties, and logic unrelated to the errors intact.
-- The final template must satisfy Original User Request and Grounded Objectives.
+- The final template must satisfy Original User Request.
 - Output the complete corrected CloudFormation YAML.
 """
 
@@ -174,7 +168,7 @@ Do NOT add a provider block — it is managed by the deployment harness.
 Rules:
 - Fix every error listed. Do not suppress or comment out any check.
 - Keep all resources, attributes, and logic unrelated to the errors intact.
-- The final configuration must satisfy Original User Request and Grounded Objectives.
+- The final configuration must satisfy Original User Request.
 - Output the complete corrected HCL (main.tf).
 """
 
@@ -210,7 +204,7 @@ resource creation approach (CREATE the resource, reference with !Ref/!GetAtt).
 Rules:
 - Apply every fix objective above to your last template.
 - Do not repeat changes already shown as applied in previous turns.
-- The final template must also satisfy Original User Request and Grounded Objectives.
+- The final template must also satisfy Original User Request.
 - Output the complete corrected CloudFormation YAML.
 """
 
@@ -236,7 +230,7 @@ Do NOT add a provider block — it is managed by the deployment harness.
 Rules:
 - Apply every fix objective above to your last configuration.
 - Do not repeat changes already shown as applied in previous turns.
-- The final configuration must also satisfy Original User Request and Grounded Objectives.
+- The final configuration must also satisfy Original User Request.
 - Output the complete corrected HCL (main.tf).
 """
 
