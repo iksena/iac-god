@@ -142,15 +142,15 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         validation_errors = _build_simple_fix_errors(state)
 
         retriever_context = state.get("retriever_context", "") or "No schema context available."
-        if len(retriever_context) > _ABLATION_CONTEXT_LIMIT:
-            retriever_context = (
-                retriever_context[:_ABLATION_CONTEXT_LIMIT]
-                + f"\n\n... [context truncated at {_ABLATION_CONTEXT_LIMIT} chars for ablation] ..."
-            )
-            print(
-                f"[Engineer] RAG context truncated to {_ABLATION_CONTEXT_LIMIT} chars "
-                f"(set ABLATION_CONTEXT_LIMIT env var to adjust)."
-            )
+        # if len(retriever_context) > _ABLATION_CONTEXT_LIMIT:
+        #     retriever_context = (
+        #         retriever_context[:_ABLATION_CONTEXT_LIMIT]
+        #         + f"\n\n... [context truncated at {_ABLATION_CONTEXT_LIMIT} chars for ablation] ..."
+        #     )
+        #     print(
+        #         f"[Engineer] RAG context truncated to {_ABLATION_CONTEXT_LIMIT} chars "
+        #         f"(set ABLATION_CONTEXT_LIMIT env var to adjust)."
+        #     )
 
         user_content = get_engineer_user_no_remediator(iac_type).format(
             iteration=iteration,

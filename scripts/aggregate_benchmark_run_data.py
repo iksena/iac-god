@@ -425,18 +425,18 @@ if __name__ == "__main__":
     #     base_dir="./benchmark_runs/terraform_20260601_182648 Deepseek V4 Flash",
     # )
 
-    # move_run_folders_from_csv(
-    #     input_csv='benchmark_runs/terraform_20260601_182648 Deepseek V4 Flash/results_merged.csv',
-    #     runs_dir='runs',
-    #     target_subfolder_name='Terraform_DeepseekV4Flash_security_runs',
-    #     run_id_col='run_id',
-    #     dry_run=False,
-    # )
+    move_run_folders_from_csv(
+        input_csv='benchmark_runs/cloudformation_20260607_232842 Ablation No Remediation/results.csv',
+        runs_dir='runs',
+        target_subfolder_name='DeepseekV4Flash_sec_ablation_no_remediation',
+        run_id_col='run_id',
+        dry_run=False,
+    )
 
     merge_results_with_reports(
-        input_csv="benchmark_runs/terraform_20260601_182648 Deepseek V4 Flash/results_merged.csv", 
-        base_dir="runs/Terraform_DeepseekV4Flash_security_runs", 
-        output_csv="benchmark_runs/terraform_20260601_182648 Deepseek V4 Flash/Terraform_DeepseekV4Flash_security.csv"
+        input_csv="benchmark_runs/cloudformation_20260607_232842 Ablation No Remediation/results.csv", 
+        base_dir="runs/DeepseekV4Flash_sec_ablation_no_remediation", 
+        output_csv="benchmark_runs/cloudformation_20260607_232842 Ablation No Remediation/DeepseekV4Flash_sec_ablation_no_remediation.csv"
     )
 
     # merge_results(
