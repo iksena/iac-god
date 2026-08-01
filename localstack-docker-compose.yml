@@ -17,7 +17,7 @@ services:
       - DISABLE_CUSTOM_CORS_S3=1
       - SKIP_SSL_CERT_DOWNLOAD=1
       - LOCALSTACK_HTTPS_SERVER=0
-      - EAGER_SERVICE_LOADING=1
+      # - EAGER_SERVICE_LOADING=1
       - PERSISTENCE=0
     volumes:
       - "${LOCALSTACK_VOLUME_DIR:-./volume}:/var/lib/localstack"
