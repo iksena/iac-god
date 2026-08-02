@@ -528,8 +528,14 @@ def _validate_terraform_deployment(
         if apply_result.returncode == 0:
             # Parse completed resources from apply output lines like:
             #   aws_vpc.main: Creation complete after 1s [id=vpc-xxx]
+            #   aws_iam_role.this[0]: Creation complete after 1s [id=admin]
+            # NOTE: resource address is matched as "anything but whitespace/colon"
+            # rather than [\w.] so that count/for_each index suffixes such as
+            # [0] or ["admin"] are captured as part of the address (the old
+            # \w.-only pattern silently dropped every indexed resource from
+            # `completed`, undercounting real applies).
             completed: list[str] = re.findall(
-                r'^([\w.]+):\s+Creation complete', apply_output, re.MULTILINE
+                r'^([^\s:]+):\s+Creation complete', apply_output, re.MULTILINE
             )
             print(f"[Deploy] ✅ {tf_bin} apply succeeded ({len(completed)} resources created)")
 
@@ -541,6 +547,30 @@ def _validate_terraform_deployment(
                 [tf_bin, "destroy", "-auto-approve", "-input=false", "-no-color"],
                 cwd=tmpdir, capture_output=True, text=True, timeout=timeout, env=run_env,
             )
+
+            if len(completed) == 0:
+                # `terraform apply` returned 0 and reported no errors, but no
+                # resource ever reached "Creation complete" — this happens when
+                # every resource in the template is gated behind a
+                # `count = var.flag ? 1 : 0` / `for_each = {}` default that
+                # evaluates to zero instances. Terraform legitimately considers
+                # that a successful (no-op) apply, but a template that stands up
+                # nothing is not a deployability pass for benchmark purposes.
+                zero_msg = (
+                    "apply succeeded but created 0 resources — template's "
+                    "resources are likely gated off by a default boolean/"
+                    "count flag; not counted as a deployability pass"
+                )
+                deploy_logs.append(zero_msg)
+                print(f"[Deploy] ⚠️  {tf_bin} apply created 0 resources — not counting as PASS")
+                return DeployValidationResult(
+                    target=target_name, passed=False, stack_id=None,
+                    completed_resources=[],
+                    failed_resources=[{"logical_name": "apply", "status_reason": zero_msg}],
+                    error_message=zero_msg,
+                    duration_seconds=round(time.time() - start_time, 2),
+                    deployment_logs=deploy_logs,
+                )
 
             return DeployValidationResult(
                 target=target_name, passed=True, stack_id=None,
@@ -756,9 +786,17 @@ def validate_deployment(
             stack_status = stack["StackStatus"]
 
             if stack_status == "CREATE_COMPLETE":
+                # `completed_resources` includes a stack-level CREATE_COMPLETE
+                # event (LogicalResourceId == stack_name) in addition to any
+                # per-resource events. A template where every resource carries
+                # a false `Condition` reaches CREATE_COMPLETE with that
+                # stack-level event as the *only* entry — i.e. the stack was
+                # created but nothing inside it was. Filter that out before
+                # judging whether anything real was actually deployed.
+                real_completed = [r for r in completed_resources if r != stack_name]
                 print(
                     f"[Deploy] ✅ Stack deployed successfully "
-                    f"({len(completed_resources)} resources)"
+                    f"({len(real_completed)} resources)"
                 )
                 cfn_client.delete_stack(StackName=stack_id)
                 if deploy_config.target == DeployTarget.AWS:
@@ -766,9 +804,30 @@ def validate_deployment(
                         cfn_client, stack_id, stack_name,
                         deploy_config.stack_deletion_timeout,
                     )
+
+                if len(real_completed) == 0:
+                    # Stack reached CREATE_COMPLETE but created zero actual
+                    # resources — every resource was likely gated behind a
+                    # false `Condition`. Not a deployability pass.
+                    zero_msg = (
+                        "stack reached CREATE_COMPLETE but created 0 resources "
+                        "— template's resources are likely gated off by a "
+                        "false Condition; not counted as a deployability pass"
+                    )
+                    deploy_logs.append(zero_msg)
+                    print(f"[Deploy] ⚠️  Stack created 0 resources — not counting as PASS")
+                    return DeployValidationResult(
+                        target=target_name, passed=False, stack_id=stack_id,
+                        completed_resources=[],
+                        failed_resources=[{"logical_name": "stack", "status_reason": zero_msg}],
+                        error_message=zero_msg,
+                        duration_seconds=round(time.time() - start_time, 2),
+                        deployment_logs=deploy_logs,
+                    )
+
                 return DeployValidationResult(
                     target=target_name, passed=True, stack_id=stack_id,
-                    completed_resources=completed_resources, failed_resources=[],
+                    completed_resources=real_completed, failed_resources=[],
                     error_message=None,
                     duration_seconds=round(time.time() - start_time, 2),
                     deployment_logs=deploy_logs,
