@@ -141,6 +141,30 @@ def merge_results_from_directory(
         merged_jsonl_path=resolved_jsonl_path,
     )
 
+
+def filter_runtime_error_rows(
+    input_csv,
+    output_csv="results_without_runtime_error.csv",
+    status_col="status",
+):
+    """Write a copy of ``input_csv`` with ``runtime_error`` rows removed."""
+    if not os.path.exists(input_csv):
+        raise FileNotFoundError(f"Input CSV not found: {input_csv}")
+
+    df = pd.read_csv(input_csv)
+    if status_col not in df.columns:
+        raise ValueError(f"Column '{status_col}' not found in {input_csv}")
+
+    status_values = df[status_col].fillna("").astype(str).str.strip().str.lower()
+    filtered_df = df[status_values != "runtime_error"].copy()
+
+    filtered_df.to_csv(output_csv, index=False)
+    removed_rows = len(df) - len(filtered_df)
+    print(
+        f"Filtered {removed_rows} runtime_error row(s) from '{input_csv}' into '{output_csv}'"
+    )
+    return filtered_df
+
 def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_csv="results_merged.csv"):
     if not os.path.exists(input_csv):
         print(f"Error: The input CSV '{input_csv}' does not exist.")
@@ -421,23 +445,29 @@ def move_run_folders_from_csv(
     return moved
 
 if __name__ == "__main__":
-    # merge_results_from_directory(
-    #     base_dir="./benchmark_runs/terraform_20260601_182648 Deepseek V4 Flash",
+    # filter_runtime_error_rows(
+    #     input_csv='benchmark_runs/terraform_20260813_214252/results.csv',
+    #     output_csv='benchmark_runs/terraform_20260813_214252/results_without_runtime_error.csv',
+    #     status_col='status',
     # )
 
+    merge_results_from_directory(
+        base_dir="./benchmark_runs/terraform_20260813_001412 TFEval",
+    )
+
     # move_run_folders_from_csv(
-    #     input_csv='benchmark_runs/terraform_20260601_182648 Deepseek V4 Flash/results_merged.csv',
+    #     input_csv='benchmark_runs/terraform_20260801_141119 NeoDPIaCEval DeepseekV4Flash/results_merged.csv',
     #     runs_dir='runs',
-    #     target_subfolder_name='Terraform_DeepseekV4Flash_security_runs',
+    #     target_subfolder_name='NeoDPIaCEval_TF_DeepseekV4Flash_security_runs',
     #     run_id_col='run_id',
     #     dry_run=False,
     # )
 
-    merge_results_with_reports(
-        input_csv="benchmark_runs/terraform_20260601_182648 Deepseek V4 Flash/results_merged.csv", 
-        base_dir="runs/Terraform_DeepseekV4Flash_security_runs", 
-        output_csv="benchmark_runs/terraform_20260601_182648 Deepseek V4 Flash/Terraform_DeepseekV4Flash_security.csv"
-    )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/terraform_20260801_141119 NeoDPIaCEval DeepseekV4Flash/results_merged.csv", 
+    #     base_dir="runs/NeoDPIaCEval_TF_DeepseekV4Flash_security_runs", 
+    #     output_csv="benchmark_runs/terraform_20260801_141119 NeoDPIaCEval DeepseekV4Flash/NeoDPIaCEval_TF_DeepseekV4Flash_security_runs.csv"
+    # )
 
     # merge_results(
     #     csv_paths=[
