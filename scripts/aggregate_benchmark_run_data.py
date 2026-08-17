@@ -446,28 +446,28 @@ def move_run_folders_from_csv(
 
 if __name__ == "__main__":
     # filter_runtime_error_rows(
-    #     input_csv='benchmark_runs/terraform_20260813_214252/results.csv',
-    #     output_csv='benchmark_runs/terraform_20260813_214252/results_without_runtime_error.csv',
+    #     input_csv='benchmark_runs/cloudformation_20260816_010719_CFNEval/results.csv',
+    #     output_csv='benchmark_runs/cloudformation_20260816_010719_CFNEval/results_without_runtime_error.csv',
     #     status_col='status',
     # )
 
-    merge_results_from_directory(
-        base_dir="./benchmark_runs/terraform_20260813_001412 TFEval",
-    )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/cloudformation_20260816_010719_CFNEval",
+    # )
 
     # move_run_folders_from_csv(
-    #     input_csv='benchmark_runs/terraform_20260801_141119 NeoDPIaCEval DeepseekV4Flash/results_merged.csv',
+    #     input_csv='benchmark_runs/cloudformation_20260816_010719_CFNEval/results_merged.csv',
     #     runs_dir='runs',
-    #     target_subfolder_name='NeoDPIaCEval_TF_DeepseekV4Flash_security_runs',
+    #     target_subfolder_name='CFNEval_DeepseekV4Flash_security_runs',
     #     run_id_col='run_id',
     #     dry_run=False,
     # )
 
-    # merge_results_with_reports(
-    #     input_csv="benchmark_runs/terraform_20260801_141119 NeoDPIaCEval DeepseekV4Flash/results_merged.csv", 
-    #     base_dir="runs/NeoDPIaCEval_TF_DeepseekV4Flash_security_runs", 
-    #     output_csv="benchmark_runs/terraform_20260801_141119 NeoDPIaCEval DeepseekV4Flash/NeoDPIaCEval_TF_DeepseekV4Flash_security_runs.csv"
-    # )
+    merge_results_with_reports(
+        input_csv="benchmark_runs/cloudformation_20260816_010719_CFNEval/results_merged.csv", 
+        base_dir="runs/CFNEval_DeepseekV4Flash_security_runs", 
+        output_csv="benchmark_runs/cloudformation_20260816_010719_CFNEval/CFNEval_DeepseekV4Flash_security_runs.csv"
+    )
 
     # merge_results(
     #     csv_paths=[
