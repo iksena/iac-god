@@ -139,6 +139,16 @@ def _row_slice(rows: list[dict[str, str]], start_row: int, max_rows: int | None)
     return sliced
 
 
+def _row_number_from_csv(row: dict[str, str]) -> int | None:
+    raw_row_number = (row.get("row_number") or "").strip()
+    if not raw_row_number:
+        return None
+    try:
+        return int(raw_row_number)
+    except ValueError:
+        return None
+
+
 def _load_completed_scenario_keys(csv_path: Path | None) -> set[str]:
     if csv_path is None:
         return set()
@@ -163,6 +173,8 @@ def _load_completed_scenario_keys(csv_path: Path | None) -> set[str]:
 def _filter_rows_not_in_completed_csv(
     rows: list[dict[str, str]],
     completed_csv: Path | None,
+    *,
+    match_ground_truth_path: bool = True,
 ) -> tuple[list[dict[str, str]], int]:
     completed_keys = _load_completed_scenario_keys(completed_csv)
     if not completed_keys:
@@ -175,7 +187,11 @@ def _filter_rows_not_in_completed_csv(
         row_number = (row.get("row_number") or "").strip()
 
         if (
-            (ground_truth_path and f"ground_truth_path:{ground_truth_path}" in completed_keys)
+            (
+                match_ground_truth_path
+                and ground_truth_path
+                and f"ground_truth_path:{ground_truth_path}" in completed_keys
+            )
             or (row_number and f"row_number:{row_number}" in completed_keys)
         ):
             skipped_count += 1
@@ -365,7 +381,12 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         all_rows = list(reader)
 
     if config.rows:
-        selected_rows = [row for row in all_rows if _safe_int(row.get("row_number")) in config.rows]
+        requested_rows = set(config.rows)
+        selected_rows = [
+            row
+            for row in all_rows
+            if (row_number := _row_number_from_csv(row)) is not None and row_number in requested_rows
+        ]
     else:
         selected_rows = _row_slice(all_rows, config.start_row, config.max_rows)
 
@@ -376,6 +397,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         selected_rows, filtered_row_count = _filter_rows_not_in_completed_csv(
             selected_rows,
             config.exclude_completed_csv,
+            match_ground_truth_path=not bool(config.rows),
         )
     rows_after_filter = len(selected_rows)
 
@@ -702,7 +724,7 @@ def parse_args() -> argparse.Namespace:
         "--rows", 
         type=str, 
         default=None, 
-        help="Comma-separated list of specific row numbers to execute (e.g., 1,6,7,142)"
+        help="Comma-separated list of CSV row_number values to execute (e.g., 1,6,7,142)"
     )
     parser.add_argument(
         "--exclude-completed-csv",
@@ -710,7 +732,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "CSV file of prior benchmark results to exclude from this run. "
-            "Rows are skipped when ground_truth_path or row_number matches an entry in the file."
+            "Rows are skipped when row_number matches; when --rows is not used, "
+            "ground_truth_path matches are also excluded."
         ),
     )
     parser.add_argument("--max-iterations", type=int, default=30)

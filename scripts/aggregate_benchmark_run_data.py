@@ -87,13 +87,107 @@ def _collect_files_recursive(paths, extension, exclude_filenames=None):
     return sorted(dict.fromkeys(collected))
 
 
+def _order_csv_paths_by_priority(csv_paths, priority_order_list=None):
+    """Return CSV paths ordered by basename priority, then remaining paths."""
+    if not priority_order_list:
+        return list(csv_paths)
+
+    remaining = list(csv_paths)
+    prioritized = []
+
+    for file_name in priority_order_list:
+        match_idx = next(
+            (idx for idx, path in enumerate(remaining) if os.path.basename(path) == file_name),
+            None,
+        )
+        if match_idx is None:
+            print(f"Warning: priority CSV '{file_name}' was not found and will be skipped.")
+            continue
+        prioritized.append(remaining.pop(match_idx))
+
+    return prioritized + remaining
+
+
+def _normalize_drop_row_numbers(values):
+    if values is None:
+        return set()
+
+    if isinstance(values, (str, int, float)):
+        values = [values]
+
+    normalized = set()
+    for value in values:
+        num = pd.to_numeric(value, errors="coerce")
+        if pd.isna(num):
+            raise ValueError(f"Invalid row_number value for drop list: {value}")
+        normalized.add(int(num))
+    return normalized
+
+
+def _build_drop_row_number_map(priority_order_list=None, dropped_row_numbers=None):
+    """Build a basename->row_number set mapping for per-file drop filtering."""
+    if dropped_row_numbers is None:
+        return {}
+
+    if not priority_order_list:
+        raise ValueError(
+            "priority_order_list is required whenever dropped_row_numbers is provided."
+        )
+
+    allowed_priority_files = set(priority_order_list)
+
+    if isinstance(dropped_row_numbers, dict):
+        drop_map = {}
+        for file_name, values in dropped_row_numbers.items():
+            if file_name not in allowed_priority_files:
+                print(
+                    f"Warning: dropped_row_numbers entry for non-priority CSV '{file_name}' was ignored."
+                )
+                continue
+            drop_map[file_name] = _normalize_drop_row_numbers(values)
+        return drop_map
+
+    if len(dropped_row_numbers) > len(priority_order_list):
+        raise ValueError(
+            "dropped_row_numbers cannot be longer than priority_order_list when using list input."
+        )
+
+    drop_map = {}
+    for idx, values in enumerate(dropped_row_numbers):
+        file_name = priority_order_list[idx]
+        drop_map[file_name] = _normalize_drop_row_numbers(values)
+
+    return drop_map
+
+
+def _assert_output_path_not_in_inputs(output_path, input_paths, file_label):
+    """Prevent accidental overwrite of any original input file."""
+    if not output_path or not input_paths:
+        return
+
+    output_abs = os.path.abspath(output_path)
+    for input_path in input_paths:
+        if os.path.abspath(input_path) == output_abs:
+            raise ValueError(
+                f"{file_label} output path '{output_path}' matches an input file. "
+                "Use a different output path to avoid modifying originals."
+            )
+
+
 def merge_results_from_paths(
     csv_paths,
     merged_csv_path="results_merged.csv",
     jsonl_paths=None,
     merged_jsonl_path="results_merged.jsonl",
+    dropped_row_numbers=None,
+    priority_order_list=None,
 ):
-    """Recursively expand CSV and JSONL inputs, then merge them."""
+    """Recursively expand inputs, then merge.
+
+    For CSVs, optional ``priority_order_list`` controls filename merge priority,
+    and ``dropped_row_numbers`` removes matching ``row_number`` values per
+    priority entry before merge.
+    """
     csv_files = _collect_files_recursive(
         csv_paths,
         ".csv",
@@ -114,6 +208,8 @@ def merge_results_from_paths(
         merged_csv_path=merged_csv_path,
         jsonl_paths=jsonl_files,
         merged_jsonl_path=merged_jsonl_path,
+        dropped_row_numbers=dropped_row_numbers,
+        priority_order_list=priority_order_list,
     )
 
 
@@ -121,8 +217,16 @@ def merge_results_from_directory(
     base_dir,
     merged_csv_path="results_merged.csv",
     merged_jsonl_path="results_merged.jsonl",
+    dropped_row_numbers=None,
+    priority_order_list=None,
 ):
-    """Find CSV and JSONL files recursively under ``base_dir`` and merge them."""
+    """Find CSV/JSONL files under ``base_dir`` and merge them.
+
+    CSV handling supports optional per-priority row drops:
+    - ``priority_order_list``: ordered list of CSV file names (basenames).
+    - ``dropped_row_numbers``: ordered list aligned to priority entries, or a
+      dict of ``{csv_file_name: row_numbers_to_drop}``.
+    """
     resolved_csv_path = (
         merged_csv_path
         if os.path.isabs(merged_csv_path)
@@ -139,6 +243,8 @@ def merge_results_from_directory(
         merged_csv_path=resolved_csv_path,
         jsonl_paths=[base_dir],
         merged_jsonl_path=resolved_jsonl_path,
+        dropped_row_numbers=dropped_row_numbers,
+        priority_order_list=priority_order_list,
     )
 
 
@@ -317,16 +423,55 @@ def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_
     df_merged.to_csv(output_csv, index=False)
     print(f"Successfully created merged results at '{output_csv}'")
 
-def merge_results(csv_paths, merged_csv_path, jsonl_paths=None, merged_jsonl_path=None):
+def merge_results(
+    csv_paths,
+    merged_csv_path,
+    jsonl_paths=None,
+    merged_jsonl_path=None,
+    dropped_row_numbers=None,
+    priority_order_list=None,
+):
     """
     Merges multiple CSV and JSONL files from the same model into single files.
+
+    Optional CSV controls:
+    - ``priority_order_list``: merge these CSV basenames first, in order.
+    - ``dropped_row_numbers``: drop matching ``row_number`` values before merge;
+      accepts an ordered list aligned to priority entries, or a dict mapping
+      file basename to row numbers. Drops are applied only to files listed in
+      ``priority_order_list``.
+    - For duplicate ``row_number`` values across files, later files in merge
+      order replace earlier rows (lower priority overrides higher priority).
     """
     # Merge CSVs while preserving original row order across files.
     if csv_paths:
+        _assert_output_path_not_in_inputs(merged_csv_path, csv_paths, "CSV")
+        ordered_csv_paths = _order_csv_paths_by_priority(csv_paths, priority_order_list)
+        drop_row_number_map = _build_drop_row_number_map(
+            priority_order_list=priority_order_list,
+            dropped_row_numbers=dropped_row_numbers,
+        )
+
         dfs = []
-        for file_idx, f in enumerate(csv_paths):
+        for file_idx, f in enumerate(ordered_csv_paths):
             if os.path.exists(f):
                 df = pd.read_csv(f)
+
+                file_name = os.path.basename(f)
+                row_numbers_to_drop = drop_row_number_map.get(file_name, set())
+                if row_numbers_to_drop:
+                    if "row_number" not in df.columns:
+                        raise ValueError(
+                            f"CSV '{f}' does not contain 'row_number' required for dropped_row_numbers."
+                        )
+                    row_number_series = pd.to_numeric(df["row_number"], errors="coerce")
+                    before_count = len(df)
+                    df = df[~row_number_series.isin(row_numbers_to_drop)].copy()
+                    print(
+                        f"Dropped {before_count - len(df)} row(s) from '{f}' "
+                        f"for row_number values: {sorted(row_numbers_to_drop)}"
+                    )
+
                 df = df.reset_index(drop=True)
                 df["_file_order"] = file_idx
                 df["_row_order"] = df.index
@@ -338,6 +483,27 @@ def merge_results(csv_paths, merged_csv_path, jsonl_paths=None, merged_jsonl_pat
             # If a `row_number` column exists, prefer sorting by it across all files.
             if "row_number" in merged_df.columns:
                 merged_df["row_number"] = pd.to_numeric(merged_df["row_number"], errors="coerce")
+                merged_df = merged_df.sort_values(
+                    by=["row_number", "_file_order", "_row_order"],
+                    na_position="last",
+                )
+
+                # Lower-priority files (later in merge order) replace earlier rows
+                # when they share the same row_number.
+                with_row_number = merged_df[merged_df["row_number"].notna()].copy()
+                without_row_number = merged_df[merged_df["row_number"].isna()].copy()
+                before_dedup_count = len(with_row_number)
+                with_row_number = with_row_number.drop_duplicates(
+                    subset=["row_number"],
+                    keep="last",
+                )
+                replaced_count = before_dedup_count - len(with_row_number)
+                if replaced_count > 0:
+                    print(
+                        f"Replaced {replaced_count} earlier row(s) using lower-priority CSV rows with matching row_number."
+                    )
+
+                merged_df = pd.concat([with_row_number, without_row_number], ignore_index=True)
                 merged_df = merged_df.sort_values(
                     by=["row_number", "_file_order", "_row_order"],
                     na_position="last",
@@ -358,6 +524,7 @@ def merge_results(csv_paths, merged_csv_path, jsonl_paths=None, merged_jsonl_pat
     
     # Merge JSONLs
     if jsonl_paths and merged_jsonl_path:
+        _assert_output_path_not_in_inputs(merged_jsonl_path, jsonl_paths, "JSONL")
         valid_jsonls = [f for f in jsonl_paths if os.path.exists(f)]
         if valid_jsonls:
             with open(merged_jsonl_path, 'w', encoding='utf-8') as outfile:
@@ -451,9 +618,15 @@ if __name__ == "__main__":
     #     status_col='status',
     # )
 
-    # merge_results_from_directory(
-    #     base_dir="./benchmark_runs/cloudformation_20260816_010719_CFNEval",
-    # )
+    merge_results_from_directory(
+        base_dir="./benchmark_runs/cloudformation_20260819_214458",
+        priority_order_list=[
+            "results_merged_old_CFNEval.csv",
+        ],
+        dropped_row_numbers={
+            "results_merged_old_CFNEval.csv": [12, 18, 46, 51, 52, 59, 66, 88, 133, 146, 155, 158, 173, 175, 186, 200, 218, 220, 226, 255, 258, 271, 277, 294, 304, 307, 309, 312, 313, 315, 316],
+        },
+    )
 
     # move_run_folders_from_csv(
     #     input_csv='benchmark_runs/cloudformation_20260816_010719_CFNEval/results_merged.csv',
@@ -463,11 +636,11 @@ if __name__ == "__main__":
     #     dry_run=False,
     # )
 
-    merge_results_with_reports(
-        input_csv="benchmark_runs/cloudformation_20260816_010719_CFNEval/results_merged.csv", 
-        base_dir="runs/CFNEval_DeepseekV4Flash_security_runs", 
-        output_csv="benchmark_runs/cloudformation_20260816_010719_CFNEval/CFNEval_DeepseekV4Flash_security_runs.csv"
-    )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/cloudformation_20260816_010719_CFNEval/results_merged.csv", 
+    #     base_dir="runs/CFNEval_DeepseekV4Flash_security_runs", 
+    #     output_csv="benchmark_runs/cloudformation_20260816_010719_CFNEval/CFNEval_DeepseekV4Flash_security_runs.csv"
+    # )
 
     # merge_results(
     #     csv_paths=[
