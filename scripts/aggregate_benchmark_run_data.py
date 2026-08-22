@@ -618,29 +618,29 @@ if __name__ == "__main__":
     #     status_col='status',
     # )
 
-    merge_results_from_directory(
-        base_dir="./benchmark_runs/cloudformation_20260819_214458",
-        priority_order_list=[
-            "results_merged_old_CFNEval.csv",
-        ],
-        dropped_row_numbers={
-            "results_merged_old_CFNEval.csv": [12, 18, 46, 51, 52, 59, 66, 88, 133, 146, 155, 158, 173, 175, 186, 200, 218, 220, 226, 255, 258, 271, 277, 294, 304, 307, 309, 312, 313, 315, 316],
-        },
-    )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/cloudformation_20260819_214458",
+    #     priority_order_list=[
+    #         "results_merged_old_CFNEval.csv",
+    #     ],
+    #     dropped_row_numbers={
+    #         "results_merged_old_CFNEval.csv": [12, 18, 46, 51, 52, 59, 66, 88, 133, 146, 155, 158, 173, 175, 186, 200, 218, 220, 226, 255, 258, 271, 277, 294, 304, 307, 309, 312, 313, 315, 316],
+    #     },
+    # )
 
     # move_run_folders_from_csv(
-    #     input_csv='benchmark_runs/cloudformation_20260816_010719_CFNEval/results_merged.csv',
+    #     input_csv='benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/results_merged.csv',
     #     runs_dir='runs',
     #     target_subfolder_name='CFNEval_DeepseekV4Flash_security_runs',
     #     run_id_col='run_id',
     #     dry_run=False,
     # )
 
-    # merge_results_with_reports(
-    #     input_csv="benchmark_runs/cloudformation_20260816_010719_CFNEval/results_merged.csv", 
-    #     base_dir="runs/CFNEval_DeepseekV4Flash_security_runs", 
-    #     output_csv="benchmark_runs/cloudformation_20260816_010719_CFNEval/CFNEval_DeepseekV4Flash_security_runs.csv"
-    # )
+    merge_results_with_reports(
+        input_csv="benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/results_merged.csv", 
+        base_dir="runs/CFNEval_DeepseekV4Flash_security_runs", 
+        output_csv="benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/CFNEvalV2_DeepseekV4Flash_security_runs.csv"
+    )
 
     # merge_results(
     #     csv_paths=[
