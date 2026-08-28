@@ -96,6 +96,16 @@ class LLMConfig:
     max_tokens: int = 8192
     reasoning_enabled: bool = True
 
+    # Retry behavior for transient LLM call failures (connection/timeout
+    # errors and empty/blank completions only — NOT rate limits or auth
+    # errors, and NOT counted against current_iteration).
+    llm_retry_max_attempts: int = field(
+        default_factory=lambda: int(os.getenv("LLM_RETRY_MAX_ATTEMPTS", "4"))
+    )
+    llm_retry_backoff_seconds: float = field(
+        default_factory=lambda: float(os.getenv("LLM_RETRY_BACKOFF_SECONDS", "2.0"))
+    )
+
     # OpenRouter
     openrouter_api_key: str = field(
         default_factory=lambda: os.getenv("OPENROUTER_API_KEY", "")

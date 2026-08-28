@@ -55,6 +55,10 @@ def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
     except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
         return default
 
 
@@ -146,6 +150,10 @@ def _row_number_from_csv(row: dict[str, str]) -> int | None:
     try:
         return int(raw_row_number)
     except ValueError:
+        pass
+    try:
+        return int(float(raw_row_number))
+    except ValueError:
         return None
 
 
@@ -163,8 +171,8 @@ def _load_completed_scenario_keys(csv_path: Path | None) -> set[str]:
             if ground_truth_path:
                 completed_keys.add(f"ground_truth_path:{ground_truth_path}")
 
-            row_number = (row.get("row_number") or "").strip()
-            if row_number:
+            row_number = _row_number_from_csv(row)
+            if row_number is not None:
                 completed_keys.add(f"row_number:{row_number}")
 
     return completed_keys
@@ -184,7 +192,7 @@ def _filter_rows_not_in_completed_csv(
     skipped_count = 0
     for row in rows:
         ground_truth_path = (row.get("ground_truth_path") or "").strip()
-        row_number = (row.get("row_number") or "").strip()
+        row_number = _row_number_from_csv(row)
 
         if (
             (
@@ -192,7 +200,7 @@ def _filter_rows_not_in_completed_csv(
                 and ground_truth_path
                 and f"ground_truth_path:{ground_truth_path}" in completed_keys
             )
-            or (row_number and f"row_number:{row_number}" in completed_keys)
+            or (row_number is not None and f"row_number:{row_number}" in completed_keys)
         ):
             skipped_count += 1
             continue
