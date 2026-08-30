@@ -102,17 +102,28 @@ def validate_cfn_lint(template: str) -> ValidationResult:
             ["cfn-lint", tmp_path, "--format", "json"],
             capture_output=True, text=True, timeout=60,
         )
-        errors = []
         raw = result.stdout or result.stderr
-        if result.returncode != 0:
-            try:
-                findings = json.loads(raw)
-                errors = [_format_cfn_lint_finding(f) for f in findings]
-            except json.JSONDecodeError:
-                errors = [raw]
+
+        try:
+            findings = json.loads(raw)
+            errors = [_format_cfn_lint_finding(f) for f in findings]
+            # cfn-lint's own exit code defaults to --non-zero-exit-code=
+            # informational, so it goes non-zero for ANY finding, including
+            # plain Warning/Informational ones (e.g. W3002). Only Error-level
+            # findings should actually fail the stage; Warning/Informational
+            # are surfaced to the LLM but non-blocking, mirroring
+            # validate_tflint's severity handling below.
+            passed = not any(
+                (finding.get("Level") or "").lower() == "error" for finding in findings
+            )
+        except json.JSONDecodeError:
+            # Fallback: not valid JSON (e.g. a crash), trust the exit code.
+            passed = result.returncode == 0
+            errors = [] if passed else [raw]
+
         return ValidationResult(
             stage="cfn-lint",
-            passed=result.returncode == 0,
+            passed=passed,
             errors=errors,
             raw_output=raw,
         )

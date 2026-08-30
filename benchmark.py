@@ -20,6 +20,7 @@ class BenchmarkConfig:
     max_rows: int | None
     rows: list[int] | None
     exclude_completed_csv: Path | None
+    retry_errors: bool
     max_iterations: int
     provider: str           # "openrouter" | "claude" | "openai"
     model: str | None
@@ -194,20 +195,84 @@ def _filter_rows_not_in_completed_csv(
         ground_truth_path = (row.get("ground_truth_path") or "").strip()
         row_number = _row_number_from_csv(row)
 
-        if (
-            (
-                match_ground_truth_path
-                and ground_truth_path
-                and f"ground_truth_path:{ground_truth_path}" in completed_keys
-            )
-            or (row_number is not None and f"row_number:{row_number}" in completed_keys)
-        ):
+        # ground_truth_path is the stable scenario identity; row_number is
+        # NOT stable across dataset revisions (a completed_csv built from a
+        # differently-numbered dataset can reuse the same row_number for an
+        # unrelated scenario). When a ground_truth_path is available, trust
+        # it exclusively — only fall back to row_number when it's missing.
+        if match_ground_truth_path and ground_truth_path:
+            is_match = f"ground_truth_path:{ground_truth_path}" in completed_keys
+        else:
+            is_match = row_number is not None and f"row_number:{row_number}" in completed_keys
+
+        if is_match:
             skipped_count += 1
             continue
 
         filtered_rows.append(row)
 
     return filtered_rows, skipped_count
+
+
+def _load_failed_scenario_keys(csv_path: Path | None) -> set[str]:
+    if csv_path is None:
+        return set()
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Prior results CSV not found: {csv_path}")
+
+    failed_keys: set[str] = set()
+    with csv_path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            final_validation_passed = (row.get("final_validation_passed") or "").strip().lower()
+            if final_validation_passed != "false":
+                continue
+
+            ground_truth_path = (row.get("ground_truth_path") or "").strip()
+            if ground_truth_path:
+                failed_keys.add(f"ground_truth_path:{ground_truth_path}")
+
+            row_number = _row_number_from_csv(row)
+            if row_number is not None:
+                failed_keys.add(f"row_number:{row_number}")
+
+    return failed_keys
+
+
+def _filter_rows_in_failed_csv(
+    rows: list[dict[str, str]],
+    completed_csv: Path | None,
+    *,
+    match_ground_truth_path: bool = True,
+) -> tuple[list[dict[str, str]], int]:
+    """Keep only rows whose row_number/ground_truth_path had
+    final_validation_passed=False in completed_csv. Inverse selection of
+    _filter_rows_not_in_completed_csv."""
+    failed_keys = _load_failed_scenario_keys(completed_csv)
+    if not failed_keys:
+        return [], 0
+
+    selected_rows: list[dict[str, str]] = []
+    for row in rows:
+        ground_truth_path = (row.get("ground_truth_path") or "").strip()
+        row_number = _row_number_from_csv(row)
+
+        # ground_truth_path is the stable scenario identity; row_number is
+        # NOT stable across dataset revisions (completed_csv can be built
+        # from a differently-numbered dataset than --dataset, so the same
+        # row_number can coincidentally mean an unrelated, already-passing
+        # scenario). When a ground_truth_path is available, trust it
+        # exclusively — only fall back to row_number when it's missing.
+        if match_ground_truth_path and ground_truth_path:
+            is_match = f"ground_truth_path:{ground_truth_path}" in failed_keys
+        else:
+            is_match = row_number is not None and f"row_number:{row_number}" in failed_keys
+
+        if is_match:
+            selected_rows.append(row)
+
+    skipped_count = len(rows) - len(selected_rows)
+    return selected_rows, skipped_count
 
 
 def _extract_policy_metrics(validation_results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -402,11 +467,18 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
 
     filtered_row_count = 0
     if config.exclude_completed_csv is not None:
-        selected_rows, filtered_row_count = _filter_rows_not_in_completed_csv(
-            selected_rows,
-            config.exclude_completed_csv,
-            match_ground_truth_path=not bool(config.rows),
-        )
+        if config.retry_errors:
+            selected_rows, filtered_row_count = _filter_rows_in_failed_csv(
+                selected_rows,
+                config.exclude_completed_csv,
+                match_ground_truth_path=not bool(config.rows),
+            )
+        else:
+            selected_rows, filtered_row_count = _filter_rows_not_in_completed_csv(
+                selected_rows,
+                config.exclude_completed_csv,
+                match_ground_truth_path=not bool(config.rows),
+            )
     rows_after_filter = len(selected_rows)
 
     started_at = datetime.now().isoformat()
@@ -440,10 +512,16 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         f"| dataset={config.dataset_path}"
     )
     if config.exclude_completed_csv is not None:
-        print(
-            f"[Benchmark] Excluding {filtered_row_count} row(s) using prior results CSV: "
-            f"{config.exclude_completed_csv}"
-        )
+        if config.retry_errors:
+            print(
+                f"[Benchmark] Retrying {rows_after_filter} previously-failed row(s) "
+                f"from prior results CSV: {config.exclude_completed_csv}"
+            )
+        else:
+            print(
+                f"[Benchmark] Excluding {filtered_row_count} row(s) using prior results CSV: "
+                f"{config.exclude_completed_csv}"
+            )
     print(f"{'=' * 80}")
 
     initial_summary = _build_summary(
@@ -741,7 +819,18 @@ def parse_args() -> argparse.Namespace:
         help=(
             "CSV file of prior benchmark results to exclude from this run. "
             "Rows are skipped when row_number matches; when --rows is not used, "
-            "ground_truth_path matches are also excluded."
+            "ground_truth_path matches are also excluded. "
+            "Combine with --retry-errors to instead select only the failed rows."
+        ),
+    )
+    parser.add_argument(
+        "--retry-errors",
+        action="store_true",
+        help=(
+            "Requires --exclude-completed-csv. Instead of excluding rows found in "
+            "that CSV, run ONLY the rows whose final_validation_passed was False "
+            "there (row_number match, or ground_truth_path match when --rows is "
+            "not used)."
         ),
     )
     parser.add_argument("--max-iterations", type=int, default=30)
@@ -781,7 +870,10 @@ def parse_args() -> argparse.Namespace:
         choices=["none", "localstack", "aws"],
         default="localstack",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.retry_errors and args.exclude_completed_csv is None:
+        parser.error("--retry-errors requires --exclude-completed-csv")
+    return args
 
 
 if __name__ == "__main__":
@@ -811,6 +903,7 @@ if __name__ == "__main__":
         max_rows=args.max_rows,
         rows=specific_rows,
         exclude_completed_csv=args.exclude_completed_csv,
+        retry_errors=args.retry_errors,
         max_iterations=args.max_iterations,
         provider=args.provider,
         model=args.model,
