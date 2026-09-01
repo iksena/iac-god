@@ -663,11 +663,11 @@ if __name__ == "__main__":
     #     status_col='status',
     # )
 
-    merge_results_from_directory(
-        base_dir="./benchmark_runs/cloudformation_20260826_185515_CFNEvalRealAWS",
-        benchmark_csv="data/cfn_eval_benchmark_real_aws_diff345.csv",
-        prefer_final_validation_passed=True,
-    )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/cloudformation_20260826_185515_CFNEvalRealAWS",
+    #     benchmark_csv="data/cfn_eval_benchmark_real_aws_diff345.csv",
+    #     prefer_final_validation_passed=True,
+    # )
     # merge_results_from_directory(
     #     base_dir="./benchmark_runs/terraform_20260823_213429 TFEvalV2",
     #     benchmark_csv="data/tf_benchmark_diff_345.csv",
@@ -675,18 +675,18 @@ if __name__ == "__main__":
     # )
 
     # move_run_folders_from_csv(
-    #     input_csv='benchmark_runs/terraform_20260823_213429 TFEvalV2/results_merged.csv',
+    #     input_csv='benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/results_merged.csv',
     #     runs_dir='runs',
-    #     target_subfolder_name='TFEval_DeepseekV4Flash_security_runs',
+    #     target_subfolder_name='CFNEvalV2_DeepseekV4Flash_security_runs',
     #     run_id_col='run_id',
     #     dry_run=False,
     # )
 
-    # merge_results_with_reports(
-    #     input_csv="benchmark_runs/terraform_20260823_213429 TFEvalV2/results_merged.csv", 
-    #     base_dir="runs/TFEval_DeepseekV4Flash_security_runs", 
-    #     output_csv="benchmark_runs/terraform_20260823_213429 TFEvalV2/TFEvalV2_DeepseekV4Flash_security_runs.csv"
-    # )
+    merge_results_with_reports(
+        input_csv="benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/results_merged.csv", 
+        base_dir="runs/CFNEvalV2_DeepseekV4Flash_security_runs", 
+        output_csv="benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/CFNEvalV2_DeepseekV4Flash_security_runs.csv"
+    )
 
     # merge_results(
     #     csv_paths=[
