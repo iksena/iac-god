@@ -117,6 +117,17 @@ class LLMConfig:
     openrouter_min_quantization: str = field(
         default_factory=lambda: os.getenv("OPENROUTER_MIN_QUANTIZATION", "").strip().lower()
     )
+    # Reasoning effort hint sent as reasoning.effort (e.g. "low", "medium",
+    # "high" — some models also accept "max"/"none"). Empty string means
+    # "not set": reasoning.enabled is still sent per reasoning_enabled, but
+    # without an explicit effort level (provider/model default applies).
+    # Lower effort leaves more of the shared max_tokens completion budget
+    # for actual answer content instead of reasoning — useful for
+    # always-reasoning models (e.g. GLM 5.3 Flash) that can burn the entire
+    # budget on reasoning and return empty content otherwise.
+    openrouter_reasoning_effort: str = field(
+        default_factory=lambda: os.getenv("OPENROUTER_REASONING_EFFORT", "").strip().lower()
+    )
 
     # Anthropic direct
     anthropic_api_key: str = field(

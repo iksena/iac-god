@@ -244,7 +244,10 @@ def _call_llm_with_history(client, model: str, system: str, messages: list) -> t
         if provider_preferences:
             extra_body["provider"] = provider_preferences
         if DEFAULT_CONFIG.reasoning_enabled:
-            extra_body["reasoning"] = {"enabled": True}
+            reasoning_opts: dict = {"enabled": True}
+            if DEFAULT_CONFIG.openrouter_reasoning_effort:
+                reasoning_opts["effort"] = DEFAULT_CONFIG.openrouter_reasoning_effort
+            extra_body["reasoning"] = reasoning_opts
         return _call_openai_compat(
             client, model, system, messages,
             is_reasoning=False,  # OpenRouter handles reasoning server-side

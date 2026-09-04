@@ -27,6 +27,7 @@ class BenchmarkConfig:
     deploy_target: str
     openrouter_provider_only: str | None
     openrouter_min_quantization: str | None
+    openrouter_reasoning_effort: str | None
     iac_type: str           # "cloudformation" | "terraform"
 
 
@@ -369,6 +370,7 @@ def _build_summary(
         "deploy_target": config.deploy_target,
         "openrouter_provider_only": config.openrouter_provider_only,
         "openrouter_min_quantization": config.openrouter_min_quantization,
+        "openrouter_reasoning_effort": config.openrouter_reasoning_effort,
         "max_iterations": config.max_iterations,
         "rows_requested": selected_row_count,
         "rows_filtered_out": filtered_row_count,
@@ -631,6 +633,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 deploy_target=config.deploy_target,
                 openrouter_provider_only=config.openrouter_provider_only,
                 openrouter_min_quantization=config.openrouter_min_quantization,
+                openrouter_reasoning_effort=config.openrouter_reasoning_effort,
                 iac_type=config.iac_type,
             )
 
@@ -866,6 +869,19 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
     parser.add_argument(
+        "--openrouter-reasoning-effort",
+        type=str,
+        default=None,
+        help=(
+            "Reasoning effort hint sent as reasoning.effort (maps to OpenRouter's "
+            "provider.reasoning.effort). Typical values: low, medium, high "
+            "(some models also accept max/none). Lower effort leaves more of the "
+            "shared max_tokens budget for actual content instead of reasoning — "
+            "useful for always-reasoning models that can return empty content "
+            "when reasoning consumes the whole token budget."
+        ),
+    )
+    parser.add_argument(
         "--deploy-target",
         choices=["none", "localstack", "aws"],
         default="localstack",
@@ -910,6 +926,7 @@ if __name__ == "__main__":
         deploy_target=args.deploy_target,
         openrouter_provider_only=args.openrouter_provider_only,
         openrouter_min_quantization=args.openrouter_min_quantization,
+        openrouter_reasoning_effort=args.openrouter_reasoning_effort,
         iac_type=args.iac_type,
     )
     run_benchmark(cfg)
