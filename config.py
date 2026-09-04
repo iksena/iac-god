@@ -96,6 +96,16 @@ class LLMConfig:
     max_tokens: int = 8192
     reasoning_enabled: bool = True
 
+    # Retry behavior for transient LLM call failures (connection/timeout
+    # errors and empty/blank completions only — NOT rate limits or auth
+    # errors, and NOT counted against current_iteration).
+    llm_retry_max_attempts: int = field(
+        default_factory=lambda: int(os.getenv("LLM_RETRY_MAX_ATTEMPTS", "4"))
+    )
+    llm_retry_backoff_seconds: float = field(
+        default_factory=lambda: float(os.getenv("LLM_RETRY_BACKOFF_SECONDS", "2.0"))
+    )
+
     # OpenRouter
     openrouter_api_key: str = field(
         default_factory=lambda: os.getenv("OPENROUTER_API_KEY", "")
@@ -106,6 +116,17 @@ class LLMConfig:
     )
     openrouter_min_quantization: str = field(
         default_factory=lambda: os.getenv("OPENROUTER_MIN_QUANTIZATION", "").strip().lower()
+    )
+    # Reasoning effort hint sent as reasoning.effort (e.g. "low", "medium",
+    # "high" — some models also accept "max"/"none"). Empty string means
+    # "not set": reasoning.enabled is still sent per reasoning_enabled, but
+    # without an explicit effort level (provider/model default applies).
+    # Lower effort leaves more of the shared max_tokens completion budget
+    # for actual answer content instead of reasoning — useful for
+    # always-reasoning models (e.g. GLM 5.3 Flash) that can burn the entire
+    # budget on reasoning and return empty content otherwise.
+    openrouter_reasoning_effort: str = field(
+        default_factory=lambda: os.getenv("OPENROUTER_REASONING_EFFORT", "").strip().lower()
     )
 
     # Anthropic direct
@@ -144,7 +165,7 @@ class DeployConfig:
     aws_profile: str = field(
         default_factory=lambda: os.getenv("AWS_PROFILE", "default")
     )
-    stack_creation_timeout: int = 60 * 60
+    stack_creation_timeout: int = 30 * 60
     stack_deletion_timeout: int = 5 * 60
 
 

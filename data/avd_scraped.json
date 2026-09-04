@@ -10105,5 +10105,39 @@
       "https://docs.aws.amazon.com/xray/latest/devguide/xray-console-encryption.html"
     ],
     "raw_text": "XRay Encryption Enabled Ensures CMK-based encryption is enabled for XRay traces. AWS XRay supports default encryption based on an AWS-managed KMS key as well as encryption using a customer managed key (CMK). For maximum security, the CMK-based encryption should be used. Recommended Actions Update XRay encryption configuration to use a CMK. Links https://docs.aws.amazon.com/xray/latest/devguide/xray-console-encryption.html"
+  },
+  "https://avd.aquasec.com/misconfig/aws/ec2/vpc-peering-least-access-routes/": {
+    "service_slug": "ec2",
+    "check_slug": "vpc-peering-least-access-routes",
+    "check_name": "VPC Peering Least Access Routes",
+    "url": "https://avd.aquasec.com/misconfig/aws/ec2/vpc-peering-least-access-routes/",
+    "title": "VPC Peering Least Access Routes",
+    "description": "Ensures routing tables for VPC peering are least access.",
+    "impact": "",
+    "remediation_steps": [
+      "Routing traffic to the entire peered VPC exposes all resources in that network. VPC peering routes should only allow access to the subnets that are actually needed.",
+      "Replace broad VPC peering routes with more specific destination CIDR blocks"
+    ],
+    "remediation_console": "Routing traffic to the entire peered VPC exposes all resources in that network. VPC peering routes should only allow access to the subnets that are actually needed.\nReplace broad VPC peering routes with more specific destination CIDR blocks",
+    "cfn_good_example": "",
+    "tf_good_example": "",
+    "raw_text": "VPC Peering Least Access Routes Ensures routing tables for VPC peering are least access. Routing traffic to the entire peered VPC exposes all resources in that network. VPC peering routes should only allow access to the subnets that are actually needed. Recommended Actions Replace broad VPC peering routes with more specific destination CIDR blocks Links https://docs.aws.amazon.com/vpc/latest/peering/vpc-peering-routing.html"
+  },
+  "https://avd.aquasec.com/misconfig/aws/iam/cloudshell-full-access-restricted/": {
+    "service_slug": "iam",
+    "check_slug": "cloudshell-full-access-restricted",
+    "check_name": "CloudShell Full Access Restricted",
+    "url": "https://avd.aquasec.com/misconfig/aws/iam/cloudshell-full-access-restricted/",
+    "title": "CloudShell Full Access Restricted",
+    "description": "Ensures that access to AWSCloudShellFullAccess is restricted.",
+    "impact": "",
+    "remediation_steps": [
+      "Access to the AWSCloudShellFullAccess policy should be restricted, as it presents a potential channel for data exfiltration by privileged users.",
+      "Detach the AWSCloudShellFullAccess policy from all IAM users, groups, and roles, and replace with a more restrictive policy if CloudShell access is required."
+    ],
+    "remediation_console": "Access to the AWSCloudShellFullAccess policy should be restricted, as it presents a potential channel for data exfiltration by privileged users.\nDetach the AWSCloudShellFullAccess policy from all IAM users, groups, and roles, and replace with a more restrictive policy if CloudShell access is required.",
+    "cfn_good_example": "",
+    "tf_good_example": "",
+    "raw_text": "CloudShell Full Access Restricted Ensures that access to AWSCloudShellFullAccess is restricted. Access to the AWSCloudShellFullAccess policy should be restricted, as it presents a potential channel for data exfiltration by privileged users. Recommended Actions Detach the AWSCloudShellFullAccess policy from all IAM users, groups, and roles, and replace with a more restrictive policy if CloudShell access is required. Links https://docs.aws.amazon.com/cloudshell/latest/userguide/sec-auth-with-identities.html"
   }
 }

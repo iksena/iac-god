@@ -18,12 +18,17 @@ class BenchmarkConfig:
     output_dir: Path
     start_row: int
     max_rows: int | None
+    rows: list[int] | None
+    exclude_completed_csv: Path | None
+    retry_errors: bool
     max_iterations: int
     provider: str           # "openrouter" | "claude" | "openai"
     model: str | None
     deploy_target: str
     openrouter_provider_only: str | None
     openrouter_min_quantization: str | None
+    openrouter_reasoning_effort: str | None
+    iac_type: str           # "cloudformation" | "terraform"
 
 
 CSV_RESULT_FIELDS = [
@@ -51,6 +56,10 @@ CSV_RESULT_FIELDS = [
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
         return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(value))
     except (TypeError, ValueError):
         return default
 
@@ -136,6 +145,137 @@ def _row_slice(rows: list[dict[str, str]], start_row: int, max_rows: int | None)
     return sliced
 
 
+def _row_number_from_csv(row: dict[str, str]) -> int | None:
+    raw_row_number = (row.get("row_number") or "").strip()
+    if not raw_row_number:
+        return None
+    try:
+        return int(raw_row_number)
+    except ValueError:
+        pass
+    try:
+        return int(float(raw_row_number))
+    except ValueError:
+        return None
+
+
+def _load_completed_scenario_keys(csv_path: Path | None) -> set[str]:
+    if csv_path is None:
+        return set()
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Completed-runs CSV not found: {csv_path}")
+
+    completed_keys: set[str] = set()
+    with csv_path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            ground_truth_path = (row.get("ground_truth_path") or "").strip()
+            if ground_truth_path:
+                completed_keys.add(f"ground_truth_path:{ground_truth_path}")
+
+            row_number = _row_number_from_csv(row)
+            if row_number is not None:
+                completed_keys.add(f"row_number:{row_number}")
+
+    return completed_keys
+
+
+def _filter_rows_not_in_completed_csv(
+    rows: list[dict[str, str]],
+    completed_csv: Path | None,
+    *,
+    match_ground_truth_path: bool = True,
+) -> tuple[list[dict[str, str]], int]:
+    completed_keys = _load_completed_scenario_keys(completed_csv)
+    if not completed_keys:
+        return rows, 0
+
+    filtered_rows: list[dict[str, str]] = []
+    skipped_count = 0
+    for row in rows:
+        ground_truth_path = (row.get("ground_truth_path") or "").strip()
+        row_number = _row_number_from_csv(row)
+
+        # ground_truth_path is the stable scenario identity; row_number is
+        # NOT stable across dataset revisions (a completed_csv built from a
+        # differently-numbered dataset can reuse the same row_number for an
+        # unrelated scenario). When a ground_truth_path is available, trust
+        # it exclusively — only fall back to row_number when it's missing.
+        if match_ground_truth_path and ground_truth_path:
+            is_match = f"ground_truth_path:{ground_truth_path}" in completed_keys
+        else:
+            is_match = row_number is not None and f"row_number:{row_number}" in completed_keys
+
+        if is_match:
+            skipped_count += 1
+            continue
+
+        filtered_rows.append(row)
+
+    return filtered_rows, skipped_count
+
+
+def _load_failed_scenario_keys(csv_path: Path | None) -> set[str]:
+    if csv_path is None:
+        return set()
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Prior results CSV not found: {csv_path}")
+
+    failed_keys: set[str] = set()
+    with csv_path.open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            final_validation_passed = (row.get("final_validation_passed") or "").strip().lower()
+            if final_validation_passed != "false":
+                continue
+
+            ground_truth_path = (row.get("ground_truth_path") or "").strip()
+            if ground_truth_path:
+                failed_keys.add(f"ground_truth_path:{ground_truth_path}")
+
+            row_number = _row_number_from_csv(row)
+            if row_number is not None:
+                failed_keys.add(f"row_number:{row_number}")
+
+    return failed_keys
+
+
+def _filter_rows_in_failed_csv(
+    rows: list[dict[str, str]],
+    completed_csv: Path | None,
+    *,
+    match_ground_truth_path: bool = True,
+) -> tuple[list[dict[str, str]], int]:
+    """Keep only rows whose row_number/ground_truth_path had
+    final_validation_passed=False in completed_csv. Inverse selection of
+    _filter_rows_not_in_completed_csv."""
+    failed_keys = _load_failed_scenario_keys(completed_csv)
+    if not failed_keys:
+        return [], 0
+
+    selected_rows: list[dict[str, str]] = []
+    for row in rows:
+        ground_truth_path = (row.get("ground_truth_path") or "").strip()
+        row_number = _row_number_from_csv(row)
+
+        # ground_truth_path is the stable scenario identity; row_number is
+        # NOT stable across dataset revisions (completed_csv can be built
+        # from a differently-numbered dataset than --dataset, so the same
+        # row_number can coincidentally mean an unrelated, already-passing
+        # scenario). When a ground_truth_path is available, trust it
+        # exclusively — only fall back to row_number when it's missing.
+        if match_ground_truth_path and ground_truth_path:
+            is_match = f"ground_truth_path:{ground_truth_path}" in failed_keys
+        else:
+            is_match = row_number is not None and f"row_number:{row_number}" in failed_keys
+
+        if is_match:
+            selected_rows.append(row)
+
+    skipped_count = len(rows) - len(selected_rows)
+    return selected_rows, skipped_count
+
+
 def _extract_policy_metrics(validation_results: list[dict[str, Any]]) -> dict[str, Any]:
     total_policies = 0
     passed_policies = 0
@@ -182,6 +322,7 @@ def _extract_policy_metrics(validation_results: list[dict[str, Any]]) -> dict[st
 def _build_summary(
     config: BenchmarkConfig,
     selected_row_count: int,
+    filtered_row_count: int,
     attempted: int,
     pass_count: int,
     pass_at_1_count: int,
@@ -220,6 +361,7 @@ def _build_summary(
 
     return {
         "dataset": str(config.dataset_path),
+        "iac_type": config.iac_type,
         "started_at": started_at,
         "completed_at": completed_at,
         "duration_seconds": elapsed,
@@ -228,8 +370,11 @@ def _build_summary(
         "deploy_target": config.deploy_target,
         "openrouter_provider_only": config.openrouter_provider_only,
         "openrouter_min_quantization": config.openrouter_min_quantization,
+        "openrouter_reasoning_effort": config.openrouter_reasoning_effort,
         "max_iterations": config.max_iterations,
         "rows_requested": selected_row_count,
+        "rows_filtered_out": filtered_row_count,
+        "rows_selected": selected_row_count - filtered_row_count,
         "rows_attempted": attempted,
         "rows_evaluated": evaluated_runs,
         "runtime_error_runs": runtime_error_runs,
@@ -310,7 +455,34 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         reader = csv.DictReader(fh)
         all_rows = list(reader)
 
-    selected_rows = _row_slice(all_rows, config.start_row, config.max_rows)
+    if config.rows:
+        requested_rows = set(config.rows)
+        selected_rows = [
+            row
+            for row in all_rows
+            if (row_number := _row_number_from_csv(row)) is not None and row_number in requested_rows
+        ]
+    else:
+        selected_rows = _row_slice(all_rows, config.start_row, config.max_rows)
+
+    selected_row_count = len(selected_rows)
+
+    filtered_row_count = 0
+    if config.exclude_completed_csv is not None:
+        if config.retry_errors:
+            selected_rows, filtered_row_count = _filter_rows_in_failed_csv(
+                selected_rows,
+                config.exclude_completed_csv,
+                match_ground_truth_path=not bool(config.rows),
+            )
+        else:
+            selected_rows, filtered_row_count = _filter_rows_not_in_completed_csv(
+                selected_rows,
+                config.exclude_completed_csv,
+                match_ground_truth_path=not bool(config.rows),
+            )
+    rows_after_filter = len(selected_rows)
+
     started_at = datetime.now().isoformat()
     started_ts = time.time()
 
@@ -336,12 +508,28 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
     }
 
     print(f"\n{'=' * 80}")
-    print(f"Benchmark start | provider={config.provider} | model={config.model or 'env default'} | rows={len(selected_rows)} | dataset={config.dataset_path}")
+    print(
+        f"Benchmark start | iac_type={config.iac_type} | provider={config.provider} "
+        f"| model={config.model or 'env default'} | rows={rows_after_filter} "
+        f"| dataset={config.dataset_path}"
+    )
+    if config.exclude_completed_csv is not None:
+        if config.retry_errors:
+            print(
+                f"[Benchmark] Retrying {rows_after_filter} previously-failed row(s) "
+                f"from prior results CSV: {config.exclude_completed_csv}"
+            )
+        else:
+            print(
+                f"[Benchmark] Excluding {filtered_row_count} row(s) using prior results CSV: "
+                f"{config.exclude_completed_csv}"
+            )
     print(f"{'=' * 80}")
 
     initial_summary = _build_summary(
         config=config,
-        selected_row_count=len(selected_rows),
+        selected_row_count=selected_row_count,
+        filtered_row_count=filtered_row_count,
         attempted=0,
         pass_count=0,
         pass_at_1_count=0,
@@ -406,7 +594,8 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
 
             interim_summary = _build_summary(
                 config=config,
-                selected_row_count=len(selected_rows),
+                selected_row_count=selected_row_count,
+                filtered_row_count=filtered_row_count,
                 attempted=len(rows_out),
                 pass_count=pass_count,
                 pass_at_1_count=pass_at_1_count,
@@ -428,7 +617,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
             summary_path.write_text(json.dumps(interim_summary, indent=2), encoding="utf-8")
             continue
 
-        print(f"\n[Benchmark] ({i}/{len(selected_rows)}) Running row {row_number}")
+        print(f"\n[Benchmark] ({i}/{len(selected_rows)}) Running row {row_number} [{config.iac_type}]")
 
         row_started = time.time()
         status = "ok"
@@ -444,6 +633,8 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 deploy_target=config.deploy_target,
                 openrouter_provider_only=config.openrouter_provider_only,
                 openrouter_min_quantization=config.openrouter_min_quantization,
+                openrouter_reasoning_effort=config.openrouter_reasoning_effort,
+                iac_type=config.iac_type,
             )
 
             run_id = final_state["run_id"]
@@ -523,7 +714,8 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         _append_csv(csv_path, result_payload)
         interim_summary = _build_summary(
             config=config,
-            selected_row_count=len(selected_rows),
+            selected_row_count=selected_row_count,
+            filtered_row_count=filtered_row_count,
             attempted=len(rows_out),
             pass_count=pass_count,
             pass_at_1_count=pass_at_1_count,
@@ -550,7 +742,8 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
 
     summary = _build_summary(
         config=config,
-        selected_row_count=len(selected_rows),
+        selected_row_count=selected_row_count,
+        filtered_row_count=filtered_row_count,
         attempted=attempted,
         pass_count=pass_count,
         pass_at_1_count=pass_at_1_count,
@@ -583,9 +776,9 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
     return {"summary": summary, "rows": rows_out}
 
 
-def _default_output_dir() -> Path:
+def _default_output_dir(iac_type: str) -> Path:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path("benchmark_runs") / ts
+    return Path("benchmark_runs") / f"{iac_type}_{ts}"
 
 
 def parse_args() -> argparse.Namespace:
@@ -593,19 +786,56 @@ def parse_args() -> argparse.Namespace:
         description="Benchmark IaCGOD pipeline over a CSV dataset of prompts."
     )
     parser.add_argument(
+        "--iac-type",
+        choices=["cloudformation", "terraform"],
+        default="cloudformation",
+        help="IaC language to generate. Determines default dataset path when --dataset is omitted.",
+    )
+    parser.add_argument(
         "--dataset",
         type=Path,
-        default=Path("data") / "iac_basic.csv",
-        help="Path to CSV file with columns: row_number, prompt, ground_truth_path",
+        default=None,
+        help=(
+            "Path to CSV file with columns: row_number, prompt[, ground_truth_path]. "
+            "Defaults to data/iac_basic.csv for cloudformation or "
+            "data/tf_basic.csv for terraform when omitted."
+        ),
     )
     parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
-        help="Directory for benchmark artifacts (default: benchmark_runs/<timestamp>)",
+        help="Directory for benchmark artifacts (default: benchmark_runs/<iac_type>_<timestamp>)",
     )
     parser.add_argument("--start-row", type=int, default=0)
     parser.add_argument("--max-rows", type=int, default=None)
+    parser.add_argument(
+        "--rows", 
+        type=str, 
+        default=None, 
+        help="Comma-separated list of CSV row_number values to execute (e.g., 1,6,7,142)"
+    )
+    parser.add_argument(
+        "--exclude-completed-csv",
+        type=Path,
+        default=None,
+        help=(
+            "CSV file of prior benchmark results to exclude from this run. "
+            "Rows are skipped when row_number matches; when --rows is not used, "
+            "ground_truth_path matches are also excluded. "
+            "Combine with --retry-errors to instead select only the failed rows."
+        ),
+    )
+    parser.add_argument(
+        "--retry-errors",
+        action="store_true",
+        help=(
+            "Requires --exclude-completed-csv. Instead of excluding rows found in "
+            "that CSV, run ONLY the rows whose final_validation_passed was False "
+            "there (row_number match, or ground_truth_path match when --rows is "
+            "not used)."
+        ),
+    )
     parser.add_argument("--max-iterations", type=int, default=30)
     parser.add_argument(
         "--provider",
@@ -639,11 +869,27 @@ def parse_args() -> argparse.Namespace:
         default=None,
     )
     parser.add_argument(
+        "--openrouter-reasoning-effort",
+        type=str,
+        default=None,
+        help=(
+            "Reasoning effort hint sent as reasoning.effort (maps to OpenRouter's "
+            "provider.reasoning.effort). Typical values: low, medium, high "
+            "(some models also accept max/none). Lower effort leaves more of the "
+            "shared max_tokens budget for actual content instead of reasoning — "
+            "useful for always-reasoning models that can return empty content "
+            "when reasoning consumes the whole token budget."
+        ),
+    )
+    parser.add_argument(
         "--deploy-target",
         choices=["none", "localstack", "aws"],
         default="localstack",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.retry_errors and args.exclude_completed_csv is None:
+        parser.error("--retry-errors requires --exclude-completed-csv")
+    return args
 
 
 if __name__ == "__main__":
@@ -651,17 +897,36 @@ if __name__ == "__main__":
     logging.getLogger("neo4j").setLevel(logging.ERROR)
 
     args = parse_args()
-    output_dir = args.output_dir or _default_output_dir()
+
+    # Resolve dataset: explicit --dataset wins; otherwise pick by iac_type.
+    if args.dataset is not None:
+        dataset_path = args.dataset
+    elif args.iac_type == "terraform":
+        dataset_path = Path("data") / "tf_basic.csv"
+    else:
+        dataset_path = Path("data") / "iac_basic.csv"
+
+    output_dir = args.output_dir or _default_output_dir(args.iac_type)
+
+    specific_rows = None
+    if args.rows:
+        specific_rows = [int(r.strip()) for r in args.rows.split(",") if r.strip().isdigit()]
+
     cfg = BenchmarkConfig(
-        dataset_path=args.dataset,
+        dataset_path=dataset_path,
         output_dir=output_dir,
         start_row=args.start_row,
         max_rows=args.max_rows,
+        rows=specific_rows,
+        exclude_completed_csv=args.exclude_completed_csv,
+        retry_errors=args.retry_errors,
         max_iterations=args.max_iterations,
         provider=args.provider,
         model=args.model,
         deploy_target=args.deploy_target,
         openrouter_provider_only=args.openrouter_provider_only,
         openrouter_min_quantization=args.openrouter_min_quantization,
+        openrouter_reasoning_effort=args.openrouter_reasoning_effort,
+        iac_type=args.iac_type,
     )
     run_benchmark(cfg)

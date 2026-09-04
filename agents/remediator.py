@@ -1,16 +1,21 @@
+# agents/remediator.py
 from __future__ import annotations
 
 from datetime import datetime, timezone
 
 from state import GraphState, RemediationHistory, Message, append_and_cap
 from agents.llm_client import _build_client, _call_llm_with_history
-from prompts.remediator_prompt import REMEDIATOR_SYSTEM, REMEDIATOR_USER
+from prompts.remediator_prompt import get_remediator_system_prompt, REMEDIATOR_USER
 from tools.retriever_helpers import (
     format_cfn_lint_errors,
+    format_tflint_errors,
     format_deploy_errors,
     extract_errors,
 )
-from tools.template_annotator import render_annotated_template
+from tools.template_annotator import (
+    render_annotated_template,
+    render_annotated_terraform,
+)
 from tracking.recorder import ResearchRecorder
 
 
@@ -29,7 +34,19 @@ def _dedupe_preserve_order(items: list[str]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _build_validation_errors_text(state: GraphState) -> str:
-    """Build the full validation error section for the remediator user prompt."""
+    """Build the full validation error section for the remediator user prompt.
+
+    Error formatting is iac_type-aware and symmetric across both pipelines:
+      CloudFormation: cfn-lint errors  -> format_cfn_lint_errors()
+      Terraform:      tflint errors    -> format_tflint_errors()  (Stage 1)
+                      terraform-validate errors -> format_tflint_errors()  (Stage 2)
+      Both pipelines: all other stages -> generic bullet formatter
+
+    tflint and terraform-validate are collapsed into a single formatted block
+    via format_tflint_errors() so the remediator prompt mirrors the cfn-lint
+    section structure: one heading, two sub-sections (rule violations vs. type
+    errors), rather than two separate top-level error blocks.
+    """
     error_blocks: list[str] = []
 
     validation_results = state.get("validation_results", [])
@@ -38,6 +55,12 @@ def _build_validation_errors_text(state: GraphState) -> str:
         stage = str(result.get("stage") or "").strip()
         if stage:
             latest_by_stage[stage] = result
+
+    # Collect Terraform structural stage errors upfront so they can be
+    # rendered together in a single format_tflint_errors() block, mirroring
+    # the single cfn-lint block on the CFN side.
+    tflint_errors: list[str] = []
+    tf_validate_errors: list[str] = []
 
     for result in latest_by_stage.values():
         if result["passed"]:
@@ -49,12 +72,33 @@ def _build_validation_errors_text(state: GraphState) -> str:
             continue
 
         stage = result["stage"]
-        if stage == "cfn-lint":
-            errors_text = format_cfn_lint_errors(deduped)
-        else:
-            errors_text = "\n".join(f"  - {e}" for e in deduped)
 
-        error_blocks.append(f"### {stage.upper()} Errors\n{errors_text}")
+        if stage == "cfn-lint":
+            error_blocks.append(
+                f"### {stage.upper()} Errors\n{format_cfn_lint_errors(deduped)}"
+            )
+
+        elif stage == "tflint":
+            # Accumulate — rendered together with terraform-validate below
+            tflint_errors = deduped
+
+        elif stage == "terraform-validate":
+            # Accumulate — rendered together with tflint below
+            tf_validate_errors = deduped
+
+        else:
+            # Trivy, checkov, yaml, and any future stages use generic bullets
+            errors_text = "\n".join(f"  - {e}" for e in deduped)
+            error_blocks.append(f"### {stage.upper()} Errors\n{errors_text}")
+
+    # Emit the combined Terraform structural block once, after all stages
+    # have been visited, so tflint and terraform-validate always appear
+    # together regardless of iteration order.
+    if tflint_errors or tf_validate_errors:
+        error_blocks.append(
+            f"### TERRAFORM STRUCTURAL Errors\n"
+            f"{format_tflint_errors(tflint_errors, tf_validate_errors)}"
+        )
 
     deploy_result = state.get("deploy_validation_result")
     if (
@@ -70,6 +114,56 @@ def _build_validation_errors_text(state: GraphState) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Annotated template builder
+# ---------------------------------------------------------------------------
+
+def _build_annotated_template(state: GraphState, iac_type: str) -> str:
+    """Return the current template annotated with inline error comments.
+
+    Branches on iac_type:
+
+    CloudFormation:
+        Uses render_annotated_template(yaml, flat_errors).  A flat list of
+        all error strings is passed; the function extracts line numbers from
+        each string and also collects lineless errors into a header block.
+
+    Terraform:
+        Uses render_annotated_terraform(hcl, stage_errors).  Only errors
+        from tflint / terraform-validate stages are annotated inline (those
+        are the only stages that embed HCL line numbers).  Security and deploy
+        errors are excluded — they carry no line reference and are already
+        surfaced in the validation_errors section of the remediator prompt.
+        The stage_errors dict is built directly from validation_results so
+        the renderer can apply its own stage-name filter.
+    """
+    template = state.get("iac_template", "")
+
+    if iac_type == "terraform":
+        stage_errors: dict[str, list[str]] = {}
+        for result in state.get("validation_results", []):
+            stage = str(result.get("stage") or "").strip()
+            if not stage:
+                continue
+            errors = [str(e) for e in result.get("errors", []) if str(e).strip()]
+            if errors:
+                stage_errors[stage] = errors
+        return render_annotated_terraform(
+            template_hcl=template,
+            stage_errors=stage_errors,
+        )
+
+    # CloudFormation path — unchanged
+    flat_errors = extract_errors(
+        state.get("validation_results", []),
+        state.get("deploy_validation_result"),
+    )
+    return render_annotated_template(
+        template_yaml=template,
+        errors=flat_errors,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Agent entry point
 # ---------------------------------------------------------------------------
 
@@ -77,9 +171,10 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     # current_iteration was already incremented by validator_agent; use it
     # as-is for history labelling (reflects the iteration just completed).
     iteration = state["current_iteration"]
-    print(f"\n[Remediator] Analyzing errors (iteration {iteration})...")
+    iac_type = state.get("iac_type", "cloudformation")
+    print(f"\n[Remediator] Analyzing errors (iteration {iteration}, iac_type={iac_type})...")
 
-    system = REMEDIATOR_SYSTEM.format(
+    system = get_remediator_system_prompt(iac_type).format(
         user_request=state["user_request"],
         objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"])),
     )
@@ -93,22 +188,19 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     )
 
     formatted_errors = _build_validation_errors_text(state)
+    annotated_template = _build_annotated_template(state, iac_type)
 
+    # flat_errors is still recorded in remediation history for traceability
     flat_errors = extract_errors(
         state.get("validation_results", []),
         state.get("deploy_validation_result"),
-    )
-    annotated_template = render_annotated_template(
-        template_yaml=state.get("cloudformation_template", ""),
-        errors=flat_errors,
     )
 
     user_content = REMEDIATOR_USER.format(
         iteration=iteration,
         annotated_template=annotated_template,
         validation_errors=formatted_errors,
-        knowledge_base_context=knowledge_base_context,
-        remediation_history_context="",
+        knowledge_base_context=knowledge_base_context
     )
     user_msg: Message = {"role": "user", "content": user_content}
 

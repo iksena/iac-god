@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+import time
 
 import chromadb
 from langchain_chroma import Chroma
@@ -21,6 +22,21 @@ _DEFAULTS = {
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", _DEFAULTS.get(_PROVIDER, _DEFAULTS["huggingface"]))
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
+# Ollama's local model runner tokenizes/embeds an entire request in one shot.
+# langchain_chroma hands whole batches (up to ChromaDB's internal batch cap —
+# often several thousand documents) to embed_documents() in a single call,
+# which can crash the Ollama runner subprocess under memory/context pressure.
+# The client then sees a bare connection reset, surfaced as
+# `ollama._types.ResponseError: Post ".../tokenize": EOF (status code: 400)` —
+# nothing is actually wrong with any individual chunk of text.
+# Sub-batching here (independent of whatever batch size Chroma passes in)
+# keeps each Ollama request small enough not to trigger this, and retries
+# with backoff absorb transient runner hiccups instead of killing the whole
+# 13k-document build.
+OLLAMA_EMBED_BATCH_SIZE = int(os.getenv("OLLAMA_EMBED_BATCH_SIZE", "16"))
+OLLAMA_EMBED_MAX_RETRIES = int(os.getenv("OLLAMA_EMBED_MAX_RETRIES", "4"))
+OLLAMA_EMBED_RETRY_BASE_S = float(os.getenv("OLLAMA_EMBED_RETRY_BASE_S", "2.0"))
+
 # Collection is always created with cosine distance so threshold semantics
 # are unambiguous regardless of provider.  Must match the query-time config
 # in tools/embedding_provider.py (CHROMA_COLLECTION_METADATA).
@@ -34,9 +50,16 @@ class _NormalisedEmbeddings:
     regardless of whether the underlying model normalises by default.
     HuggingFaceEmbeddings with normalize_embeddings=True already does this;
     OllamaEmbeddings does not.
+
+    For the Ollama provider, embed_documents() also sub-batches and retries
+    internally (see OLLAMA_EMBED_* above) to work around the runner crashing
+    on oversized single requests.
     """
-    def __init__(self, base):
+    def __init__(self, base, sub_batch_size=None):
         self._base = base
+        # None disables sub-batching (e.g. HuggingFace runs locally in-process
+        # and doesn't hit this failure mode).
+        self._sub_batch_size = sub_batch_size
 
     @staticmethod
     def _norm(vecs):
@@ -45,8 +68,50 @@ class _NormalisedEmbeddings:
         norms = np.where(norms == 0, 1.0, norms)
         return (arr / norms).tolist()
 
+    def _embed_batch_with_retry(self, texts):
+        """Embed a single (small) batch, retrying with backoff on transient
+        Ollama runner failures. On persistent failure, bisects the batch to
+        isolate a poison document rather than failing the whole build."""
+        last_exc = None
+        for attempt in range(OLLAMA_EMBED_MAX_RETRIES):
+            try:
+                return self._base.embed_documents(texts)
+            except Exception as exc:  # ollama.ResponseError, ConnectionError, etc.
+                last_exc = exc
+                wait_s = OLLAMA_EMBED_RETRY_BASE_S * (2 ** attempt)
+                print(f"    [embed] batch of {len(texts)} failed "
+                      f"(attempt {attempt + 1}/{OLLAMA_EMBED_MAX_RETRIES}): "
+                      f"{type(exc).__name__}: {exc}. Retrying in {wait_s:.0f}s...")
+                time.sleep(wait_s)
+
+        if len(texts) == 1:
+            # Can't bisect further — this single document is the problem.
+            preview = texts[0][:200].replace("\n", " ")
+            print(f"    [embed] GIVING UP on 1 document after "
+                  f"{OLLAMA_EMBED_MAX_RETRIES} retries: {preview!r}")
+            raise last_exc
+
+        mid = len(texts) // 2
+        print(f"    [embed] bisecting batch of {len(texts)} into "
+              f"{mid} + {len(texts) - mid} to isolate the failure...")
+        left = self._embed_batch_with_retry(texts[:mid])
+        right = self._embed_batch_with_retry(texts[mid:])
+        return left + right
+
     def embed_documents(self, texts):
-        return self._norm(self._base.embed_documents(texts))
+        if not self._sub_batch_size or len(texts) <= self._sub_batch_size:
+            vecs = self._embed_batch_with_retry(texts) if self._sub_batch_size else self._base.embed_documents(texts)
+            return self._norm(vecs)
+
+        all_vecs = []
+        n = len(texts)
+        n_batches = (n + self._sub_batch_size - 1) // self._sub_batch_size
+        for i in range(0, n, self._sub_batch_size):
+            batch_idx = i // self._sub_batch_size + 1
+            batch = texts[i:i + self._sub_batch_size]
+            print(f"    [embed] batch {batch_idx}/{n_batches} ({len(batch)} docs)...")
+            all_vecs.extend(self._embed_batch_with_retry(batch))
+        return self._norm(all_vecs)
 
     def embed_query(self, text):
         return self._norm([self._base.embed_query(text)])[0]
@@ -60,8 +125,10 @@ def _get_embeddings():
             print("ERROR: langchain-ollama not installed. Run: pip install langchain-ollama")
             sys.exit(1)
         print(f"[Build] Embedding provider: Ollama  model: {EMBEDDING_MODEL}  url: {OLLAMA_BASE_URL}")
+        print(f"[Build]   sub-batch size: {OLLAMA_EMBED_BATCH_SIZE} "
+              f"(override with OLLAMA_EMBED_BATCH_SIZE env var)")
         base = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=OLLAMA_BASE_URL)
-        return _NormalisedEmbeddings(base)  # Ollama does not normalise by default
+        return _NormalisedEmbeddings(base, sub_batch_size=OLLAMA_EMBED_BATCH_SIZE)
 
     from langchain_huggingface import HuggingFaceEmbeddings
     print(f"[Build] Embedding provider: HuggingFace  model: {EMBEDDING_MODEL}")

@@ -8,6 +8,7 @@ blocklist:
 
 bypass-alias-check-accounts:
   - "649872913223"
+  - "386347569109"
   - "000000000000"
 
 accounts:
@@ -21,4 +22,20 @@ accounts:
         - "admin-user -> AKIAZOT3RWNDYNPQTWXF"
       IAMVirtualMFADevice:
         - "arn:aws:iam::649872913223:mfa/admin-user"
+  # data_analysis project's dummy/sandbox account (the 'default' AWS CLI
+  # profile), used for the CFN benchmark's ground-truth deployability checks.
+  # NOTE: "root" here is a regular IAM user literally named "root"
+  # (arn:aws:iam::386347569109:user/root, created 2026-08-07) -- NOT the AWS
+  # account root identity (which would be arn:aws:iam::386347569109:root,
+  # no "/user/" path, and isn't a nukeable IAM::User resource at all). It's
+  # the CLI's own identity, so it's excluded the same way "admin-user" is
+  # excluded above.
+  "386347569109":
+    filters:
+      IAMUser:
+        - "root"
+      IAMUserPolicyAttachment:
+        - "root -> AdministratorAccess"
+      IAMUserAccessKey:
+        - "root -> AKIAVT5A4B7KZGUUIRNH"
 

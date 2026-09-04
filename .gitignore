@@ -6,3 +6,8 @@
 **/benchmark_runs/**
 **/scraped_html/**
 **/cfn_chroma_db/**
+tf_schema_raw.json
+tf_knowledge_graph.json
+tf_registry_docs.json
+*.sqlite*
+**/volume/**

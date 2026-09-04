@@ -4,10 +4,10 @@ from __future__ import annotations
 from state import GraphState, Message, append_and_cap
 from agents.llm_client import _build_client, _call_llm_with_history
 from prompts.engineer_prompt import (
-    ENGINEER_SYSTEM,
-    ENGINEER_USER_INITIAL,
-    ENGINEER_USER_SIMPLE_FIX,
-    ENGINEER_USER_REMEDIATION,
+    get_engineer_system_prompt,
+    get_engineer_user_initial,
+    get_engineer_user_simple_fix,
+    get_engineer_user_remediation,
 )
 from tools.retriever_helpers import (
     extract_errors,
@@ -64,11 +64,13 @@ def _build_simple_fix_errors(state: GraphState) -> str:
 
 def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     iteration = state["current_iteration"]
-    print(f"\n[Engineer] Generating CFN template (iteration {iteration})...")
+    iac_type = state.get("iac_type", "cloudformation")
+    lang_label = "HCL" if iac_type == "terraform" else "CFN"
+    print(f"\n[Engineer] Generating {lang_label} template (iteration {iteration})...")
 
     client, model = _build_client()
 
-    system = ENGINEER_SYSTEM.format(
+    system = get_engineer_system_prompt(iac_type).format(
         user_request=state["user_request"],
         objectives="\n".join(f"{i+1}. {obj}" for i, obj in enumerate(state["objectives"]))
     )
@@ -85,7 +87,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         # No conversation history to pass yet.
         # ----------------------------------------------------------------
         print("[Engineer] Path A: initial generation.")
-        user_content = ENGINEER_USER_INITIAL
+        user_content = get_engineer_user_initial(iac_type)
         history_to_pass: list[Message] = []
 
     elif has_validation_errors and not has_remediation_history:
@@ -96,7 +98,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         # ----------------------------------------------------------------
         print("[Engineer] Path B: simple self-correction from validation errors.")
         validation_errors = _build_simple_fix_errors(state)
-        user_content = ENGINEER_USER_SIMPLE_FIX.format(
+        user_content = get_engineer_user_simple_fix(iac_type).format(
             iteration=iteration,
             validation_errors=validation_errors,
         )
@@ -111,7 +113,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         # ----------------------------------------------------------------
         print("[Engineer] Path C: moderate remediation with RCA & fix objectives.")
         latest = state["remediation_history"][-1]
-        user_content = ENGINEER_USER_REMEDIATION.format(
+        user_content = get_engineer_user_remediation(iac_type).format(
             iteration=latest["iteration"],
             formatted_errors=latest["formatted_errors"],
             remediation_suggestion=latest["suggestion"],
@@ -124,7 +126,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         client, model, system,
         history_to_pass + [user_msg],
     )
-    template = _strip_yaml_fences(content)
+    template = _strip_code_fences(content)
     assistant_msg: Message = {"role": "assistant", "content": content}
 
     llm_record = recorder.record_llm_call(
@@ -138,7 +140,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
 
     print(f"[Engineer] Template generated ({len(template.splitlines())} lines).")
     return {
-        "cloudformation_template": template,
+        "iac_template": template,
         "llm_call_log": state["llm_call_log"] + [llm_record],
         "engineer_history": append_and_cap(
             state.get("engineer_history", []), user_msg, assistant_msg
@@ -146,7 +148,8 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     }
 
 
-def _strip_yaml_fences(text: str) -> str:
+def _strip_code_fences(text: str) -> str:
+    """Strip leading/trailing markdown code fences (```yaml, ```hcl, ``` etc.)."""
     lines = text.strip().split("\n")
     if lines and lines[0].startswith("```"):
         lines = lines[1:]

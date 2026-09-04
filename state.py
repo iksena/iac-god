@@ -1,5 +1,4 @@
-# state.py
-from typing import TypedDict, Optional, NotRequired
+from typing import TypedDict, Optional, NotRequired, Literal
 
 
 class PolicyStats(TypedDict):
@@ -10,7 +9,7 @@ class PolicyStats(TypedDict):
 
 
 class ValidationResult(TypedDict):
-    stage: str          # "yaml" | "cfn-lint" | "checkov" | "trivy"
+    stage: str          # "yaml" | "cfn-lint" | "tflint" | "terraform-validate" | "checkov" | "trivy"
     passed: bool
     errors: list[str]
     raw_output: str
@@ -22,13 +21,11 @@ class ValidationResult(TypedDict):
 class FailedResource(TypedDict):
     """Canonical shape for a single resource-level deploy failure.
 
-    This matches what deploy_validator.py emits in every code path:
-      - _drain_stack_events():    {"logical_name": rid,       "status_reason": reason}
-      - parameter pre-check:      {"logical_name": param_key, "status_reason": "..."}
-      - ClientError / unexpected: {"logical_name": "stack",   "status_reason": msg}
+    CloudFormation path:  logical_name = CFN LogicalResourceId
+    Terraform path:       logical_name = resource address (e.g. aws_vpc.main)
     """
-    logical_name: str   # CloudFormation LogicalResourceId (or "stack"/"template" sentinel)
-    status_reason: str  # CloudFormation ResourceStatusReason or error message
+    logical_name: str   # CFN LogicalResourceId *or* Terraform resource address
+    status_reason: str  # CloudFormation ResourceStatusReason or terraform error message
 
 
 class DeployValidationResult(TypedDict):
@@ -76,14 +73,17 @@ class Message(TypedDict):
 # whenever any member stage has failures in a given iteration.
 #
 # Groups:
-#   "yaml-cfn-lint" — structural / schema correctness (always active)
-#   "security"      — policy violations (checkov, trivy — currently skipped
-#                     in run_all_validators but wired here for when re-enabled)
-#   "deploy"        — live deployability (localstack / AWS)
+#   "syntax"   — structural / schema correctness
+#                CFN:       {"yaml", "cfn-lint"}
+#                Terraform: {"tflint", "terraform-validate"}
+#                Both sets are unioned here so a single STAGE_GROUPS dict
+#                covers both pipelines without branching in classify_failing_stages.
+#   "security" — policy violations (checkov, trivy)
+#   "deploy"   — live deployability (localstack / AWS)
 STAGE_GROUPS: dict[str, set[str]] = {
-    "yaml-cfn-lint": {"yaml", "cfn-lint"},
-    "security":      {"checkov", "trivy"},
-    "deploy":        {"deploy"},
+    "syntax":   {"yaml", "cfn-lint", "tflint", "terraform-validate"},
+    "security": {"checkov", "trivy"},
+    "deploy":   {"deploy"},
 }
 
 
@@ -157,12 +157,15 @@ def append_and_cap(
 
 
 class GraphState(TypedDict):
+    # --- IaC type selector (drives all prompt factories and validators) ---
+    iac_type: Literal["cloudformation", "terraform"]
+
     # --- Core inputs ---
     user_request: str
 
     # --- Grounded Objectives Document (shared across all agents) ---
     objectives: list[str]           # Planner output (CGO-style)
-    cloudformation_template: str    # Engineer output (latest YAML)
+    iac_template: str               # Engineer output (latest YAML or HCL)
 
     # --- Validation state ---
     validation_results: list[ValidationResult]
@@ -170,7 +173,7 @@ class GraphState(TypedDict):
     deploy_validation_result: Optional[DeployValidationResult]
 
     # --- Per-stage error iteration counters ---
-    # Keyed by STAGE_GROUPS group name ("yaml-cfn-lint", "security", "deploy").
+    # Keyed by STAGE_GROUPS group name ("syntax", "security", "deploy").
     # Incremented by the validator on every iteration where that group fails.
     # Used by the router to decide between simple and moderate remediation.
     stage_error_counts: dict[str, int]

@@ -1,4 +1,3 @@
-# main.py
 from datetime import datetime
 import os
 import uuid
@@ -26,6 +25,8 @@ def run_pipeline(
     localstack_endpoint: str | None = None,
     openrouter_provider_only: str | None = None,
     openrouter_min_quantization: str | None = None,
+    openrouter_reasoning_effort: str | None = None,
+    iac_type: str = "cloudformation",
 ) -> GraphState:
 
     # ------------------------------------------------------------------
@@ -55,6 +56,8 @@ def run_pipeline(
             DEFAULT_CONFIG.openrouter_provider_only = _parse_csv_arg(openrouter_provider_only)
         if openrouter_min_quantization is not None:
             DEFAULT_CONFIG.openrouter_min_quantization = openrouter_min_quantization.strip().lower()
+        if openrouter_reasoning_effort is not None:
+            DEFAULT_CONFIG.openrouter_reasoning_effort = openrouter_reasoning_effort.strip().lower()
 
     # ------------------------------------------------------------------
     # Configure deploy target
@@ -70,9 +73,10 @@ def run_pipeline(
     graph = build_graph(recorder, deploy_config=deploy_config)
 
     initial_state: GraphState = {
+        "iac_type": iac_type,
         "user_request": user_request,
         "objectives": [],
-        "cloudformation_template": "",
+        "iac_template": "",
         "validation_results": [],
         "validation_passed": False,
         "remediation_history": [],
@@ -88,6 +92,7 @@ def run_pipeline(
         "final_template": None,
         "run_id": run_id,
         "deploy_validation_result": None,
+        "stage_error_counts": {},
     }
 
     print(f"\n{'='*60}")
@@ -95,6 +100,7 @@ def run_pipeline(
     print(f"Provider: {DEFAULT_CONFIG.provider.value}")
     print(f"Model: {DEFAULT_CONFIG.model}")
     print(f"Max iterations: {max_iterations}")
+    print(f"IaC type: {iac_type.upper()}")
     print(f"Deploy target: {deploy_target.upper()}")
     print(f"{'='*60}")
 
@@ -110,7 +116,7 @@ def run_pipeline(
         print(traceback.format_exc())
         raise
 
-    final_state["final_template"] = final_state["cloudformation_template"]
+    final_state["final_template"] = final_state["iac_template"]
     recorder.save_final_report(final_state)
 
     print(f"\n{'='*60}")
@@ -158,6 +164,19 @@ if __name__ == "__main__":
         help="Minimum quantization level for OpenRouter provider filtering",
     )
     parser.add_argument(
+        "--openrouter-reasoning-effort",
+        type=str,
+        default=None,
+        help=(
+            "Reasoning effort hint sent as reasoning.effort (maps to OpenRouter's "
+            "provider.reasoning.effort). Typical values: low, medium, high "
+            "(some models also accept max/none). Lower effort leaves more of the "
+            "shared max_tokens budget for actual content instead of reasoning — "
+            "useful for always-reasoning models that can return empty content "
+            "when reasoning consumes the whole token budget."
+        ),
+    )
+    parser.add_argument(
         "--deploy-target",
         choices=["none", "localstack", "aws"],
         default="localstack",
@@ -167,6 +186,12 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Override LocalStack endpoint (default: http://localhost:4566)",
+    )
+    parser.add_argument(
+        "--iac-type",
+        choices=["cloudformation", "terraform"],
+        default="cloudformation",
+        help="IaC language to generate. 'cloudformation' (default) or 'terraform'.",
     )
     args = parser.parse_args()
 
@@ -180,6 +205,8 @@ if __name__ == "__main__":
             localstack_endpoint=args.localstack_endpoint,
             openrouter_provider_only=args.openrouter_provider_only,
             openrouter_min_quantization=args.openrouter_min_quantization,
+            openrouter_reasoning_effort=args.openrouter_reasoning_effort,
+            iac_type=args.iac_type,
         )
     except Exception:
         print("\n[Main] Pipeline execution failed:")

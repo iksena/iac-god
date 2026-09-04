@@ -1,24 +1,28 @@
 # agents/planner.py
 from state import GraphState, Message, compact_message_history, append_and_cap
 from agents.llm_client import _build_client, _call_llm_with_history
-from prompts.planner_prompt import PLANNER_SYSTEM, PLANNER_USER
+from prompts.planner_prompt import get_planner_system_prompt, get_planner_user
 from tracking.recorder import ResearchRecorder
 
 
 def planner_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     """CGO Stage 1: Objective Generation with conversation history."""
     iteration = state["current_iteration"]
-    print(f"\n[Planner] Generating objectives (iteration {iteration})...")
+    iac_type = state.get("iac_type", "cloudformation")
+    print(f"\n[Planner] Generating objectives (iteration {iteration}, iac_type={iac_type})...")
 
     client, model = _build_client()
 
-    user_msg: Message = {"role": "user", "content": PLANNER_USER.format(
+    system_prompt = get_planner_system_prompt(iac_type)
+    user_turn_template = get_planner_user(iac_type)
+
+    user_msg: Message = {"role": "user", "content": user_turn_template.format(
         user_request=state["user_request"]
     )}
 
     messages = compact_message_history(list(state["planner_history"])) + [user_msg]
 
-    content, usage = _call_llm_with_history(client, model, PLANNER_SYSTEM, messages)
+    content, usage = _call_llm_with_history(client, model, system_prompt, messages)
 
     assistant_msg: Message = {"role": "assistant", "content": content}
 
@@ -32,7 +36,7 @@ def planner_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         state=state,
         agent="planner",
         model=model,
-        prompt=f"SYSTEM:\n{PLANNER_SYSTEM}\n\nUSER:\n{user_msg['content']}",
+        prompt=f"SYSTEM:\n{system_prompt}\n\nUSER:\n{user_msg['content']}",
         response=content,
         token_usage=usage,
     )
