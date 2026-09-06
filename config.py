@@ -91,7 +91,7 @@ class DeployTarget(Enum):
 class LLMConfig:
     provider: LLMProvider = LLMProvider.OPENROUTER
     # provider: LLMProvider = LLMProvider.OPENAI
-    model: str = "x-ai/grok-4.1-fast"
+    model: str = "deepseek/deepseek-v4-flash"
     temperature: float = 0.0
     max_tokens: int = 8192
     reasoning_enabled: bool = True
