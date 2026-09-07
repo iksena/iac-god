@@ -11,3 +11,4 @@ tf_knowledge_graph.json
 tf_registry_docs.json
 *.sqlite*
 **/volume/**
+.ipynb_checkpoints

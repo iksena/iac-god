@@ -543,10 +543,19 @@ def _validate_terraform_deployment(
             # terraform / tflocal destroy (cleanup)
             # ----------------------------------------------------------------
             print(f"[Deploy] Cleaning up with {tf_bin} destroy...")
-            subprocess.run(
-                [tf_bin, "destroy", "-auto-approve", "-input=false", "-no-color"],
-                cwd=tmpdir, capture_output=True, text=True, timeout=timeout, env=run_env,
-            )
+            try:
+                subprocess.run(
+                    [tf_bin, "destroy", "-auto-approve", "-input=false", "-no-color"],
+                    cwd=tmpdir, capture_output=True, text=True,
+                    timeout=deploy_config.stack_deletion_timeout, env=run_env,
+                )
+            except subprocess.TimeoutExpired:
+                timeout_msg = (
+                    f"{tf_bin} destroy timed out after {deploy_config.stack_deletion_timeout}s "
+                    f"— resources may still be running in {target_name}; manual cleanup may be required"
+                )
+                print(f"[Deploy] ⚠️  {timeout_msg}")
+                deploy_logs.append(timeout_msg)
 
             if len(completed) == 0:
                 # `terraform apply` returned 0 and reported no errors, but no
@@ -620,10 +629,20 @@ def _validate_terraform_deployment(
         error_msg = _format_failed_resources(failed_resources)
         print(f"[Deploy] ❌ {tf_bin} apply failed: {error_msg}")
 
-        subprocess.run(
-            [tf_bin, "destroy", "-auto-approve", "-input=false", "-no-color"],
-            cwd=tmpdir, capture_output=True, text=True, timeout=120, env=run_env,
-        )
+        print(f"[Deploy] Cleaning up with {tf_bin} destroy...")
+        try:
+            subprocess.run(
+                [tf_bin, "destroy", "-auto-approve", "-input=false", "-no-color"],
+                cwd=tmpdir, capture_output=True, text=True,
+                timeout=deploy_config.stack_deletion_timeout, env=run_env,
+            )
+        except subprocess.TimeoutExpired:
+            timeout_msg = (
+                f"{tf_bin} destroy timed out after {deploy_config.stack_deletion_timeout}s "
+                f"— resources may still be running in {target_name}; manual cleanup may be required"
+            )
+            print(f"[Deploy] ⚠️  {timeout_msg}")
+            deploy_logs.append(timeout_msg)
 
         return DeployValidationResult(
                 target=target_name, passed=False, stack_id=None,
