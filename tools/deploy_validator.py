@@ -25,6 +25,16 @@ from state import DeployValidationResult
 _TF_PLUGIN_CACHE_DIR = Path(tempfile.gettempdir()) / "iac-god-tf-plugin-cache"
 _TF_PLUGIN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# When multiple benchmark processes run terraform/tflocal concurrently, they
+# all populate this same shared plugin cache. Terraform's provider install
+# step has no inter-process lock, so two `init`s racing to extract/link the
+# same provider binary can fail with "text file busy" (one process still has
+# the binary open while another tries to overwrite it). This is transient —
+# retrying once the other process finishes resolves it — so it's retried a
+# few times rather than failing the whole scenario.
+_TF_INIT_MAX_ATTEMPTS = 3
+_TF_INIT_RETRY_BACKOFF_SECONDS = 3.0
+
 
 # ---------------------------------------------------------------------------
 # CloudFormation client factory
@@ -473,22 +483,43 @@ def _validate_terraform_deployment(
         # terraform / tflocal init — with timeout guard (mirrors apply path)
         # ----------------------------------------------------------------
         print(f"[Deploy] Running {tf_bin} init in {tmpdir}...")
-        try:
-            init_result = subprocess.run(
-                [tf_bin, "init", "-backend=false", "-input=false", "-no-color"],
-                cwd=tmpdir, capture_output=True, text=True, timeout=120, env=run_env,
-            )
-        except subprocess.TimeoutExpired:
-            timeout_msg = f"{tf_bin} init timed out after 120s — provider download stalled"
-            deploy_logs.append(timeout_msg)
-            return DeployValidationResult(
-                target=target_name, passed=False, stack_id=None,
-                completed_resources=[],
-                failed_resources=[{"logical_name": "init", "status_reason": timeout_msg}],
-                error_message=timeout_msg,
-                duration_seconds=round(time.time() - start_time, 2),
-                deployment_logs=deploy_logs,
-            )
+        init_result = None
+        for init_attempt in range(1, _TF_INIT_MAX_ATTEMPTS + 1):
+            try:
+                init_result = subprocess.run(
+                    [tf_bin, "init", "-backend=false", "-input=false", "-no-color"],
+                    cwd=tmpdir, capture_output=True, text=True, timeout=120, env=run_env,
+                )
+            except subprocess.TimeoutExpired:
+                timeout_msg = f"{tf_bin} init timed out after 120s — provider download stalled"
+                deploy_logs.append(timeout_msg)
+                return DeployValidationResult(
+                    target=target_name, passed=False, stack_id=None,
+                    completed_resources=[],
+                    failed_resources=[{"logical_name": "init", "status_reason": timeout_msg}],
+                    error_message=timeout_msg,
+                    duration_seconds=round(time.time() - start_time, 2),
+                    deployment_logs=deploy_logs,
+                )
+
+            if init_result.returncode == 0:
+                break
+
+            init_err = (init_result.stderr or init_result.stdout or "")
+            if "text file busy" in init_err.lower() and init_attempt < _TF_INIT_MAX_ATTEMPTS:
+                print(
+                    f"[Deploy] {tf_bin} init hit a transient plugin-cache race (text file busy) "
+                    f"on attempt {init_attempt}/{_TF_INIT_MAX_ATTEMPTS}, "
+                    f"retrying in {_TF_INIT_RETRY_BACKOFF_SECONDS:.0f}s..."
+                )
+                deploy_logs.append(
+                    f"{tf_bin} init: transient plugin-cache race on attempt "
+                    f"{init_attempt}/{_TF_INIT_MAX_ATTEMPTS}, retrying"
+                )
+                time.sleep(_TF_INIT_RETRY_BACKOFF_SECONDS)
+                continue
+
+            break
 
         if init_result.returncode != 0:
             err = (init_result.stderr or init_result.stdout).strip()
