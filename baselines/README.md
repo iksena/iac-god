@@ -124,6 +124,33 @@ any numbers.
    Re-validation at finalize never increments `iterations_used` — it measures
    the artifact, it is not a cycle the harness performed.
 
+6. **Sessions can stall — and Claude Code still reports success.** Observed
+   with `deepseek-v4-flash` in a 5-row sample where every row hit this at
+   least once: the model returns a turn with no usable content, either
+   genuinely empty (no text, no tool call — seen twice, first turn) or by
+   emitting its native tool-call syntax as literal text inside a `thinking`
+   block instead of a structured `tool_use`, which the OpenRouter shim does
+   not parse (seen twice, mid-repair-loop — one case died retrying a deploy
+   it had otherwise correctly diagnosed). Claude Code has exactly one
+   built-in recovery: a synthetic nudge
+   (`"[Your previous response had no visible output...]"`). When that nudge
+   also comes back empty, Claude Code ends the session with
+   `is_error: false, subtype: "success"` — a session that never produced a
+   real turn is indistinguishable, at that level, from one that legitimately
+   tried and failed.
+
+   The runner detects this directly off the stream (a synthetic nudge fired,
+   and no `tool_use` appeared in any assistant turn afterward) and retries
+   with a **fresh** process — up to `--max-stall-retries` (default 1, so 2
+   attempts total) — mirroring the empty-completion retry
+   `agents/llm_client.py` already gives the multi-agent path. A row that
+   never recovers is scored as `status=harness_stalled`, not `ok`: it is not
+   a validation failure on the merits, and `pass_rate` should be computed
+   after excluding or separately reporting these rows.
+   `harness_stall_retries_used` and `harness_stalled_attempt_run_ids` record
+   what happened; stalled attempts' partial artifacts stay on disk under
+   their own `run_id` for inspection but are not what gets scored.
+
 ## Output
 
 Identical to `benchmark.py`, so the existing aggregation scripts read both.

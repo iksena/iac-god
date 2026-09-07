@@ -85,6 +85,9 @@ BASELINE_CSV_EXTRA = [
     "submitted_by_harness",
     "submitted_matched_validated",
     "final_verdict_source",
+    "harness_stalled",
+    "harness_stall_retries_used",
+    "harness_stalled_attempt_run_ids",
 ]
 BASELINE_CSV_FIELDS = CSV_RESULT_FIELDS + BASELINE_CSV_EXTRA
 
@@ -113,6 +116,7 @@ class BaselineConfig:
     api_key_env: str
     native_auth: bool
     scenario_timeout: int
+    max_stall_retries: int
     sleep_between_rows: float
     runs_dir: Path
     keep_workspace: bool
@@ -382,11 +386,27 @@ def parse_harness_stream(
         real counts. Per-call usage is still preferred when it is populated
         (the native Anthropic path does fill it in), with modelUsage as the
         fallback. See token_usage_source in the emitted payload.
+
+      * A session can end with Claude Code reporting is_error=false and
+        subtype="success" while the model never did anything. Observed with
+        deepseek-v4-flash: the model returns a turn with no text and no
+        tool_use (a genuinely empty completion), or emits its native
+        tool-call syntax as literal text inside a "thinking" block instead of
+        a structured tool_use block, which the OpenRouter shim does not
+        parse — Claude Code sees a content-free turn either way. Claude Code
+        has exactly one built-in recovery: a synthetic user turn
+        ("[Your previous response had no visible output...]", isSynthetic:
+        true). `stalled` is true when that nudge fired and no tool_use
+        appeared in any assistant turn afterward — i.e. the harness's own
+        recovery attempt also failed and it gave up. is_error/returncode
+        cannot detect this: Claude Code still reports success.
     """
     calls_by_id: dict[str, dict[str, Any]] = {}
     result_event: dict[str, Any] = {}
+    last_synthetic_nudge_index: int | None = None
+    tool_use_after_last_nudge = False
 
-    for line in stdout.splitlines():
+    for index, line in enumerate(stdout.splitlines()):
         line = line.strip()
         if not line:
             continue
@@ -400,6 +420,10 @@ def parse_harness_stream(
             message = event.get("message") or {}
             usage = message.get("usage") or {}
             message_id = message.get("id") or f"anon-{len(calls_by_id)}"
+            if last_synthetic_nudge_index is not None and any(
+                c.get("type") == "tool_use" for c in (message.get("content") or [])
+            ):
+                tool_use_after_last_nudge = True
             if message_id in calls_by_id:
                 continue
             calls_by_id[message_id] = {
@@ -421,6 +445,9 @@ def parse_harness_stream(
                     ),
                 },
             }
+        elif etype == "user" and event.get("isSynthetic"):
+            last_synthetic_nudge_index = index
+            tool_use_after_last_nudge = False
         elif etype == "result":
             result_event = event
 
@@ -433,6 +460,10 @@ def parse_harness_stream(
     else:
         tokens, token_source = tokens_from_model_usage(model_usage), "model_usage"
 
+    stalled = (
+        last_synthetic_nudge_index is not None and not tool_use_after_last_nudge
+    )
+
     return {
         "llm_call_log": llm_calls,
         "token_usage": tokens,
@@ -441,6 +472,7 @@ def parse_harness_stream(
         "session_id": result_event.get("session_id"),
         "model_usage": model_usage,
         "is_error": bool(result_event.get("is_error")) or returncode != 0,
+        "stalled": stalled,
         "stop_reason": result_event.get("stop_reason"),
         "subtype": result_event.get("subtype"),
         "returncode": returncode,
@@ -572,9 +604,17 @@ def _empty_tokens() -> dict[str, int]:
     }
 
 
-def run_scenario(
-    config: BaselineConfig, row: dict[str, str], row_number: int, prompt: str
-) -> dict[str, Any]:
+def _run_one_attempt(
+    config: BaselineConfig, prompt: str
+) -> tuple[str, ResearchRecorder, Path, ScenarioConfig, dict[str, Any], dict[str, Any]]:
+    """Launch one fresh harness process for one scenario attempt.
+
+    Fully self-contained: its own run_id, ResearchRecorder, and workspace.
+    Called more than once by run_scenario when an attempt stalls (see
+    parse_harness_stream's `stalled` detection) — each retry is a clean
+    restart, not a resumption, since a stalled session's own context is what
+    produced the stall.
+    """
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + str(uuid.uuid4())[:8]
     recorder = ResearchRecorder(run_id=run_id, output_dir=str(config.runs_dir))
 
@@ -594,7 +634,6 @@ def run_scenario(
         user_request=prompt,
     )
 
-    started = time.time()
     telemetry = run_harness(
         config,
         scenario,
@@ -603,6 +642,41 @@ def run_scenario(
         recorder.output_dir / "harness_stream.jsonl",
     )
     final = finalize_scenario(config, scenario, workdir, recorder)
+    return run_id, recorder, workdir, scenario, telemetry, final
+
+
+def run_scenario(
+    config: BaselineConfig, row: dict[str, str], row_number: int, prompt: str
+) -> dict[str, Any]:
+    started = time.time()
+
+    # Retry loop for stalled sessions (see parse_harness_stream): Claude Code
+    # can report is_error=false / subtype="success" after its own built-in
+    # empty-turn recovery also comes back empty — observed with
+    # deepseek-v4-flash returning genuinely empty completions, or emitting its
+    # native tool-call syntax as literal text inside a "thinking" block that
+    # the OpenRouter shim never parses into a tool_use. Either way the harness
+    # never got a real turn, so this mirrors the empty-completion retry
+    # agents/llm_client.py already gives the multi-agent path — a stalled
+    # attempt is not treated as an evaluated result unless every retry also
+    # stalls. Each attempt is a fully independent process; earlier stalled
+    # attempts' artifacts stay on disk under their own run_id for inspection
+    # but are not what gets scored.
+    stalled_run_ids: list[str] = []
+    attempt = 1
+    while True:
+        run_id, recorder, workdir, scenario, telemetry, final = _run_one_attempt(
+            config, prompt
+        )
+        if not telemetry["stalled"] or attempt > config.max_stall_retries:
+            break
+        stalled_run_ids.append(run_id)
+        print(
+            f"[Baseline] row {row_number}: attempt {attempt} stalled "
+            f"(Claude Code's empty-turn recovery also came back empty) — retrying"
+        )
+        attempt += 1
+
     state = final["state"]
 
     iterations_used = _safe_int(state.get("iteration_count"))
@@ -634,6 +708,15 @@ def run_scenario(
     error_message = None
     if telemetry["timed_out"]:
         status, error_message = "harness_timeout", "Harness exceeded --scenario-timeout"
+    elif telemetry["stalled"]:
+        status = "harness_stalled"
+        error_message = (
+            f"Harness never produced a usable turn after "
+            f"{len(stalled_run_ids) + 1} attempt(s) — its own empty-turn "
+            f"recovery also came back empty each time. Not a validation "
+            f"failure on the merits; the model/shim pairing did not "
+            f"complete a genuine attempt."
+        )
     elif telemetry["is_error"]:
         status = "harness_error"
         error_message = f"Harness exited rc={telemetry['returncode']} subtype={telemetry['subtype']}"
@@ -669,6 +752,9 @@ def run_scenario(
         "submitted_by_harness": bool(submitted),
         "submitted_matched_validated": bool(submitted.get("matches_last_validated")),
         "final_verdict_source": final["verdict_source"],
+        "harness_stalled": bool(telemetry["stalled"]),
+        "harness_stall_retries_used": len(stalled_run_ids),
+        "harness_stalled_attempt_run_ids": ",".join(stalled_run_ids) or None,
     }
 
 
@@ -944,6 +1030,14 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--scenario-timeout", type=int, default=1800,
                    help="Seconds before a scenario's harness process is killed (default 1800)")
+    p.add_argument("--max-stall-retries", type=int, default=1,
+                   help="Extra fresh attempts when a session stalls: Claude Code's own "
+                        "built-in empty-turn recovery (a synthetic nudge) also came back "
+                        "empty, so the harness never got a real turn. Observed with "
+                        "deepseek-v4-flash returning genuinely empty completions or leaking "
+                        "its tool-call syntax into a thinking block instead of a structured "
+                        "tool_use, which the OpenRouter shim does not parse. Each retry is a "
+                        "full fresh process (default 1 retry, i.e. 2 attempts total).")
     p.add_argument("--sleep-between-rows", type=float, default=0.0)
     p.add_argument("--keep-workspace", action="store_true",
                    help="Keep runs/<run_id>/workspace instead of deleting it after scoring")
@@ -1002,6 +1096,7 @@ def main() -> None:
         api_key_env=args.api_key_env,
         native_auth=args.native_auth,
         scenario_timeout=args.scenario_timeout,
+        max_stall_retries=args.max_stall_retries,
         sleep_between_rows=args.sleep_between_rows,
         runs_dir=args.runs_dir.resolve(),
         keep_workspace=args.keep_workspace,
