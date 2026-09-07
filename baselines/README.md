@@ -151,6 +151,33 @@ any numbers.
    what happened; stalled attempts' partial artifacts stay on disk under
    their own `run_id` for inspection but are not what gets scored.
 
+   **Incidence is high, not occasional.** A 50-row `--start-row 1 --max-rows
+   50` sweep hit it on every one of the first 4 rows, and on two of them
+   *both* attempts stalled (default `--max-stall-retries 1` gives 2 tries
+   total) — the second attempt's log showed the identical DSML-in-thinking
+   leak as the first, this time preceded by ~150 escalating
+   `thinking_tokens` ticks (a live token-count estimator Claude Code emits
+   during a single long API call) before the malformed turn arrived. That is
+   suggestive — unusually long reasoning chains correlating with the
+   leak — but not confirmed as causal from these logs alone. This is a
+   property of `deepseek-v4-flash` routed through the OpenRouter
+   Anthropic-compat shim under Claude Code, not a defect in this runner: the
+   retry mechanism is working as designed each time (fresh process, bounded,
+   exactly `--max-stall-retries + 1` attempts), it is just frequently not
+   enough. Two consequences for using this baseline:
+
+   - `summary.json` reports both `pass_rate` (over all evaluated rows,
+     matching `benchmark.py`'s denominator for direct comparability) and
+     `pass_rate_excl_stalled` (over rows that got a fair attempt, i.e.
+     excluding `rows_stalled`). Report both — the gap between them is itself
+     a finding, not noise to average away.
+   - Raise `--max-stall-retries` above the default 1 for a real sweep, and
+     expect the wall-clock and OpenRouter-cost total to grow accordingly —
+     each retry is a full fresh process, deploy included. `--harness-effort
+     low` (passed through as `claude --effort low`) is offered as an
+     untested lever worth trying against the correlation above; it is not
+     confirmed to reduce the incidence.
+
 ## Output
 
 Identical to `benchmark.py`, so the existing aggregation scripts read both.

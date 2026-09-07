@@ -117,6 +117,7 @@ class BaselineConfig:
     native_auth: bool
     scenario_timeout: int
     max_stall_retries: int
+    harness_effort: str | None
     sleep_between_rows: float
     runs_dir: Path
     keep_workspace: bool
@@ -288,6 +289,7 @@ def run_harness(
         system_prompt,
         "--model",
         config.harness_model,
+        *(["--effort", config.harness_effort] if config.harness_effort else []),
         "--mcp-config",
         str(mcp_path.resolve()),
         "--strict-mcp-config",
@@ -825,6 +827,7 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
     total_policy = total_passed_policy = total_failed_policy = total_filtered_failed = 0
     scenario_ppr_sum = scenario_unfiltered_sum = 0.0
     scenario_ppr_count = runtime_error_runs = 0
+    stalled_count = 0
     aggregate_tokens = _empty_tokens()
     total_cost = 0.0
 
@@ -858,6 +861,18 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
             completed_at=datetime.now().isoformat(),
             elapsed=round(time.time() - started_ts, 3),
         )
+        # rows_stalled: sessions where Claude Code's own empty-turn recovery
+        # also came back empty on every attempt (see README §6). These are
+        # not validation failures on the merits — the harness never completed
+        # a genuine attempt — so pass_rate (over ALL evaluated rows, matching
+        # benchmark.py's semantics for direct comparability) is reported
+        # alongside pass_rate_excl_stalled, computed over the rows that
+        # actually got a fair attempt. A large gap between the two is itself
+        # a finding: it says how much of the observed failure rate is
+        # model/shim instability rather than the model's IaC generation
+        # ability.
+        evaluated = summary.get("rows_evaluated", 0)
+        non_stalled = max(evaluated - stalled_count, 0)
         summary.update(
             {
                 "harness": config.harness,
@@ -866,6 +881,8 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
                 "base_url": None if config.native_auth else config.base_url,
                 "total_cost_usd_openrouter": round(total_cost, 6),
                 "runs_dir": str(config.runs_dir),
+                "rows_stalled": stalled_count,
+                "pass_rate_excl_stalled": (pass_count / non_stalled) if non_stalled else None,
             }
         )
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -920,6 +937,8 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
         # timeout or non-zero exit still yields a real artifact and verdict, so
         # it counts as an evaluated failure.
         if payload.get("run_id") and payload.get("status") != "runtime_error":
+            if payload.get("status") == "harness_stalled":
+                stalled_count += 1
             if payload.get("final_validation_passed"):
                 pass_count += 1
                 if _safe_int(payload.get("iterations_used")) == 1:
@@ -942,9 +961,14 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
             scenario_ppr_count += 1
             total_cost += float(payload.get("cost_usd_openrouter") or 0.0)
 
+            if payload.get("status") == "harness_stalled":
+                outcome = "STALLED (not a validation failure — see README §6)"
+            elif payload.get("final_validation_passed"):
+                outcome = "PASS"
+            else:
+                outcome = "FAIL"
             print(
-                f"[Baseline] row {row_number}: "
-                f"{'PASS' if payload.get('final_validation_passed') else 'FAIL'} "
+                f"[Baseline] row {row_number}: {outcome} "
                 f"| iters={payload.get('iterations_used')} "
                 f"| calls={payload.get('llm_calls_total')} "
                 f"| verdict={payload.get('final_verdict_source')} "
@@ -993,10 +1017,18 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
     )
 
     print(f"\n[Baseline] Finished in {summary['duration_seconds']}s -> {config.output_dir}")
+    excl = summary.get("pass_rate_excl_stalled")
+    excl_str = f"{excl:.3f}" if excl is not None else "n/a"
     print(
         f"[Baseline] pass_rate={summary['pass_rate']:.3f} "
         f"pass@1={summary['pass_at_1']:.3f} cost=${total_cost:.4f}"
     )
+    if stalled_count:
+        print(
+            f"[Baseline] {stalled_count} row(s) stalled (harness never completed a "
+            f"real attempt, not a validation failure — see README §6). "
+            f"pass_rate_excl_stalled={excl_str}"
+        )
     return {"summary": summary, "rows": rows_out}
 
 
@@ -1038,6 +1070,14 @@ def parse_args() -> argparse.Namespace:
                         "its tool-call syntax into a thinking block instead of a structured "
                         "tool_use, which the OpenRouter shim does not parse. Each retry is a "
                         "full fresh process (default 1 retry, i.e. 2 attempts total).")
+    p.add_argument("--harness-effort", type=str, default=None,
+                   choices=["low", "medium", "high", "xhigh", "max"],
+                   help="Passed through as `claude --effort <level>`. EXPERIMENTAL and "
+                        "unverified for third-party models routed through the OpenRouter "
+                        "shim: offered as a lever to try against the stalled-session "
+                        "failure mode (README §6), whose stalls correlate with unusually "
+                        "long reasoning chains in the observed logs, on the hypothesis "
+                        "that a lower effort level may shorten them. Not confirmed to help.")
     p.add_argument("--sleep-between-rows", type=float, default=0.0)
     p.add_argument("--keep-workspace", action="store_true",
                    help="Keep runs/<run_id>/workspace instead of deleting it after scoring")
@@ -1097,6 +1137,7 @@ def main() -> None:
         native_auth=args.native_auth,
         scenario_timeout=args.scenario_timeout,
         max_stall_retries=args.max_stall_retries,
+        harness_effort=args.harness_effort,
         sleep_between_rows=args.sleep_between_rows,
         runs_dir=args.runs_dir.resolve(),
         keep_workspace=args.keep_workspace,
