@@ -88,6 +88,9 @@ BASELINE_CSV_EXTRA = [
 ]
 BASELINE_CSV_FIELDS = CSV_RESULT_FIELDS + BASELINE_CSV_EXTRA
 
+# Consecutive scenarios that never reached the model before the run aborts.
+DEAD_ROW_ABORT_THRESHOLD = 3
+
 
 @dataclass
 class BaselineConfig:
@@ -221,7 +224,7 @@ def build_harness_env(config: BaselineConfig) -> dict[str, str]:
 
 
 def write_mcp_config(workdir: Path, scenario: ScenarioConfig) -> Path:
-    path = workdir / ".mcp.json"
+    path = (workdir / ".mcp.json").resolve()
     path.write_text(
         json.dumps(
             {
@@ -282,7 +285,7 @@ def run_harness(
         "--model",
         config.harness_model,
         "--mcp-config",
-        str(mcp_path),
+        str(mcp_path.resolve()),
         "--strict-mcp-config",
         "--allowedTools",
         "mcp__iacgod__validate_iac",
@@ -318,7 +321,7 @@ def run_harness(
     ) as err:
         proc = subprocess.Popen(
             cmd,
-            cwd=str(workdir),
+            cwd=str(workdir.resolve()),
             env=build_harness_env(config),
             stdout=out,
             stderr=err,
@@ -575,7 +578,10 @@ def run_scenario(
     run_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_" + str(uuid.uuid4())[:8]
     recorder = ResearchRecorder(run_id=run_id, output_dir=str(config.runs_dir))
 
-    workdir = recorder.output_dir / "workspace"
+    # Absolute: the harness runs with cwd set to this directory, so any
+    # relative path handed to it (--mcp-config, the template path in tool
+    # args) would be re-resolved against the workspace and doubled.
+    workdir = (recorder.output_dir / "workspace").resolve()
     workdir.mkdir(parents=True, exist_ok=True)
 
     scenario = ScenarioConfig(
@@ -727,6 +733,7 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
     started_ts = time.time()
 
     rows_out: list[dict[str, Any]] = []
+    consecutive_dead_rows = 0
     pass_count = pass_at_1_count = 0
     total_iterations = total_llm_calls = 0
     total_policy = total_passed_policy = total_failed_policy = total_filtered_failed = 0
@@ -858,10 +865,38 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
                 f"| ${payload.get('cost_usd_openrouter')}"
             )
 
+        # Fail fast on a misconfiguration. A scenario that makes zero LLM
+        # calls and produces no template did not fail on its merits — the
+        # harness never really ran (bad model routing, an unreadable
+        # --mcp-config, a missing CLI). Left unchecked this churns through the
+        # whole dataset in seconds and yields a CSV of uniform false negatives
+        # that looks like a result.
+        harness_never_ran = (
+            _safe_int(payload.get("llm_calls_total")) == 0
+            and payload.get("final_verdict_source") == "no_template_produced"
+            and payload.get("status") != "skipped_empty_prompt"
+        )
+        consecutive_dead_rows = consecutive_dead_rows + 1 if harness_never_ran else 0
+
         rows_out.append(payload)
         _append_jsonl(jsonl_path, payload)
         _append_baseline_csv(csv_path, payload)
         write_summary(len(rows_out))
+
+        if consecutive_dead_rows >= DEAD_ROW_ABORT_THRESHOLD:
+            stderr_hint = ""
+            if payload.get("run_id"):
+                stderr_hint = (
+                    f"\nInspect: {config.runs_dir / payload['run_id'] / 'harness_stream.stderr.txt'}"
+                )
+            raise SystemExit(
+                f"\n[Baseline] Aborting: {consecutive_dead_rows} consecutive scenarios "
+                f"made zero LLM calls and produced no template. The harness is not "
+                f"running — this is a setup problem, not a benchmark result."
+                f"{stderr_hint}\n"
+                f"Last error: {payload.get('error_message')}\n"
+                f"Partial results kept in {config.output_dir}"
+            )
 
         if config.sleep_between_rows and i < len(selected):
             time.sleep(config.sleep_between_rows)
@@ -951,7 +986,7 @@ def main() -> None:
 
     config = BaselineConfig(
         dataset_path=dataset_path,
-        output_dir=output_dir,
+        output_dir=output_dir.resolve(),
         start_row=args.start_row,
         max_rows=args.max_rows,
         rows=rows,
@@ -968,7 +1003,7 @@ def main() -> None:
         native_auth=args.native_auth,
         scenario_timeout=args.scenario_timeout,
         sleep_between_rows=args.sleep_between_rows,
-        runs_dir=args.runs_dir,
+        runs_dir=args.runs_dir.resolve(),
         keep_workspace=args.keep_workspace,
         pricing={} if args.no_pricing else fetch_openrouter_pricing(),
     )
