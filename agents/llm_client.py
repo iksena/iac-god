@@ -254,8 +254,13 @@ def _call_llm_with_history(client, model: str, system: str, messages: list) -> t
         max_tokens_override = None
         if DEFAULT_CONFIG.reasoning_enabled:
             reasoning_opts: dict = {"enabled": True}
-            if DEFAULT_CONFIG.openrouter_reasoning_effort:
-                reasoning_opts["effort"] = DEFAULT_CONFIG.openrouter_reasoning_effort
+            # OpenRouter rejects requests that set both reasoning.effort and
+            # reasoning.max_tokens ("Only one of ... can be specified"), so
+            # these are mutually exclusive here. max_tokens is the more
+            # precise lever — it directly caps the shared budget rather than
+            # just hinting at it — so it takes precedence when both are
+            # configured (e.g. a stray effort default left over alongside a
+            # newly-added max_tokens override).
             if DEFAULT_CONFIG.openrouter_reasoning_max_tokens:
                 reasoning_opts["max_tokens"] = DEFAULT_CONFIG.openrouter_reasoning_max_tokens
                 # Reasoning tokens share the same completion budget as content
@@ -265,6 +270,8 @@ def _call_llm_with_history(client, model: str, system: str, messages: list) -> t
                 # content budget" even when it's a fixed, research-controlled
                 # parameter that can't itself be changed.
                 max_tokens_override = DEFAULT_CONFIG.max_tokens + DEFAULT_CONFIG.openrouter_reasoning_max_tokens
+            elif DEFAULT_CONFIG.openrouter_reasoning_effort:
+                reasoning_opts["effort"] = DEFAULT_CONFIG.openrouter_reasoning_effort
             extra_body["reasoning"] = reasoning_opts
         return _call_openai_compat(
             client, model, system, messages,
