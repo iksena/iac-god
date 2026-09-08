@@ -29,6 +29,7 @@ class BenchmarkConfig:
     openrouter_min_quantization: str | None
     openrouter_reasoning_effort: str | None
     openrouter_reasoning_max_tokens: int | None
+    skip_security: bool
     iac_type: str           # "cloudformation" | "terraform"
 
 # ---------------------------------------------------------------------------
@@ -253,6 +254,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 openrouter_min_quantization=config.openrouter_min_quantization,
                 openrouter_reasoning_effort=config.openrouter_reasoning_effort,
                 openrouter_reasoning_max_tokens=config.openrouter_reasoning_max_tokens,
+                skip_security=config.skip_security,
                 iac_type=config.iac_type,
             )
 
@@ -519,9 +521,26 @@ def parse_args() -> argparse.Namespace:
         choices=["none", "localstack", "aws"],
         default="localstack",
     )
+    parser.add_argument(
+        "--skip-deploy",
+        action="store_true",
+        help="Skip the deploy stage entirely (equivalent to --deploy-target none, and overrides it).",
+    )
+    parser.add_argument(
+        "--skip-security",
+        action="store_true",
+        help=(
+            "Skip the security misconfiguration scan (trivy) stage. Structural "
+            "validation (yaml/cfn-lint or tflint/terraform-validate) still runs; "
+            "deploy still gates on structural validation passing unless "
+            "--skip-deploy / --deploy-target none is also used."
+        ),
+    )
     args = parser.parse_args()
     if args.retry_errors and args.exclude_completed_csv is None:
         parser.error("--retry-errors requires --exclude-completed-csv")
+    if args.skip_deploy:
+        args.deploy_target = "none"
     return args
 
 
@@ -561,6 +580,7 @@ if __name__ == "__main__":
         openrouter_min_quantization=args.openrouter_min_quantization,
         openrouter_reasoning_effort=args.openrouter_reasoning_effort,
         openrouter_reasoning_max_tokens=args.openrouter_reasoning_max_tokens,
+        skip_security=args.skip_security,
         iac_type=args.iac_type,
     )
     run_benchmark(cfg)

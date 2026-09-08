@@ -12,8 +12,8 @@ unchanged.
 The `config` argument accepted by _build_summary is duck-typed: any object
 exposing dataset_path, iac_type, provider, model, deploy_target,
 openrouter_provider_only, openrouter_min_quantization,
-openrouter_reasoning_effort, openrouter_reasoning_max_tokens and
-max_iterations will work.
+openrouter_reasoning_effort, openrouter_reasoning_max_tokens,
+skip_security and max_iterations will work.
 """
 import csv
 import json
@@ -37,6 +37,7 @@ class SummaryConfig(Protocol):
     openrouter_min_quantization: str | None
     openrouter_reasoning_effort: str | None
     openrouter_reasoning_max_tokens: int | None
+    skip_security: bool
     max_iterations: int
 
 
@@ -381,6 +382,7 @@ def _build_summary(
         "openrouter_min_quantization": config.openrouter_min_quantization,
         "openrouter_reasoning_effort": config.openrouter_reasoning_effort,
         "openrouter_reasoning_max_tokens": config.openrouter_reasoning_max_tokens,
+        "skip_security": config.skip_security,
         "max_iterations": config.max_iterations,
         "rows_requested": selected_row_count,
         "rows_filtered_out": filtered_row_count,

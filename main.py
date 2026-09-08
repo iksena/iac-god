@@ -27,6 +27,7 @@ def run_pipeline(
     openrouter_min_quantization: str | None = None,
     openrouter_reasoning_effort: str | None = None,
     openrouter_reasoning_max_tokens: int | None = None,
+    skip_security: bool = False,
     iac_type: str = "cloudformation",
 ) -> GraphState:
 
@@ -73,7 +74,7 @@ def run_pipeline(
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_id = ts + "_" + str(uuid.uuid4())[:8]
     recorder = ResearchRecorder(run_id=run_id)
-    graph = build_graph(recorder, deploy_config=deploy_config)
+    graph = build_graph(recorder, deploy_config=deploy_config, skip_security=skip_security)
 
     initial_state: GraphState = {
         "iac_type": iac_type,
@@ -199,6 +200,21 @@ if __name__ == "__main__":
         default="localstack",
     )
     parser.add_argument(
+        "--skip-deploy",
+        action="store_true",
+        help="Skip the deploy stage entirely (equivalent to --deploy-target none, and overrides it).",
+    )
+    parser.add_argument(
+        "--skip-security",
+        action="store_true",
+        help=(
+            "Skip the security misconfiguration scan (trivy) stage. Structural "
+            "validation (yaml/cfn-lint or tflint/terraform-validate) still runs; "
+            "deploy still gates on structural validation passing unless "
+            "--skip-deploy / --deploy-target none is also used."
+        ),
+    )
+    parser.add_argument(
         "--localstack-endpoint",
         type=str,
         default=None,
@@ -211,6 +227,8 @@ if __name__ == "__main__":
         help="IaC language to generate. 'cloudformation' (default) or 'terraform'.",
     )
     args = parser.parse_args()
+    if args.skip_deploy:
+        args.deploy_target = "none"
 
     try:
         result = run_pipeline(
@@ -224,6 +242,7 @@ if __name__ == "__main__":
             openrouter_min_quantization=args.openrouter_min_quantization,
             openrouter_reasoning_effort=args.openrouter_reasoning_effort,
             openrouter_reasoning_max_tokens=args.openrouter_reasoning_max_tokens,
+            skip_security=args.skip_security,
             iac_type=args.iac_type,
         )
     except Exception:

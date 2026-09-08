@@ -493,6 +493,7 @@ def run_all_validators(
     template: str,
     iac_type: str = "cloudformation",
     deploy_config: DeployConfig = DEFAULT_DEPLOY_CONFIG,
+    skip_security: bool = False,
 ) -> tuple[list[ValidationResult], bool, DeployValidationResult]:
     """
     Run the correct validation pipeline for the given IaC type.
@@ -509,10 +510,16 @@ def run_all_validators(
     types. This structural parity is a requirement of the generalisation
     research hypothesis.
 
-    Skipped stages (trivy when structural stages fail, deploy when static
-    validation fails) are represented with passed=True and an empty errors
-    list so that classify_failing_stages() does not count them as failures.
-    A skipped stage is not a failed stage — it simply did not run.
+    Skipped stages (trivy when skip_security=True or structural stages fail,
+    deploy when static validation fails or deploy_config.target is NONE) are
+    represented with passed=True and an empty errors list so that
+    classify_failing_stages() does not count them as failures. A skipped
+    stage is not a failed stage — it simply did not run.
+
+    skip_security=True unconditionally skips the trivy stage (structural
+    stages still run), mirroring deploy_config.target=DeployTarget.NONE for
+    the deploy stage — set both to run structural-validation-only, similar to
+    how IaC-Eval-style evaluations can disable security/deploy checks.
 
     Checkov is wired but currently skipped in both pipelines (kept for future
     re-enablement); trivy covers the security stage.
@@ -534,7 +541,14 @@ def run_all_validators(
         tf_validate_result = validate_terraform(template)
         results: list[ValidationResult] = [tflint_result, tf_validate_result]
 
-        if tflint_result["passed"] and tf_validate_result["passed"]:
+        if skip_security:
+            trivy_result = ValidationResult(
+                stage="trivy",
+                passed=True,
+                errors=[],
+                raw_output="Skipped: security validation disabled (skip_security=True)",
+            )
+        elif tflint_result["passed"] and tf_validate_result["passed"]:
             trivy_result = validate_trivy(template, iac_type="terraform")
         else:
             # passed=True: a skipped stage is not a failed stage.
@@ -577,7 +591,14 @@ def run_all_validators(
         results = [yaml_result, cfn_lint_result]
 
         # Trivy runs only after YAML and cfn-lint succeed
-        if yaml_result["passed"] and cfn_lint_result["passed"]:
+        if skip_security:
+            trivy_result = ValidationResult(
+                stage="trivy",
+                passed=True,
+                errors=[],
+                raw_output="Skipped: security validation disabled (skip_security=True)",
+            )
+        elif yaml_result["passed"] and cfn_lint_result["passed"]:
             trivy_result = validate_trivy(template, iac_type="cloudformation")
         else:
             # passed=True: a skipped stage is not a failed stage.
