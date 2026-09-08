@@ -26,6 +26,7 @@ def run_pipeline(
     openrouter_provider_only: str | None = None,
     openrouter_min_quantization: str | None = None,
     openrouter_reasoning_effort: str | None = None,
+    openrouter_reasoning_max_tokens: int | None = None,
     iac_type: str = "cloudformation",
 ) -> GraphState:
 
@@ -58,6 +59,8 @@ def run_pipeline(
             DEFAULT_CONFIG.openrouter_min_quantization = openrouter_min_quantization.strip().lower()
         if openrouter_reasoning_effort is not None:
             DEFAULT_CONFIG.openrouter_reasoning_effort = openrouter_reasoning_effort.strip().lower()
+        if openrouter_reasoning_max_tokens is not None:
+            DEFAULT_CONFIG.openrouter_reasoning_max_tokens = openrouter_reasoning_max_tokens
 
     # ------------------------------------------------------------------
     # Configure deploy target
@@ -177,6 +180,20 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--openrouter-reasoning-max-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Explicit token budget for reasoning, sent as reasoning.max_tokens "
+            "(support varies by model/provider — unsupported models are expected "
+            "to just ignore it). Reasoning tokens share the same completion "
+            "budget as content on OpenRouter, so this is ADDED on top of the "
+            "configured max_tokens rather than carved out of it, keeping "
+            "max_tokens a guaranteed content budget even when it's a fixed, "
+            "research-controlled parameter that can't itself be changed."
+        ),
+    )
+    parser.add_argument(
         "--deploy-target",
         choices=["none", "localstack", "aws"],
         default="localstack",
@@ -206,6 +223,7 @@ if __name__ == "__main__":
             openrouter_provider_only=args.openrouter_provider_only,
             openrouter_min_quantization=args.openrouter_min_quantization,
             openrouter_reasoning_effort=args.openrouter_reasoning_effort,
+            openrouter_reasoning_max_tokens=args.openrouter_reasoning_max_tokens,
             iac_type=args.iac_type,
         )
     except Exception:

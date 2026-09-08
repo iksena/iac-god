@@ -167,6 +167,7 @@ def _call_openai_compat(
     *,
     is_reasoning: bool,
     extra_body: dict | None = None,
+    max_tokens_override: int | None = None,
 ) -> tuple[str, dict]:
     """Shared call path for OpenRouter and OpenAI direct (both use openai SDK).
 
@@ -174,17 +175,24 @@ def _call_openai_compat(
       - max_completion_tokens  (not max_tokens)
       - temperature omitted    (API rejects it)
     Standard chat models use the normal max_tokens + temperature params.
+
+    max_tokens_override, when given, replaces DEFAULT_CONFIG.max_tokens for
+    this call only — used by the OpenRouter path to add a separate reasoning
+    token allowance on top of the configured content budget without mutating
+    global config.
     """
     request_kwargs: dict = {
         "model": model,
         "messages": [{"role": "system", "content": system}] + messages,
     }
 
+    max_tokens = max_tokens_override if max_tokens_override is not None else DEFAULT_CONFIG.max_tokens
+
     if is_reasoning:
-        request_kwargs["max_completion_tokens"] = DEFAULT_CONFIG.max_tokens
+        request_kwargs["max_completion_tokens"] = max_tokens
     else:
         request_kwargs["temperature"] = DEFAULT_CONFIG.temperature
-        request_kwargs["max_tokens"] = DEFAULT_CONFIG.max_tokens
+        request_kwargs["max_tokens"] = max_tokens
 
     if extra_body:
         request_kwargs["extra_body"] = extra_body
@@ -243,15 +251,26 @@ def _call_llm_with_history(client, model: str, system: str, messages: list) -> t
         provider_preferences = build_openrouter_provider_preferences(DEFAULT_CONFIG)
         if provider_preferences:
             extra_body["provider"] = provider_preferences
+        max_tokens_override = None
         if DEFAULT_CONFIG.reasoning_enabled:
             reasoning_opts: dict = {"enabled": True}
             if DEFAULT_CONFIG.openrouter_reasoning_effort:
                 reasoning_opts["effort"] = DEFAULT_CONFIG.openrouter_reasoning_effort
+            if DEFAULT_CONFIG.openrouter_reasoning_max_tokens:
+                reasoning_opts["max_tokens"] = DEFAULT_CONFIG.openrouter_reasoning_max_tokens
+                # Reasoning tokens share the same completion budget as content
+                # on OpenRouter, so add the reasoning allowance on top of the
+                # configured max_tokens instead of letting it eat into the
+                # content budget — max_tokens keeps meaning "guaranteed
+                # content budget" even when it's a fixed, research-controlled
+                # parameter that can't itself be changed.
+                max_tokens_override = DEFAULT_CONFIG.max_tokens + DEFAULT_CONFIG.openrouter_reasoning_max_tokens
             extra_body["reasoning"] = reasoning_opts
         return _call_openai_compat(
             client, model, system, messages,
             is_reasoning=False,  # OpenRouter handles reasoning server-side
             extra_body=extra_body or None,
+            max_tokens_override=max_tokens_override,
         )
 
     if DEFAULT_CONFIG.provider == LLMProvider.OPENAI:

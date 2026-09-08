@@ -127,6 +127,7 @@ class BaselineConfig:
     openrouter_provider_only: str | None = None
     openrouter_min_quantization: str | None = None
     openrouter_reasoning_effort: str | None = None
+    openrouter_reasoning_max_tokens: int | None = None
 
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 

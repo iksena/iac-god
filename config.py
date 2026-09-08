@@ -14,6 +14,15 @@ def _parse_csv_env(value: str | None) -> tuple[str, ...]:
     return tuple(part for part in parts if part)
 
 
+def _parse_optional_int(value: str | None) -> int | None:
+    if not value or not value.strip():
+        return None
+    try:
+        return int(value.strip())
+    except ValueError:
+        return None
+
+
 OPENROUTER_QUANTIZATION_ORDER: tuple[str, ...] = (
     "int4",
     "int8",
@@ -127,6 +136,21 @@ class LLMConfig:
     # budget on reasoning and return empty content otherwise.
     openrouter_reasoning_effort: str = field(
         default_factory=lambda: os.getenv("OPENROUTER_REASONING_EFFORT", "").strip().lower()
+    )
+    # Explicit token budget for reasoning, sent as reasoning.max_tokens.
+    # Support varies by model/provider (OpenRouter documents it for Anthropic,
+    # Gemini, and Alibaba Qwen; not guaranteed for every OpenRouter model —
+    # unsupported models are expected to just ignore it).
+    #
+    # Reasoning tokens share the SAME completion budget as content on
+    # OpenRouter (max_tokens), so setting this does NOT carve reasoning out of
+    # `max_tokens` — it is ADDED on top when building the request, so
+    # `max_tokens` keeps meaning "guaranteed content budget" (useful when
+    # max_tokens is a fixed, research-controlled parameter that can't be
+    # changed) while this field independently bounds how much extra reasoning
+    # the model may spend.
+    openrouter_reasoning_max_tokens: int | None = field(
+        default_factory=lambda: _parse_optional_int(os.getenv("OPENROUTER_REASONING_MAX_TOKENS"))
     )
 
     # Anthropic direct
