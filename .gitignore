@@ -15,3 +15,4 @@ tf_registry_docs.json
 .ipynb_checkpoints
 
 **/.DS_Store
+**/*.bak*

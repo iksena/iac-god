@@ -51,10 +51,16 @@ def validate_yaml(template: str) -> ValidationResult:
         f"[{problem.rule}] line {problem.line}, column {problem.column}: {problem.desc}"
         for problem in problems
     ]
+    # yamllint's own "default" ruleset marks several rules level: warning
+    # (truthy, comments, comments-indentation, ...), none of which are
+    # disabled by _YAMLLINT_CONFIG above. Only "error"-level problems should
+    # block the stage; warnings are surfaced to the LLM but non-blocking,
+    # consistent with every other validator's severity handling.
+    passed = not any(problem.level == "error" for problem in problems)
     raw_output = "YAML syntax OK" if not errors else "\n".join(errors)
     return ValidationResult(
         stage="yaml",
-        passed=not errors,
+        passed=passed,
         errors=errors,
         raw_output=raw_output,
     )
@@ -289,7 +295,7 @@ def validate_terraform(template: str) -> ValidationResult:
             errors: list[str] = []
             try:
                 data = json.loads(raw)
-                passed = bool(data.get("valid", False))
+                error_severity_count = 0
                 for diag in data.get("diagnostics", []):
                     severity = diag.get("severity", "error").upper()
                     summary  = (diag.get("summary") or "").strip()
@@ -305,6 +311,16 @@ def validate_terraform(template: str) -> ValidationResult:
                     if detail and detail.lower() != summary.lower():
                         parts.append(detail)
                     errors.append(" | ".join(parts))
+                    if severity == "ERROR":
+                        error_severity_count += 1
+
+                # Stage fails only when there are ERROR-severity diagnostics.
+                # WARNING is surfaced to the LLM but non-blocking, consistent
+                # with validate_tflint's severity handling above — previously
+                # this ANDed terraform's own `valid` flag with `not errors`,
+                # which meant a WARNING-only diagnostic (valid=true) still
+                # failed the stage simply because `errors` was non-empty.
+                passed = error_severity_count == 0
             except (json.JSONDecodeError, KeyError):
                 passed = val_result.returncode == 0
                 if not passed:
@@ -312,7 +328,7 @@ def validate_terraform(template: str) -> ValidationResult:
 
             return ValidationResult(
                 stage="terraform-validate",
-                passed=passed and not errors,
+                passed=passed,
                 errors=errors,
                 raw_output=raw,
             )
@@ -394,7 +410,14 @@ def validate_checkov(template: str, iac_type: str = "cloudformation") -> Validat
         ppr, fcr = _derive_policy_rates(total_policies, passed_policies, filtered_failed_policies)
         return ValidationResult(
             stage="checkov",
-            passed=len(errors) == 0,
+            # Only high/critical-severity failed checks block the stage
+            # (filtered_failed_policies, already computed above) — low/medium
+            # findings are still surfaced in `errors` for visibility but are
+            # non-blocking, consistent with every other validator's severity
+            # handling and with trivy's own high/critical threshold below.
+            # Previously this was `len(errors) == 0`, which failed the stage
+            # on ANY severity, inconsistent with filtered_failed_policies.
+            passed=filtered_failed_policies == 0,
             errors=errors,
             raw_output=raw,
             policy_stats={
