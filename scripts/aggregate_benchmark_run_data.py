@@ -661,11 +661,6 @@ def move_run_folders_from_csv(
 # Terminal display: results CSV -> markdown table
 # ---------------------------------------------------------------------------
 
-def _scenario_id_from_ground_truth_path(path: str) -> str:
-    path = (path or "").strip().rstrip("/")
-    return path.rsplit("/", 1)[-1] if path else ""
-
-
 def _truncate(text, width: int) -> str:
     text = "" if text is None or (isinstance(text, float) and pd.isna(text)) else str(text)
     text = text.strip()
@@ -706,14 +701,9 @@ def display_results_table(
 ) -> str:
     """Render a results CSV as a markdown table for terminal display.
 
-    Columns: row_number, scenario_id, ground_truth_path, prompt (first
+    Columns: row_number, run_id, ground_truth_path, prompt (first
     ``prompt_chars`` characters), difficulty, num_iterations, status
     ("passed"/"failed").
-
-    ``scenario_id`` is derived from the last path segment of
-    ``ground_truth_path`` (e.g. "iac_benchmark/scenarios/terrads_38c75e1144d6"
-    -> "terrads_38c75e1144d6") — results CSVs don't carry a dedicated
-    scenario-id column, so this reuses the identifier already embedded there.
 
     ``dataset_csv``, when given, supplies ``prompt``/``difficulty`` (results
     CSVs don't have these columns — they only exist in the source benchmark
@@ -745,6 +735,8 @@ def display_results_table(
     df["row_number"] = pd.to_numeric(df["row_number"], errors="coerce")
     ground_truth = df["ground_truth_path"].fillna("").astype(str).str.strip() \
         if "ground_truth_path" in df.columns else pd.Series([""] * len(df), index=df.index)
+    run_id = df["run_id"].fillna("").astype(str).str.strip() \
+        if "run_id" in df.columns else pd.Series([""] * len(df), index=df.index)
 
     prompt_by_gt: dict = {}
     difficulty_by_gt: dict = {}
@@ -779,7 +771,7 @@ def display_results_table(
     )
 
     headers = [
-        "row_number", "scenario_id", "ground_truth_path", "prompt",
+        "row_number", "run_id", "ground_truth_path", "prompt",
         "difficulty", "num_iterations", "status",
     ]
     rows = []
@@ -804,7 +796,7 @@ def display_results_table(
 
         rows.append([
             "" if pd.isna(row_number) else int(row_number),
-            _scenario_id_from_ground_truth_path(gt) or "?",
+            run_id.loc[idx] or "?",
             gt or "?",
             _truncate(prompt, prompt_chars) if prompt is not None else "?",
             _format_number(difficulty) if isinstance(difficulty, float) else ("?" if difficulty is None else difficulty),
