@@ -378,6 +378,58 @@ def _drain_stack_events(
             completed_resources.append(rid)
 
 
+def _fetch_early_validation_failures(cfn_client, stack_id: str) -> list[dict]:
+    """Fetch granular failure detail for CloudFormation's pre-provisioning
+    "early validation" checks (resource-existence checks, hooks, property
+    validation) — introduced Nov 2025.
+
+    These checks run before any resource creation begins, so a failure never
+    produces per-resource StackEvents; describe_stack_events only ever sees
+    one generic stack-level event:
+        "Validation failed with N error(s). Call DescribeEvents to retrieve
+         the full list of issues with resource and property details..."
+    The actual per-issue detail (which resource, which property, why) only
+    exists behind the separate describe_events operation (distinct from
+    describe_stack_events), filtered to failed events.
+
+    Returns a list of {"logical_name": ..., "status_reason": ...} entries,
+    one per underlying validation/hook/provisioning issue, or [] if the API
+    isn't available (older botocore) or returns nothing new.
+    """
+    if not hasattr(cfn_client, "describe_events"):
+        # Older botocore/boto3 without this operation — nothing to enrich with.
+        return []
+
+    try:
+        response = cfn_client.describe_events(
+            StackName=stack_id,
+            Filters={"FailedEvents": True},
+        )
+    except Exception as e:
+        print(f"  [Deploy] describe_events enrichment failed (non-fatal): {e}")
+        return []
+
+    enriched: list[dict] = []
+    for event in response.get("OperationEvents", []):
+        rid = event.get("LogicalResourceId") or "stack"
+        # Prefer the most specific reason available: validation > hook > resource.
+        reason = (
+            event.get("ValidationStatusReason")
+            or event.get("HookStatusReason")
+            or event.get("ResourceStatusReason")
+        )
+        if not reason:
+            continue
+        path = event.get("ValidationPath")
+        if path:
+            reason = f"{reason} (at {path})"
+        entry = {"logical_name": rid, "status_reason": reason}
+        print(f"  [Deploy] early-validation detail — {rid}: {reason}")
+        enriched.append(entry)
+
+    return enriched
+
+
 # ---------------------------------------------------------------------------
 # Custom resource type helper (CloudFormation)
 # ---------------------------------------------------------------------------
@@ -892,6 +944,20 @@ def validate_deployment(
                     cfn_client, stack_id, seen_events, last_timestamp,
                     failed_resources, completed_resources, deploy_logs,
                 )
+
+                # CloudFormation's pre-provisioning "early validation" checks
+                # (resource-existence, hooks, property validation) never
+                # produce per-resource StackEvents on failure — only a
+                # generic stack-level "Call DescribeEvents..." placeholder.
+                # When that's all _drain_stack_events found, fetch the real
+                # per-issue detail via the separate describe_events operation.
+                if not failed_resources or all(
+                    "describeevents" in (r.get("status_reason") or "").lower()
+                    for r in failed_resources
+                ):
+                    enriched = _fetch_early_validation_failures(cfn_client, stack_id)
+                    if enriched:
+                        failed_resources = enriched
 
                 error_msg = _format_failed_resources(failed_resources)
                 if not failed_resources:

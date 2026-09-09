@@ -7,6 +7,17 @@ cfn-lint==1.48.1
 checkov==3.2.513
 python-dotenv==1.2.2
 yamllint==1.38.0
+# checkov (through at least 3.3.16, the latest release as of writing) hard-pins
+# boto3==1.35.49 in its own package metadata, and that boto3 version requires
+# botocore<1.36.0 — which predates CloudFormation's DescribeEvents operation
+# (used by tools/deploy_validator.py to enrich "early validation" deploy
+# failures; degrades gracefully to today's behavior when unavailable). No
+# boto3 version satisfies both constraints, so `pip install -r
+# requirements.txt` intentionally keeps boto3 at what checkov demands here.
+# To enable that enrichment, run this AFTER installing requirements.txt:
+#   pip install --upgrade boto3==1.43.90
+# (checkov's own runtime behavior is unaffected by the newer boto3 — verified
+# by running it against a test template with 1.43.90 installed.)
 boto3==1.35.49
 requests==2.33.1
 sentence_transformers==5.3.0
