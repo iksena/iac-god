@@ -1,12 +1,19 @@
+import os
 import subprocess
 import tempfile
+import time
 import json
 from pathlib import Path
 from state import ValidationResult, DeployValidationResult
 from yamllint import linter
 from yamllint.config import YamlLintConfig
 from config import DeployConfig, DeployTarget, DEFAULT_DEPLOY_CONFIG
-from tools.deploy_validator import validate_deployment
+from tools.deploy_validator import (
+    validate_deployment,
+    _TF_INIT_MAX_ATTEMPTS,
+    _TF_INIT_RETRY_BACKOFF_SECONDS,
+    _TF_PLUGIN_CACHE_DIR,
+)
 
 
 def _derive_policy_rates(
@@ -264,16 +271,54 @@ def validate_terraform(template: str) -> ValidationResult:
     with tempfile.TemporaryDirectory() as tmpdir:
         tf_path = Path(tmpdir) / "main.tf"
         tf_path.write_text(template, encoding="utf-8")
+
+        # Point at the same persistent plugin cache deploy_validator.py uses,
+        # so this stage doesn't re-download the ~500 MB AWS provider on every
+        # call. Sharing that cache means concurrent processes' `terraform
+        # init`s can race to extract/link the same provider binary and hit a
+        # transient "text file busy" — retried below the same way
+        # deploy_validator.py's init already is.
+        run_env = os.environ.copy()
+        run_env["TF_PLUGIN_CACHE_DIR"] = str(_TF_PLUGIN_CACHE_DIR)
+
         try:
             # Step 1: init (no backend, no input prompts)
-            # Timeout increased to 600s (10 min) to allow provider plugin downloads
-            init_result = subprocess.run(
-                ["terraform", "init", "-backend=false", "-input=false", "-no-color"],
-                cwd=tmpdir,
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
+            # Timeout increased to 1800s (30 min) to allow provider plugin downloads
+            init_result = None
+            for init_attempt in range(1, _TF_INIT_MAX_ATTEMPTS + 1):
+                try:
+                    init_result = subprocess.run(
+                        ["terraform", "init", "-backend=false", "-input=false", "-no-color"],
+                        cwd=tmpdir,
+                        capture_output=True,
+                        text=True,
+                        timeout=1800,
+                        env=run_env,
+                    )
+                except subprocess.TimeoutExpired:
+                    timeout_msg = "terraform init timed out after 1800s — provider download stalled"
+                    return ValidationResult(
+                        stage="terraform-validate",
+                        passed=False,
+                        errors=[timeout_msg],
+                        raw_output=timeout_msg,
+                    )
+
+                if init_result.returncode == 0:
+                    break
+
+                init_err = (init_result.stderr or init_result.stdout or "")
+                if "text file busy" in init_err.lower() and init_attempt < _TF_INIT_MAX_ATTEMPTS:
+                    print(
+                        f"[terraform-validate] init hit a transient plugin-cache race (text file busy) "
+                        f"on attempt {init_attempt}/{_TF_INIT_MAX_ATTEMPTS}, "
+                        f"retrying in {_TF_INIT_RETRY_BACKOFF_SECONDS:.0f}s..."
+                    )
+                    time.sleep(_TF_INIT_RETRY_BACKOFF_SECONDS)
+                    continue
+
+                break
+
             if init_result.returncode != 0:
                 err_text = (init_result.stderr or init_result.stdout).strip()
                 return ValidationResult(
@@ -290,6 +335,7 @@ def validate_terraform(template: str) -> ValidationResult:
                 capture_output=True,
                 text=True,
                 timeout=60,
+                env=run_env,
             )
             raw = val_result.stdout or val_result.stderr
             errors: list[str] = []
