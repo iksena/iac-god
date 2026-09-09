@@ -35,6 +35,19 @@ _TF_PLUGIN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 _TF_INIT_MAX_ATTEMPTS = 3
 _TF_INIT_RETRY_BACKOFF_SECONDS = 3.0
 
+# Applied to every CloudFormation stack this harness creates (and, by CFN's
+# stack-level tag propagation, to every resource within it that supports
+# tagging). Stack-name-prefix matching (see _delete_surviving_eval_stacks)
+# only finds *stacks*; an LLM-chosen resource name (e.g. an S3 bucket) can be
+# anything and won't carry that prefix. A resource that outlives its stack's
+# deletion (DeletionPolicy: Retain, or a non-empty S3 bucket CloudFormation
+# can't auto-delete) still carries this tag, which is how
+# _delete_orphaned_eval_resources finds and removes it regardless of name —
+# critical for S3 specifically, since bucket names are globally unique and a
+# single orphan permanently blocks every future run of that same scenario.
+_EVAL_TAG_KEY = "ManagedBy"
+_EVAL_TAG_VALUE = "iac-god-eval"
+
 
 # ---------------------------------------------------------------------------
 # CloudFormation client factory
@@ -174,6 +187,100 @@ def _delete_surviving_eval_stacks(deploy_config: DeployConfig):
         print(f"[Deploy] Stack sweep error: {e}")
 
 
+def _empty_and_delete_bucket(s3_client, bucket_name: str) -> None:
+    """Empty every object version + delete marker, then delete the bucket
+    itself.
+
+    delete_bucket refuses a non-empty bucket, and a versioning-enabled
+    bucket's real contents include every historical version and delete
+    marker, not just the current keys — list_object_versions (not
+    list_objects_v2) is required to actually find and remove all of them.
+    """
+    paginator = s3_client.get_paginator("list_object_versions")
+    for page in paginator.paginate(Bucket=bucket_name):
+        to_delete = [
+            {"Key": v["Key"], "VersionId": v["VersionId"]}
+            for v in page.get("Versions", []) + page.get("DeleteMarkers", [])
+        ]
+        for i in range(0, len(to_delete), 1000):  # delete_objects caps at 1000/call
+            s3_client.delete_objects(
+                Bucket=bucket_name,
+                Delete={"Objects": to_delete[i:i + 1000]},
+            )
+
+    s3_client.delete_bucket(Bucket=bucket_name)
+
+
+def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
+    """Find and delete resources tagged _EVAL_TAG_KEY=_EVAL_TAG_VALUE (see
+    create_stack) that survived their owning stack's deletion.
+
+    Stack-name-prefix matching (_delete_surviving_eval_stacks, which always
+    runs first) only finds *stacks*. A resource an LLM's template caused to
+    outlive its stack — DeletionPolicy: Retain, or an S3 bucket CloudFormation
+    couldn't auto-empty-and-delete — can have any name at all, so only the
+    tag reliably identifies it as ours. Tags live on the resource itself, so
+    they persist even after the owning stack is gone.
+
+    Scoped to S3 buckets: the concrete, high-value case, since bucket names
+    are globally unique and a single orphan permanently blocks every future
+    run of whatever scenario happens to pick that name. Other tagged
+    resource types are reported (for visibility) but not auto-deleted —
+    each AWS service has its own delete semantics, and this project already
+    has broader, manual cleanup tools (nuke-config.yml / aws-nuke,
+    scripts/nuke_vpc_dependencies.py) for the rest.
+    """
+    session = boto3.Session(profile_name=deploy_config.aws_profile)
+    tagging_client = session.client(
+        "resourcegroupstaggingapi", region_name=deploy_config.aws_region
+    )
+
+    try:
+        paginator = tagging_client.get_paginator("get_resources")
+        mappings = []
+        for page in paginator.paginate(
+            TagFilters=[{"Key": _EVAL_TAG_KEY, "Values": [_EVAL_TAG_VALUE]}],
+        ):
+            mappings.extend(page.get("ResourceTagMappingList", []))
+    except Exception as e:
+        print(f"[Deploy] Orphan resource sweep error (non-fatal): {e}")
+        return
+
+    if not mappings:
+        return
+
+    s3_buckets: list[str] = []
+    other: list[str] = []
+    for mapping in mappings:
+        arn = mapping.get("ResourceARN", "")
+        # S3 bucket ARNs: arn:aws:s3:::bucket-name — no account/region
+        # segment, and no further "/" (an object-level ARN would have one).
+        prefix = "arn:aws:s3:::"
+        if arn.startswith(prefix) and "/" not in arn[len(prefix):]:
+            s3_buckets.append(arn[len(prefix):])
+        else:
+            other.append(arn)
+
+    if other:
+        preview = ", ".join(other[:10]) + (" ..." if len(other) > 10 else "")
+        print(
+            f"[Deploy] ⚠️  {len(other)} other tagged resource(s) found with no "
+            f"owning stack (not auto-cleaned, needs a type-specific delete): {preview}"
+        )
+
+    if not s3_buckets:
+        return
+
+    print(f"[Deploy] {len(s3_buckets)} orphaned eval S3 bucket(s) found — emptying and deleting...")
+    s3_client = session.client("s3", region_name=deploy_config.aws_region)
+    for bucket_name in s3_buckets:
+        try:
+            _empty_and_delete_bucket(s3_client, bucket_name)
+            print(f"  [Deploy] Deleted orphaned bucket '{bucket_name}' ✓")
+        except Exception as e:
+            print(f"  [Deploy] Warning: could not delete orphaned bucket '{bucket_name}': {e}")
+
+
 # ---------------------------------------------------------------------------
 # AWS reset helper
 # ---------------------------------------------------------------------------
@@ -181,6 +288,7 @@ def _delete_surviving_eval_stacks(deploy_config: DeployConfig):
 def _reset_aws_state(deploy_config: DeployConfig):
     print("[Deploy] AWS state reset: scanning for prior evaluation stacks...")
     _delete_surviving_eval_stacks(deploy_config)
+    _delete_orphaned_eval_resources(deploy_config)
 
 
 # ---------------------------------------------------------------------------
@@ -853,6 +961,7 @@ def validate_deployment(
             TemplateBody=template,
             OnFailure="DELETE",
             Capabilities=["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM"],
+            Tags=[{"Key": _EVAL_TAG_KEY, "Value": _EVAL_TAG_VALUE}],
         )
         stack_id = create_response["StackId"]
 
