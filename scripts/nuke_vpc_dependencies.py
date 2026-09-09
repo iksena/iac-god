@@ -574,7 +574,18 @@ def unlock_locked_s3_buckets(session, region, actions):
     object version in every Object-Lock-enabled bucket in *region*, so
     aws-nuke's own (lock-unaware) bucket-emptying pass can then succeed.
     COMPLIANCE-mode retention has no bypass, by AWS design -- those versions
-    are reported and left alone until their retention window expires."""
+    are reported and left alone until their retention window expires.
+
+    Also clears each bucket's resource-based policy first: confirmed against
+    a real account, a Terraform-state bucket's policy carried an explicit
+    Deny that blocked even the account's own admin user from
+    GetBucketObjectLockConfiguration -- an explicit Deny in a resource
+    policy always overrides an IAM Allow, so no identity-side permission fix
+    can work around it, only removing/editing the policy can. Deleting it
+    outright is safe here since the whole account is being torn down; if the
+    Deny also covers DeleteBucketPolicy itself, that call fails too and the
+    bucket needs the account's true root user (or whichever principal the
+    policy does allow) to clear it."""
     s3 = session.client("s3", region_name=region)
     try:
         buckets = s3.list_buckets().get("Buckets", [])
@@ -587,15 +598,48 @@ def unlock_locked_s3_buckets(session, region, actions):
         try:
             loc = s3.get_bucket_location(Bucket=name).get("LocationConstraint")
             bucket_region = loc or "us-east-1"
-        except Exception:
-            continue
-        if bucket_region != region:
-            continue
+            if bucket_region != region:
+                continue
+        except botocore.exceptions.ClientError:
+            # GetBucketLocation itself can be blocked by the same explicit-Deny
+            # bucket policy this function exists to clear (confirmed against a
+            # real account) -- skipping the bucket here would mean the unlock
+            # logic below never even runs. Fall through and try it against the
+            # current region's client instead of assuming it belongs elsewhere;
+            # a genuinely wrong-region attempt just fails harmlessly below.
+            pass
+
+        existing_policy = None
+        needs_policy_clear = False
+        try:
+            existing_policy = s3.get_bucket_policy(Bucket=name).get("Policy")
+            needs_policy_clear = True
+        except botocore.exceptions.ClientError as e:
+            if e.response.get("Error", {}).get("Code") != "NoSuchBucketPolicy":
+                needs_policy_clear = True  # can't even read it -- still worth a blind delete attempt
+        if needs_policy_clear:
+            cleared = actions.do(
+                f"delete bucket policy on s3://{name} (an explicit Deny there can block Object Lock "
+                f"checks, object deletes, or the bucket delete itself, even for the account's own admin)",
+                lambda n=name: s3.delete_bucket_policy(Bucket=n),
+            )
+            if cleared is None and not actions.dry_run:
+                log(f"  could not remove the policy on s3://{name} either (or even read it, if "
+                    f"GetBucketPolicy was also denied) -- its explicit Deny covers DeleteBucketPolicy "
+                    f"too, which no IAM identity in this account can override. This needs either the "
+                    f"AWS account's true root-user login (not an IAM user, even one named 'root') or "
+                    f"an AWS Support case for an S3 bucket-policy self-lockout -- aws-nuke will keep "
+                    f"failing to empty/delete s3://{name} until then.")
 
         try:
             lock_cfg = s3.get_object_lock_configuration(Bucket=name)
-        except botocore.exceptions.ClientError:
-            continue  # Object Lock was never enabled on this bucket
+        except botocore.exceptions.ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code != "ObjectLockConfigurationNotFoundError":
+                log(f"  could not check Object Lock status on s3://{name} ({code}) -- it may still "
+                    f"have locked objects blocking its deletion; if its bucket policy denied this "
+                    f"check, that's likely the same policy the block above just tried to clear")
+            continue
         if lock_cfg.get("ObjectLockConfiguration", {}).get("ObjectLockEnabled") != "Enabled":
             continue
 

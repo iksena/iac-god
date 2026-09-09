@@ -656,6 +656,169 @@ def move_run_folders_from_csv(
 
     return moved
 
+
+# ---------------------------------------------------------------------------
+# Terminal display: results CSV -> markdown table
+# ---------------------------------------------------------------------------
+
+def _scenario_id_from_ground_truth_path(path: str) -> str:
+    path = (path or "").strip().rstrip("/")
+    return path.rsplit("/", 1)[-1] if path else ""
+
+
+def _truncate(text, width: int) -> str:
+    text = "" if text is None or (isinstance(text, float) and pd.isna(text)) else str(text)
+    text = text.strip()
+    return text if len(text) <= width else text[:width] + "..."
+
+
+def _format_number(value) -> str:
+    """Format a possibly-float-typed value for display, dropping a
+    trailing ".0" (pandas reads whole-number columns as float64 whenever
+    any row is NaN/missing, e.g. difficulty=3.0 instead of 3)."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "?"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _render_markdown_table(headers: list[str], rows: list[list[str]]) -> str:
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    for row in rows:
+        # Escape pipe characters so a cell can't break the table structure.
+        cells = [str(c).replace("|", "\\|").replace("\n", " ") for c in row]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def display_results_table(
+    results_csv,
+    dataset_csv=None,
+    *,
+    failed_only: bool = False,
+    min_iterations: int | None = None,
+    prompt_chars: int = 20,
+    print_table: bool = True,
+) -> str:
+    """Render a results CSV as a markdown table for terminal display.
+
+    Columns: row_number, scenario_id, ground_truth_path, prompt (first
+    ``prompt_chars`` characters), difficulty, num_iterations, status
+    ("passed"/"failed").
+
+    ``scenario_id`` is derived from the last path segment of
+    ``ground_truth_path`` (e.g. "iac_benchmark/scenarios/terrads_38c75e1144d6"
+    -> "terrads_38c75e1144d6") — results CSVs don't carry a dedicated
+    scenario-id column, so this reuses the identifier already embedded there.
+
+    ``dataset_csv``, when given, supplies ``prompt``/``difficulty`` (results
+    CSVs don't have these columns — they only exist in the source benchmark
+    dataset) via a lookup on ``ground_truth_path``, falling back to
+    ``row_number`` for rows where that doesn't match — ``ground_truth_path``
+    is the stable scenario identity across dataset revisions (see
+    ``merge_results``'s docstring), so it's preferred. Rows with no match show
+    "?" for both fields. Without ``dataset_csv``, both columns show "?".
+
+    ``failed_only``: keep only rows where ``final_validation_passed`` is not
+    exactly True (covers False, runtime_error, and any other non-passing
+    status — this is a binary passed/failed view, no third state).
+
+    ``min_iterations``: keep only rows where ``iterations_used`` is strictly
+    greater than this value (e.g. ``min_iterations=10`` for "iterations with
+    more than 10").
+
+    Prints the table (unless ``print_table=False``) and returns it as a
+    markdown string.
+    """
+    if not os.path.exists(results_csv):
+        raise FileNotFoundError(f"Results CSV not found: {results_csv}")
+
+    df = pd.read_csv(results_csv)
+    if "row_number" not in df.columns:
+        raise ValueError(f"'row_number' column not found in {results_csv}")
+
+    df = df.copy()
+    df["row_number"] = pd.to_numeric(df["row_number"], errors="coerce")
+    ground_truth = df["ground_truth_path"].fillna("").astype(str).str.strip() \
+        if "ground_truth_path" in df.columns else pd.Series([""] * len(df), index=df.index)
+
+    prompt_by_gt: dict = {}
+    difficulty_by_gt: dict = {}
+    prompt_by_row: dict = {}
+    difficulty_by_row: dict = {}
+    if dataset_csv is not None:
+        if not os.path.exists(dataset_csv):
+            raise FileNotFoundError(f"Dataset CSV not found: {dataset_csv}")
+        ds = pd.read_csv(dataset_csv)
+        for col in ("prompt", "difficulty"):
+            if col not in ds.columns:
+                raise ValueError(f"'{col}' column not found in {dataset_csv}")
+
+        if "ground_truth_path" in ds.columns:
+            ds_gt = ds["ground_truth_path"].astype(str).str.strip()
+            prompt_by_gt = dict(zip(ds_gt, ds["prompt"]))
+            difficulty_by_gt = dict(zip(ds_gt, ds["difficulty"]))
+        if "row_number" in ds.columns:
+            ds_row_number = pd.to_numeric(ds["row_number"], errors="coerce")
+            prompt_by_row = dict(zip(ds_row_number, ds["prompt"]))
+            difficulty_by_row = dict(zip(ds_row_number, ds["difficulty"]))
+
+    passed_bool = (
+        _coerce_bool_series(df["final_validation_passed"])
+        if "final_validation_passed" in df.columns
+        else pd.Series([None] * len(df), index=df.index)
+    )
+    iterations = (
+        pd.to_numeric(df["iterations_used"], errors="coerce")
+        if "iterations_used" in df.columns
+        else pd.Series([None] * len(df), index=df.index)
+    )
+
+    headers = [
+        "row_number", "scenario_id", "ground_truth_path", "prompt",
+        "difficulty", "num_iterations", "status",
+    ]
+    rows = []
+    for idx in df.index:
+        gt = ground_truth.loc[idx]
+        row_number = df.at[idx, "row_number"]
+
+        prompt = prompt_by_gt.get(gt) if gt else None
+        difficulty = difficulty_by_gt.get(gt) if gt else None
+        if prompt is None and not pd.isna(row_number):
+            prompt = prompt_by_row.get(row_number)
+        if difficulty is None and not pd.isna(row_number):
+            difficulty = difficulty_by_row.get(row_number)
+
+        row_passed = bool(passed_bool.loc[idx]) if passed_bool.loc[idx] is not None else False
+        row_iterations = iterations.loc[idx]
+
+        if failed_only and row_passed:
+            continue
+        if min_iterations is not None and not (pd.notna(row_iterations) and row_iterations > min_iterations):
+            continue
+
+        rows.append([
+            "" if pd.isna(row_number) else int(row_number),
+            _scenario_id_from_ground_truth_path(gt) or "?",
+            gt or "?",
+            _truncate(prompt, prompt_chars) if prompt is not None else "?",
+            _format_number(difficulty) if isinstance(difficulty, float) else ("?" if difficulty is None else difficulty),
+            "" if pd.isna(row_iterations) else int(row_iterations),
+            "passed" if row_passed else "failed",
+        ])
+
+    table = _render_markdown_table(headers, rows)
+    if print_table:
+        print(table)
+        print(f"\n{len(rows)} row(s) shown (of {len(df)} total).")
+    return table
+
+
 if __name__ == "__main__":
     # filter_runtime_error_rows(
     #     input_csv='benchmark_runs/cloudformation_20260829_102210/results.csv',
