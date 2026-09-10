@@ -1127,6 +1127,7 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
                 "duration_seconds": 0.0,
             }
         else:
+            row_started = time.time()
             try:
                 payload = run_scenario(config, row, row_number, prompt)
             except Exception as exc:
@@ -1138,7 +1139,12 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
                     "status": "runtime_error",
                     "error_message": str(exc),
                     "error_traceback": traceback.format_exc(),
-                    "duration_seconds": 0.0,
+                    # run_scenario's own internal timer never returns when it
+                    # raises before completing — this outer timer is the only
+                    # way to still capture how long the scenario ran before
+                    # crashing (e.g. a 20-minute stall vs. an instant
+                    # failure), matching benchmark.py's equivalent path.
+                    "duration_seconds": round(time.time() - row_started, 3),
                 }
                 print(f"[Baseline] Row {row_number} failed: {exc}")
                 print(traceback.format_exc())
