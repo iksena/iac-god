@@ -118,6 +118,7 @@ class BaselineConfig:
     scenario_timeout: int
     max_stall_retries: int
     harness_effort: str | None
+    max_thinking_tokens: int | None
     sleep_between_rows: float
     runs_dir: Path
     keep_workspace: bool
@@ -214,13 +215,34 @@ def build_harness_env(config: BaselineConfig, claude_config_dir: Path) -> dict[s
     ~/.aws/credentials (HOME-relative) for real deploys, terraform/cfn-lint/
     trivy may have their own HOME-relative caches — and that subprocess
     inherits this same environment. Isolating Claude Code's own state via
-    CLAUDE_CONFIG_DIR + --bare achieves the actual goal (a clean, reproducible
-    harness environment with a reliably-injected model) without risking a
-    silent, confusing deploy failure from a missing credentials file.
+    CLAUDE_CONFIG_DIR + --setting-sources "" achieves the actual goal (a
+    clean, reproducible harness environment with a reliably-injected model)
+    without risking a silent, confusing deploy failure from a missing
+    credentials file.
 
     All three model aliases are mapped to the same target so that background,
     subagent and main-loop calls all route to the model under test — otherwise
     the run is not attributable to a single model.
+
+    MAX_THINKING_TOKENS controls extended thinking. When
+    config.max_thinking_tokens == 0, thinking is disabled outright — verified
+    empirically to actually work through this shim (a probe call with it set
+    returned a plain `text` block, no `thinking` block at all, thinking_tokens
+    reported as None rather than a spent budget). This exists because of a
+    specific, repeatedly-observed failure: deepseek-v4-flash's own native
+    tool-call syntax (`<｜DSML｜tool_calls>...`) has been seen leaking out as
+    literal text INSIDE a thinking block instead of a structured tool_use
+    block — the OpenRouter shim does not parse it there — which is exactly
+    the stalled-session pattern in README §6. The leak has only ever been
+    observed inside thinking content; forcing the model to answer directly
+    removes the channel it happens in.
+
+    CONFIRMED, not just hypothesised: 14/14 rows passed with zero stalls
+    (single attempt, --max-stall-retries 0) on the diff345 (difficulty 3-5)
+    dataset with this set to 0 — including all 6 rows that had stalled
+    repeatedly (even across 2-5 retries, on a separate machine) without it.
+    --harness-effort (tried by the user first) changes reasoning depth but
+    does not disable thinking, and did not resolve the stalls.
     """
     env = dict(os.environ)
     env.update(
@@ -232,6 +254,8 @@ def build_harness_env(config: BaselineConfig, claude_config_dir: Path) -> dict[s
             "DISABLE_ERROR_REPORTING": "1",
         }
     )
+    if config.max_thinking_tokens is not None:
+        env["MAX_THINKING_TOKENS"] = str(config.max_thinking_tokens)
 
     if config.native_auth:
         return env
@@ -1297,6 +1321,21 @@ def parse_args() -> argparse.Namespace:
                         "failure mode (README §6), whose stalls correlate with unusually "
                         "long reasoning chains in the observed logs, on the hypothesis "
                         "that a lower effort level may shorten them. Not confirmed to help.")
+    p.add_argument("--max-thinking-tokens", type=int, default=None,
+                   help="Sets MAX_THINKING_TOKENS for the harness subprocess. Pass 0 to "
+                        "disable extended thinking outright — verified to actually take "
+                        "effect through the OpenRouter shim (a probe call with it set "
+                        "returned a plain text block, no thinking block, thinking_tokens "
+                        "reported as None). Exists because deepseek-v4-flash's native "
+                        "tool-call syntax has been repeatedly observed leaking out as "
+                        "literal text INSIDE a thinking block, which is the stalled-session "
+                        "failure mode (README §6); the leak has only been observed inside "
+                        "thinking content. Unlike --harness-effort (which changes reasoning "
+                        "depth but does not disable thinking), this removes the channel the "
+                        "leak happens in. CONFIRMED: 0 stalls across 14 rows of the diff345 "
+                        "(difficulty 3-5) dataset with this set to 0, including all 6 rows "
+                        "that stalled repeatedly (even after 2-5 retries) without it. "
+                        "Recommended default for deepseek-v4-flash via OpenRouter.")
     p.add_argument("--sleep-between-rows", type=float, default=0.0)
     p.add_argument("--keep-workspace", action="store_true",
                    help="Keep runs/<run_id>/workspace instead of deleting it after scoring")
@@ -1357,6 +1396,7 @@ def main() -> None:
         scenario_timeout=args.scenario_timeout,
         max_stall_retries=args.max_stall_retries,
         harness_effort=args.harness_effort,
+        max_thinking_tokens=args.max_thinking_tokens,
         sleep_between_rows=args.sleep_between_rows,
         runs_dir=args.runs_dir.resolve(),
         keep_workspace=args.keep_workspace,
