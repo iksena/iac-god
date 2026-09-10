@@ -187,12 +187,74 @@ Identical to `benchmark.py`, so the existing aggregation scripts read both.
 - `benchmark_runs/<name>/results.jsonl`, `results.json`, `summary.json`
 - `runs/<run_id>/` — `iteration_NNN.json`, `final_report.json`,
   `deployment_log_NNN.txt`, written by the same `ResearchRecorder`. Plus
-  `baseline_state.json` (the MCP server's ledger) and `harness_stream.jsonl`
-  (the full harness transcript).
+  `baseline_state.json` (the MCP server's ledger), `harness_stream.jsonl`
+  (the raw stream-json), and two debug files (see below):
+  `harness_transcript.txt` and `harness_tool_calls.txt`.
 
 `objectives` and `remediation_history` are empty in baseline snapshots by
 construction: the baseline has no Planner and no Remediator. That absence is
 the experimental condition, not missing data.
+
+## Debug transcripts
+
+Every scenario attempt writes two human-readable `.txt` files alongside the
+raw `harness_stream.jsonl`, built independently of the scoring/token-counting
+logic so a change there can never silently change what gets recorded:
+
+- **`harness_transcript.txt`** — the full conversation in order: the system
+  prompt, the initial user prompt, then every thinking block, text block,
+  tool call (with its full arguments — e.g. the exact template content on a
+  `Write` call), and tool result, exactly as they occurred, ending with the
+  session's final result summary.
+- **`harness_tool_calls.txt`** — the same session reduced to just the
+  tool calls and their results, for scanning a run without reading the whole
+  transcript.
+
+Both are written for every attempt, including stalled or failed ones — a
+transcript showing exactly nothing happened, or where a session broke off, is
+itself the debugging signal.
+
+## Isolation
+
+The harness subprocess must not pick up the researcher's own Claude Code
+state, and the model it routes to must be reliably injectable rather than
+whatever the ambient environment happens to resolve. Two mechanisms, both
+empirically verified (not assumed):
+
+- **`CLAUDE_CONFIG_DIR`** is set to a scenario-scoped temp directory
+  (`workdir/.claude_config`). Verified: with it set, Claude Code writes its
+  entire session/project state under that directory and nothing touches the
+  real `~/.claude`.
+- **`--setting-sources ""`** loads no user/project/local `settings.json` —
+  which is where hooks, custom agents, and output styles are configured — and
+  was separately verified to block this repo's own `AGENTS.md` from being
+  auto-discovered as project context: a probe run explicitly asked whether it
+  had been told about any multi-agent architecture reported no awareness of
+  it.
+
+**`--bare` was tried and deliberately dropped.** It gives stronger guarantees
+on paper (no keychain reads, no plugin sync, no CLAUDE.md auto-discovery
+either) and was confirmed compatible with the `ANTHROPIC_AUTH_TOKEN` routing
+below — but its own baseline tool set has **no `Write` tool at all**
+(confirmed: `--tools Write` under `--bare` is rejected as an unrecognized
+name; `Write` exists only outside `--bare`). Without a `Write` tool, the
+harness naturally reached for `Bash` (`cat > file <<EOF`) to create the
+template instead — which reopens a real methodological risk this baseline
+otherwise closes: a harness with `Bash` can validate or deploy by shelling
+out directly (e.g. running `cfn-lint` or `aws cloudformation deploy` itself),
+bypassing `validate_iac`/`deploy_iac` entirely and breaking the "one
+`validate_iac` call == one iteration" comparability the whole design depends
+on. `--setting-sources ""` alone already covered the CLAUDE.md-leak concern
+`--bare` was mainly wanted for, so `--bare` was not worth trading `Write`
+away for.
+
+`--tools "Read,Write,Edit"` is what actually restricts the built-in tool set
+— **`--allowedTools` alone does not**: a model given only `--allowedTools`
+(with no `--tools`) still sees, and freely uses, `Bash`. Both flags are
+passed together: `--tools` sets the built-in roster (no `Bash`, ever),
+`--allowedTools` pre-approves the specific tools (the three MCP tools plus
+`Read`/`Write`/`Edit`) so `--permission-mode acceptEdits` doesn't need to
+prompt for any of them.
 
 ## Operational warnings
 

@@ -187,8 +187,36 @@ def compute_cost(model_usage: dict[str, Any], pricing: dict[str, dict[str, float
 # ---------------------------------------------------------------------------
 
 
-def build_harness_env(config: BaselineConfig) -> dict[str, str]:
-    """Environment for the harness subprocess.
+def build_harness_env(config: BaselineConfig, claude_config_dir: Path) -> dict[str, str]:
+    """Environment for the harness subprocess — isolated, but not stripped.
+
+    Isolation here means: nothing the researcher's own Claude Code
+    installation carries (OAuth session, hooks, custom agents/MCP servers,
+    memory, plugins, this repo's own AGENTS.md) can reach the scenario under
+    test, and every scenario gets a clean slate rather than accumulating
+    state run to run. Two mechanisms, both empirically verified:
+      - CLAUDE_CONFIG_DIR (a real, undocumented-in---help but confirmed-real
+        env var) redirects Claude Code's entire session/project state to a
+        scenario-scoped temp directory — verified nothing touches the real
+        ~/.claude.
+      - --setting-sources "" (passed in run_harness) loads no user/project/
+        local settings.json at all, which is where hooks, custom agents and
+        output styles are configured — and was separately verified to block
+        AGENTS.md/CLAUDE.md auto-discovery too: a probe run asked whether it
+        had been told about any multi-agent architecture reported no
+        awareness of this repo's own AGENTS.md.
+    --bare was tried and dropped — see run_harness — because its own
+    baseline tool set has no Write tool at all.
+
+    What this deliberately does NOT do: strip or redirect the rest of the
+    environment (HOME included). The MCP server Claude Code spawns runs the
+    real validator toolchain — boto3 resolves AWS credentials via
+    ~/.aws/credentials (HOME-relative) for real deploys, terraform/cfn-lint/
+    trivy may have their own HOME-relative caches — and that subprocess
+    inherits this same environment. Isolating Claude Code's own state via
+    CLAUDE_CONFIG_DIR + --bare achieves the actual goal (a clean, reproducible
+    harness environment with a reliably-injected model) without risking a
+    silent, confusing deploy failure from a missing credentials file.
 
     All three model aliases are mapped to the same target so that background,
     subagent and main-loop calls all route to the model under test — otherwise
@@ -197,6 +225,7 @@ def build_harness_env(config: BaselineConfig) -> dict[str, str]:
     env = dict(os.environ)
     env.update(
         {
+            "CLAUDE_CONFIG_DIR": str(claude_config_dir),
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
             "DISABLE_TELEMETRY": "1",
             "DISABLE_AUTOUPDATER": "1",
@@ -279,9 +308,21 @@ def run_harness(
     workdir: Path,
     stream_path: Path,
 ) -> dict[str, Any]:
-    """Launch the harness and return its parsed telemetry."""
+    """Launch the harness and return its parsed telemetry.
+
+    Also writes two human-readable debug files alongside stream_path (see
+    write_debug_transcripts): harness_transcript.txt (the full conversation —
+    system prompt, every thinking/text/tool_use block, every tool result, in
+    order) and harness_tool_calls.txt (just the MCP/file tool calls and their
+    results, for scanning without reading the whole transcript).
+    """
     system_prompt = (REPO_ROOT / "baselines" / "prompts" / f"{config.iac_type}.md").read_text()
     mcp_path = write_mcp_config(workdir, scenario)
+
+    # Claude Code's own state (session/project files, hook/plugin/CLAUDE.md
+    # discovery) is isolated per scenario attempt — see build_harness_env.
+    claude_config_dir = workdir / ".claude_config"
+    claude_config_dir.mkdir(parents=True, exist_ok=True)
 
     cmd = [
         "claude",
@@ -295,6 +336,23 @@ def run_harness(
         "--mcp-config",
         str(mcp_path.resolve()),
         "--strict-mcp-config",
+        # --tools is what actually restricts the built-in tool set (verified:
+        # --allowedTools alone does NOT — a model given only --allowedTools
+        # still sees, and freely uses, Bash). No Bash here deliberately: the
+        # model must go through validate_iac/deploy_iac, not a shelled-out
+        # cfn-lint/aws-cli call that would bypass the iteration counter and
+        # break "one validate_iac call == one iteration" comparability.
+        #
+        # --bare was tried and dropped: its own baseline tool set has no
+        # Write tool at all (confirmed: `--tools Write` under --bare is
+        # rejected as unrecognized — Write only exists outside --bare), which
+        # would force file creation through Bash, reopening exactly the gap
+        # above. --setting-sources "" alone was verified sufficient to block
+        # AGENTS.md/CLAUDE.md auto-discovery (a probe run reported no
+        # awareness of this repo's multi-agent architecture), so --bare's
+        # other guarantees were not worth trading Write away for.
+        "--tools",
+        "Read,Write,Edit",
         "--allowedTools",
         "mcp__iacgod__validate_iac",
         "mcp__iacgod__deploy_iac",
@@ -330,7 +388,7 @@ def run_harness(
         proc = subprocess.Popen(
             cmd,
             cwd=str(workdir.resolve()),
-            env=build_harness_env(config),
+            env=build_harness_env(config, claude_config_dir),
             stdout=out,
             stderr=err,
             text=True,
@@ -348,12 +406,165 @@ def run_harness(
     if not stderr_path.read_text(encoding="utf-8", errors="replace").strip():
         stderr_path.unlink(missing_ok=True)
 
+    write_debug_transcripts(
+        stdout,
+        run_id=scenario.run_id,
+        system_prompt=system_prompt,
+        user_prompt=prompt,
+        harness_model_alias=config.harness_model,
+        routed_model=config.model,
+        transcript_path=stream_path.with_name("harness_transcript.txt"),
+        tool_calls_path=stream_path.with_name("harness_tool_calls.txt"),
+    )
+
     return parse_harness_stream(
         stdout,
         returncode=returncode,
         timed_out=timed_out,
         duration=round(time.time() - started, 3),
     )
+
+
+def _format_tool_input(args: dict[str, Any], indent: str = "    ") -> list[str]:
+    lines: list[str] = []
+    for key, value in args.items():
+        if isinstance(value, str) and "\n" in value:
+            lines.append(f"{indent}{key}:")
+            lines.append(f"{indent}{'-' * 60}")
+            for content_line in value.splitlines():
+                lines.append(f"{indent}| {content_line}")
+            lines.append(f"{indent}{'-' * 60}")
+        else:
+            lines.append(f"{indent}{key}: {value}")
+    return lines
+
+
+def _format_tool_result_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+            else:
+                parts.append(json.dumps(block))
+        return "\n".join(parts)
+    return json.dumps(content)
+
+
+def write_debug_transcripts(
+    stdout: str,
+    *,
+    run_id: str,
+    system_prompt: str,
+    user_prompt: str,
+    harness_model_alias: str,
+    routed_model: str | None,
+    transcript_path: Path,
+    tool_calls_path: Path,
+) -> None:
+    """Render the raw stream-json into two human-readable .txt files.
+
+    harness_transcript.txt is the full conversation in order: system prompt,
+    initial user prompt, then every thinking/text/tool_use block and every
+    tool result exactly as they occurred, plus the final result summary.
+    harness_tool_calls.txt is the same session reduced to just the MCP/file
+    tool calls and their results — for scanning a run without reading the
+    full transcript. Both are written even for a stalled or failed session:
+    a transcript showing exactly nothing happened, or where it broke off, is
+    itself the debugging signal.
+
+    Kept deliberately dumb (string formatting, no dependency on
+    parse_harness_stream's dedup/aggregation logic) so a change to token
+    accounting can never silently change what gets recorded for debugging.
+    """
+    header = (
+        f"{'=' * 78}\n"
+        f"Harness Transcript\n"
+        f"Run ID        : {run_id}\n"
+        f"Harness model : {harness_model_alias}"
+        + (f"  (routed to: {routed_model})" if routed_model else "")
+        + f"\n{'=' * 78}\n\n"
+        f"[SYSTEM PROMPT]\n{system_prompt.strip()}\n\n"
+        f"[USER] (initial prompt)\n{user_prompt.strip()}\n\n"
+    )
+
+    transcript_lines: list[str] = [header]
+    tool_call_lines: list[str] = [
+        f"{'=' * 78}\nTool Calls — Run {run_id}\n{'=' * 78}\n\n"
+    ]
+    tool_call_index = 0
+
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        etype = event.get("type")
+
+        if etype == "assistant":
+            for block in (event.get("message") or {}).get("content") or []:
+                btype = block.get("type")
+                if btype == "thinking":
+                    text = (block.get("thinking") or "").strip()
+                    if text:
+                        transcript_lines.append(f"[ASSISTANT — thinking]\n{text}\n\n")
+                elif btype == "text":
+                    text = (block.get("text") or "").strip()
+                    if text:
+                        transcript_lines.append(f"[ASSISTANT — text]\n{text}\n\n")
+                elif btype == "tool_use":
+                    tool_call_index += 1
+                    name = block.get("name", "?")
+                    args = block.get("input") or {}
+                    block_lines = _format_tool_input(args)
+                    entry = (
+                        f"[ASSISTANT — tool_use #{tool_call_index}: {name}]\n"
+                        + ("\n".join(block_lines) + "\n" if block_lines else "  (no arguments)\n")
+                        + "\n"
+                    )
+                    transcript_lines.append(entry)
+                    tool_call_lines.append(entry)
+        elif etype == "user":
+            content = (event.get("message") or {}).get("content")
+            if event.get("isSynthetic"):
+                text = ""
+                if isinstance(content, list):
+                    text = "\n".join(
+                        b.get("text", "") for b in content if b.get("type") == "text"
+                    )
+                transcript_lines.append(
+                    f"[HARNESS NUDGE — empty-turn recovery]\n{text.strip()}\n\n"
+                )
+            elif isinstance(content, list):
+                for block in content:
+                    if block.get("type") == "tool_result":
+                        text = _format_tool_result_text(block.get("content")).strip()
+                        entry = f"[TOOL RESULT]\n{text}\n\n"
+                        transcript_lines.append(entry)
+                        tool_call_lines.append(entry)
+        elif etype == "result":
+            summary = (
+                f"{'=' * 78}\n"
+                f"Session Result\n"
+                f"  is_error    : {event.get('is_error')}\n"
+                f"  subtype     : {event.get('subtype')}\n"
+                f"  stop_reason : {event.get('stop_reason')}\n"
+                f"  num_turns   : {event.get('num_turns')}\n"
+                f"  result text : {event.get('result', '')!r}\n"
+                f"{'=' * 78}\n"
+            )
+            transcript_lines.append(summary)
+            tool_call_lines.append(f"\n{summary}")
+
+    transcript_path.write_text("".join(transcript_lines), encoding="utf-8")
+    if tool_call_index == 0:
+        tool_call_lines.insert(1, "(no tool calls were made in this session)\n\n")
+    tool_calls_path.write_text("".join(tool_call_lines), encoding="utf-8")
 
 
 def tokens_from_model_usage(model_usage: dict[str, Any]) -> dict[str, int]:
