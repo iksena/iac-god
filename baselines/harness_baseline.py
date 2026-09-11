@@ -1011,13 +1011,33 @@ def run_scenario(
     # stalls. Each attempt is a fully independent process; earlier stalled
     # attempts' artifacts stay on disk under their own run_id for inspection
     # but are not what gets scored.
+    #
+    # `telemetry["stalled"]` (did Claude Code's own session end in an empty
+    # turn) and `final["passed"]` (does the artifact on disk actually
+    # validate and deploy, from finalize_scenario re-checking it directly)
+    # are independent — a session can stall on a LATER turn (e.g. the model
+    # failing to call submit_template) after already producing a genuinely
+    # passing, deployed template on an EARLIER turn. Observed directly: a
+    # session that deployed a real 12-resource stack successfully, then
+    # stalled trying to acknowledge it. Retrying on `stalled` alone would
+    # discard that completed, verified work and restart the whole scenario
+    # from a blank template — each attempt is a fresh process with no memory
+    # of the last, so nothing carries over. `final["passed"]` is checked
+    # first: once the artifact is confirmed working, stop, regardless of
+    # what the session itself did afterward.
     stalled_run_ids: list[str] = []
     attempt = 1
     while True:
         run_id, recorder, workdir, scenario, telemetry, final = _run_one_attempt(
             config, prompt
         )
-        if not telemetry["stalled"] or attempt > config.max_stall_retries:
+        if final["passed"] or not telemetry["stalled"] or attempt > config.max_stall_retries:
+            if telemetry["stalled"] and final["passed"]:
+                print(
+                    f"[Baseline] row {row_number}: attempt {attempt} stalled after "
+                    f"already passing (deployed/validated) — keeping this result, "
+                    f"not retrying"
+                )
             break
         stalled_run_ids.append(run_id)
         print(
@@ -1057,7 +1077,12 @@ def run_scenario(
     error_message = None
     if telemetry["timed_out"]:
         status, error_message = "harness_timeout", "Harness exceeded --scenario-timeout"
-    elif telemetry["stalled"]:
+    elif telemetry["stalled"] and not final["passed"]:
+        # A stall on an attempt whose artifact already passed is NOT this
+        # status — see the retry loop above, which accepts that attempt
+        # instead of discarding it. Only a stall with no passing artifact
+        # behind it is a genuine "the harness never completed a real
+        # attempt" outcome.
         status = "harness_stalled"
         error_message = (
             f"Harness never produced a usable turn after "
