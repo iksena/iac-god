@@ -409,6 +409,23 @@ def run_harness(
         "--output-format",
         "stream-json",
         "--verbose",
+        # api-category debug log, written to its own file (harness_debug.log,
+        # sibling of harness_stream.jsonl). This is the one place that shows
+        # what happens BELOW the content layer: exact request dispatch time,
+        # which routing path was used (firstParty vs a fallback), latency to
+        # first byte, and whether a response stream ever started at all —
+        # none of which harness_stream.jsonl or the transcript files can show,
+        # since they only ever see what Claude Code decided to hand back as
+        # message content. A session with no "Stream started - received
+        # first chunk" line never got a real response from the shim at all
+        # (infra-layer failure); one with that line but still empty content
+        # got a response the model/shim produced as empty (content-layer
+        # failure) — the two are indistinguishable from the transcript alone,
+        # but not from this log.
+        "--debug",
+        "api",
+        "--debug-file",
+        str(stream_path.with_name("harness_debug.log")),
     ]
 
     stderr_path = stream_path.with_suffix(".stderr.txt")

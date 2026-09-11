@@ -248,6 +248,31 @@ Both are written for every attempt, including stalled or failed ones — a
 transcript showing exactly nothing happened, or where a session broke off, is
 itself the debugging signal.
 
+**`harness_debug.log`** — the one artifact that shows what happens *below*
+the content layer, via Claude Code's own `--debug api --debug-file`. The
+transcript files only ever see what Claude Code decided to hand back as
+message content, which cannot distinguish two very different failures: a
+request that never got a response at all (infra/network layer) from one
+that got a response the model/shim produced as empty (content layer). This
+log can, from three line types per API call:
+
+```
+[DEBUG] [API REQUEST] /api/v1/messages source=sdk
+[DEBUG] Stream started - received first chunk
+[DEBUG] [API:timing] first byte after <N>ms
+```
+
+Reading a stalled session's log: if "Stream started" is **missing** after
+the last `API REQUEST` line, the connection never got a response at all —
+that is an infrastructure failure (network, timeout, rejected request), not
+a model output problem, and `--max-thinking-tokens`/`--max-stall-retries`
+would not be the right lever for it. If "Stream started" **is** present but
+the corresponding turn in `harness_stream.jsonl` is still empty, the
+model/shim produced a response Claude Code parsed as empty — that is the
+DSML-leak/empty-completion failure mode in the point above, and the
+existing mitigations apply. Written for every attempt, same as the
+transcripts.
+
 ## Isolation
 
 The harness subprocess must not pick up the researcher's own Claude Code
