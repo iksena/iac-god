@@ -156,7 +156,7 @@ Exact pinned versions are in [`requirements.txt`](requirements.txt).
    python -m venv .venv && source .venv/bin/activate
    pip install -r requirements.txt
    ```
-2. **External CLI tools** (not installed via pip) — `tflint` and `terraform` must be on `PATH` for Terraform validation/deployment.
+2. **External CLI tools** (not installed via pip) — `tflint` and `terraform` must be on `PATH` for Terraform validation/deployment; `trivy` (`0.69.3`, the version this project is calibrated against) must be on `PATH` for the security stage. Trivy's misconfiguration checks are a separate OCI artifact from the binary itself and auto-update independently by default, which would silently change scoring over time — `tools/validators.py` pins an exact checks-bundle digest (`_TRIVY_CHECKS_BUNDLE`) for reproducibility, so every run/machine uses byte-identical rules regardless of local cache state or upstream `trivy-checks` releases. Bump that pin deliberately (not to make any particular template pass) when you want the rule set to move forward.
 3. **Knowledge-base services** — start Neo4j + ChromaDB:
    ```bash
    docker compose up -d

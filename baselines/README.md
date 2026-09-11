@@ -2,8 +2,10 @@
 
 A control condition for IaCGOD. The same benchmark scenarios, the same
 validators, the same scoring — but the multi-agent LangGraph pipeline is
-replaced by an off-the-shelf coding harness (Claude Code) driving IaCGOD's
-validators itself.
+replaced by an off-the-shelf coding harness driving IaCGOD's validators
+itself. The harness is pluggable (`--harness claude_code` or `--harness
+opencode`, see "Harness drivers" below) so the baseline is not tied to one
+vendor's agent or one model family.
 
 The experimental variable is the **orchestration**. Everything downstream of
 generation is shared code, not a reimplementation.
@@ -17,14 +19,14 @@ loop; the harness does.
 harness_baseline.py                       mcp_server.py  ──►  evaluation.py
   ├─ selects rows from the CSV                  ▲                  │
   ├─ mints run_id, makes a scratch workdir      │                  ├─ run_all_validators()
-  ├─ writes .mcp.json + model env               │ MCP             ├─ validate_deployment()
-  ├─ launches `claude -p`  ────────────────►  Claude Code          ├─ iteration counter + cap
+  ├─ picks a HarnessDriver (drivers/)           │ MCP             ├─ validate_deployment()
+  ├─ driver builds argv/env/config file  ────────────────►  coding harness    ├─ iteration counter + cap
   └─ scores the artifact it left behind        (owns the loop)     └─ ResearchRecorder
 ```
 
 The MCP server is the instrumentation: it *is* the validator, the recorder, the
 iteration counter and the cap enforcer. The harness experiences it as three
-ordinary tools.
+ordinary tools, regardless of which harness is driving.
 
 | Tool | Behaviour |
 |---|---|
@@ -48,11 +50,21 @@ python -m baselines.harness_baseline \
   --dataset data/tf_eval_benchmark_real_aws.csv \
   --model deepseek/deepseek-v4-flash \
   --deploy-target none --max-rows 10 --keep-workspace
+
+# Same scenario through OpenCode instead of Claude Code
+python -m baselines.harness_baseline \
+  --harness opencode \
+  --iac-type cloudformation \
+  --dataset data/cfn_eval_benchmark_real_aws.csv \
+  --model deepseek/deepseek-v4-flash \
+  --deploy-target none --max-rows 10 --keep-workspace
 ```
 
-`--rows`, `--start-row`, `--max-rows`, `--exclude-completed-csv` and
-`--retry-errors` behave exactly as in `benchmark.py` — they share the
-implementation in `benchmark_common.py`.
+`--harness` selects the driver (`claude_code`, default, or `opencode`); see
+"Harness drivers" below for what differs between them. `--rows`,
+`--start-row`, `--max-rows`, `--exclude-completed-csv` and `--retry-errors`
+behave exactly as in `benchmark.py` — they share the implementation in
+`benchmark_common.py`, harness-independently.
 
 ### Model routing
 
@@ -63,7 +75,78 @@ Without that, a run is not attributable to a single model. Verified: a completed
 run reports exactly one key in `modelUsage`.
 
 `--native-auth` skips the override entirely and uses Claude Code's own
-authentication and models.
+authentication and models. OpenCode has no equivalent flag — it always routes
+through `--model`/`--base-url`/`--api-key-env`.
+
+## Harness drivers
+
+Everything specific to one coding harness — the CLI invocation, its config
+file format, its own state/session isolation, and parsing its event stream
+into the common telemetry shape — lives behind the `HarnessDriver` protocol
+(`baselines/drivers/base.py`) in one file per harness
+(`baselines/drivers/claude_code.py`, `baselines/drivers/opencode.py`). The
+scenario loop, retry logic, scoring, and CSV/summary writers in
+`harness_baseline.py` never see a harness-specific detail; adding a third
+harness means adding a third driver, not touching that code.
+
+Both drivers were verified end-to-end (a full write → validate (fail) → edit
+→ validate (pass) → deploy → submit session, scored `PASS`) before being
+considered done — not just checked to run without a Python exception.
+
+**`ClaudeCodeDriver`** — the original, most-exercised path; the "Known
+asymmetries" and "Root cause of the stalled-session failure mode" sections
+below are specific to it (Anthropic-compat OpenRouter routing, Claude Code's
+own cost/token accounting, its particular empty-completion failure mode).
+
+**`OpenCodeDriver`** — routes through OpenRouter's native OpenAI-compatible
+endpoint (`@ai-sdk/openai-compatible`, `/v1/chat/completions`) rather than the
+Anthropic-compat shim Claude Code uses. This matters: the Anthropic-compat
+path has a confirmed ~7% (1/15) empty-completion rate across randomly
+load-balanced upstream providers (see the root-cause section below); a burst
+of 20 calls against the OpenAI-compat path hit 0 failures. Not proof of zero,
+but suggestive that OpenCode may not need the same stall mitigation Claude
+Code does — **no OpenCode stall signature has actually been observed and
+confirmed yet**, unlike Claude Code's. `stalled` in `OpenCodeDriver.parse_stream`
+is therefore a structural definition (LLM calls happened, no real content
+came back), not a confirmed-real failure mode being guarded against.
+
+Tool access uses OpenCode's own deny-all-then-allowlist permission model
+(`agent.iacgod.permission: {"*": "deny", ...}` in the generated
+`opencode.json`), verified to actually block a denied tool (an explicit
+permission error, not silent fallthrough) — the same guarantee Claude Code's
+`--tools`/`--allowedTools` split provides, via a differently-shaped
+mechanism. Isolation uses `XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_STATE_HOME`
+redirected under the scenario's scratch workdir (OpenCode's equivalent of
+Claude Code's `CLAUDE_CONFIG_DIR`), verified to leave nothing in the real
+installation. OpenCode's automatic session-title generation call is pinned to
+the model under test via `small_model` in the generated config — without it,
+title generation silently used a different vendor's model
+(`google/gemini-3.8-flash`), which would have polluted per-model attribution
+the same way an unpinned Claude Code subagent alias would.
+
+**Found and fixed while building the OpenCode driver: a subprocess `PWD`
+bug in `run_harness()` itself** (harness-agnostic, so it could as easily have
+bitten a future third driver). `subprocess.Popen(cmd, cwd=workdir, ...)` sets
+the child process's real working directory, but leaves the `PWD` environment
+variable it inherits from `os.environ` pointing at wherever the Python
+process itself was launched from. Most tools never notice (they call the
+real `getcwd()`), but OpenCode reads `process.env.PWD` during startup and,
+when it disagreed with the actual cwd, bootstrapped a second, conflicting
+instance against the researcher's real repo checkout instead of the isolated
+workdir — surfacing as an opaque `{"error":{"name":"UnknownError","message":
+"Unexpected server error..."}}` with no further detail. It did not reproduce
+manually, because `cd`ing into the workdir in an interactive shell keeps
+`PWD` correct automatically; only the Python-spawned subprocess had the
+mismatch. Fixed by setting `env["PWD"]` to the resolved workdir right
+alongside `cwd=` in `run_harness()`, so the two can never drift apart again,
+for any driver.
+
+**Not yet ported for OpenCode: the retry proxy** (`baselines/retry_proxy.py`,
+see below) understands only Anthropic-shaped SSE. It is a no-op risk for
+OpenCode today only because no confirmed stall mode has forced the question
+yet — if one turns up, the proxy will need an OpenAI-shaped (`/v1/chat/completions`
+streaming-JSON) parsing path before it can help OpenCode runs the way it
+already helps Claude Code runs.
 
 ## What is held constant, and what is not
 
@@ -81,10 +164,11 @@ prompt in `prompts/` is the Engineer's prompt minus that section); no
 Retriever, so no GraphRAG schema context; no Remediator, so no root-cause
 analysis step.
 
-## Known asymmetries
+## Known asymmetries (Claude Code)
 
-These are measurement caveats, established empirically. Report them alongside
-any numbers.
+These are measurement caveats, established empirically for `ClaudeCodeDriver`
+specifically. Report them alongside any numbers from that harness; they do
+not automatically apply to `OpenCodeDriver` (see "Harness drivers" above).
 
 1. **Cost.** Claude Code prices every run with Anthropic rates. For
    `deepseek-v4-flash` it overstated by ~60× (claimed $2.12 against an actual
@@ -339,7 +423,7 @@ DSML-leak/empty-completion failure mode in the point above, and the
 existing mitigations apply. Written for every attempt, same as the
 transcripts.
 
-## Isolation
+## Isolation (Claude Code)
 
 The harness subprocess must not pick up the researcher's own Claude Code
 state, and the model it routes to must be reliably injectable rather than

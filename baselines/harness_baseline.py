@@ -1,10 +1,12 @@
 """Single-agent harness baseline runner.
 
 Runs the same benchmark CSVs as benchmark.py, but replaces the LangGraph
-multi-agent pipeline with an off-the-shelf coding harness (Claude Code) driving
-IaCGOD's own validators through an MCP server.
+multi-agent pipeline with an off-the-shelf coding harness (Claude Code,
+OpenCode, ... — see baselines/drivers/) driving IaCGOD's own validators
+through an MCP server.
 
     python -m baselines.harness_baseline \
+        --harness opencode \
         --iac-type terraform \
         --dataset data/tf_eval_benchmark_real_aws.csv \
         --model deepseek/deepseek-v4-flash \
@@ -13,6 +15,9 @@ IaCGOD's own validators through an MCP server.
 Control is inverted relative to benchmark.py: the harness owns the loop and
 calls validate_iac / deploy_iac / submit_template itself. This process only
 sets up each scenario, launches the harness, and scores what comes back.
+Everything in this module is harness-agnostic; what differs between harnesses
+(the CLI invocation, its config file, parsing its output) lives entirely in
+baselines/drivers/ — see baselines/drivers/base.py for the interface.
 
 Scoring is deliberately independent of the harness's own claims. submit_template
 records an assertion; the verdict here is recomputed from the recorded
@@ -57,13 +62,14 @@ from benchmark_common import (
     _row_slice,
     _row_to_csv,
     _safe_int,
-    _token_totals,
 )
 from config import DeployConfig, DeployTarget
 from tools.deploy_validator import validate_deployment
 from tools.validators import run_all_validators
 from tracking.recorder import ResearchRecorder
 
+from baselines.drivers import DRIVERS, get_driver
+from baselines.drivers.base import HarnessDriver
 from baselines.evaluation import (
     STATE_FILENAME,
     ScenarioConfig,
@@ -251,140 +257,23 @@ def compute_cost(model_usage: dict[str, Any], pricing: dict[str, dict[str, float
 
 # ---------------------------------------------------------------------------
 # Harness invocation
+#
+# Generic across harnesses: everything harness-specific (the CLI
+# invocation, its subprocess environment, its own config file, how to parse
+# its output into the common telemetry shape) is delegated to a
+# baselines.drivers.HarnessDriver — see baselines/drivers/ for
+# ClaudeCodeDriver and OpenCodeDriver. This section owns only what stays the
+# same regardless of which harness is running: subprocess spawning,
+# streaming stdout to disk, and the timeout/process-group-kill logic.
 # ---------------------------------------------------------------------------
-
-
-def build_harness_env(config: BaselineConfig, claude_config_dir: Path) -> dict[str, str]:
-    """Environment for the harness subprocess — isolated, but not stripped.
-
-    Isolation here means: nothing the researcher's own Claude Code
-    installation carries (OAuth session, hooks, custom agents/MCP servers,
-    memory, plugins, this repo's own AGENTS.md) can reach the scenario under
-    test, and every scenario gets a clean slate rather than accumulating
-    state run to run. Two mechanisms, both empirically verified:
-      - CLAUDE_CONFIG_DIR (a real, undocumented-in---help but confirmed-real
-        env var) redirects Claude Code's entire session/project state to a
-        scenario-scoped temp directory — verified nothing touches the real
-        ~/.claude.
-      - --setting-sources "" (passed in run_harness) loads no user/project/
-        local settings.json at all, which is where hooks, custom agents and
-        output styles are configured — and was separately verified to block
-        AGENTS.md/CLAUDE.md auto-discovery too: a probe run asked whether it
-        had been told about any multi-agent architecture reported no
-        awareness of this repo's own AGENTS.md.
-    --bare was tried and dropped — see run_harness — because its own
-    baseline tool set has no Write tool at all.
-
-    What this deliberately does NOT do: strip or redirect the rest of the
-    environment (HOME included). The MCP server Claude Code spawns runs the
-    real validator toolchain — boto3 resolves AWS credentials via
-    ~/.aws/credentials (HOME-relative) for real deploys, terraform/cfn-lint/
-    trivy may have their own HOME-relative caches — and that subprocess
-    inherits this same environment. Isolating Claude Code's own state via
-    CLAUDE_CONFIG_DIR + --setting-sources "" achieves the actual goal (a
-    clean, reproducible harness environment with a reliably-injected model)
-    without risking a silent, confusing deploy failure from a missing
-    credentials file.
-
-    All three model aliases are mapped to the same target so that background,
-    subagent and main-loop calls all route to the model under test — otherwise
-    the run is not attributable to a single model.
-
-    MAX_THINKING_TOKENS controls extended thinking. When
-    config.max_thinking_tokens == 0, the harness ASKS to disable thinking
-    outright. This is a real, non-trivial request — a probe call with it set
-    returned a plain `text` block, no `thinking` block at all, thinking_tokens
-    reported as None rather than a spent budget — but it is NOT reliably
-    honoured. This exists because of a specific, repeatedly-observed
-    failure: deepseek-v4-flash's own native tool-call syntax
-    (`<｜DSML｜tool_calls>...`) has been seen leaking out as literal text
-    INSIDE a thinking block instead of a structured tool_use block — the
-    OpenRouter shim does not parse it there — which is exactly the
-    stalled-session pattern in README §6.
-
-    Verified split, not a clean fix: 14/14 rows passed with zero stalls
-    (single attempt, --max-stall-retries 0) on short, fresh sessions from the
-    diff345 (difficulty 3-5) dataset with this set to 0 — including 6 rows
-    that had stalled repeatedly without it. But a later, separately-observed
-    case on a long, cache-heavy mid-repair-loop turn (cache_read_input_tokens
-    in the tens of thousands) burned 10,935 thinking tokens with this same
-    setting active, and the DSML leak recurred inside that thinking block.
-    The most likely explanation is deepseek-v4-flash's own always-reasoning
-    behaviour overriding the request once it judges a turn hard enough —
-    plausibly correlated with conversation depth/cache size, not something
-    this flag can force. --harness-effort (tried first) changes reasoning
-    depth but does not disable thinking, and did not resolve the stalls
-    either. Treat this as a partial mitigation to combine with
-    --max-stall-retries, not a substitute for it — and watch
-    thinking_tokens_total in the CSV (see parse_harness_stream) rather than
-    assuming 0 means disabled.
-    """
-    env = dict(os.environ)
-    env.update(
-        {
-            "CLAUDE_CONFIG_DIR": str(claude_config_dir),
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-            "DISABLE_TELEMETRY": "1",
-            "DISABLE_AUTOUPDATER": "1",
-            "DISABLE_ERROR_REPORTING": "1",
-        }
-    )
-    if config.max_thinking_tokens is not None:
-        env["MAX_THINKING_TOKENS"] = str(config.max_thinking_tokens)
-
-    if config.native_auth:
-        return env
-
-    api_key = os.environ.get(config.api_key_env, "")
-    if not api_key:
-        raise RuntimeError(
-            f"{config.api_key_env} is not set. Export it, add it to .env, or pass "
-            "--native-auth to use Claude Code's own authentication."
-        )
-    if not config.model:
-        raise RuntimeError("--model is required unless --native-auth is used.")
-
-    env.update(
-        {
-            "ANTHROPIC_BASE_URL": config.effective_base_url or config.base_url or "https://openrouter.ai/api",
-            "ANTHROPIC_AUTH_TOKEN": api_key,
-            "ANTHROPIC_API_KEY": "",
-            "ANTHROPIC_DEFAULT_HAIKU_MODEL": config.model,
-            "ANTHROPIC_DEFAULT_SONNET_MODEL": config.model,
-            "ANTHROPIC_DEFAULT_OPUS_MODEL": config.model,
-            "CLAUDE_CODE_SUBAGENT_MODEL": config.model,
-        }
-    )
-    return env
-
-
-def write_mcp_config(workdir: Path, scenario: ScenarioConfig) -> Path:
-    path = (workdir / ".mcp.json").resolve()
-    path.write_text(
-        json.dumps(
-            {
-                "mcpServers": {
-                    "iacgod": {
-                        "type": "stdio",
-                        "command": sys.executable,
-                        "args": [str(REPO_ROOT / "baselines" / "mcp_server.py")],
-                        "env": {**scenario.to_env(), "PYTHONPATH": str(REPO_ROOT)},
-                    }
-                }
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
-    return path
 
 
 def _terminate_process_group(proc: subprocess.Popen) -> None:
     """SIGTERM the harness's process group, then SIGKILL anything that survives.
 
-    The group, not the process: the harness spawns the MCP server as a child,
-    and killing only the harness would leave a validator process holding the
-    scenario's run directory open.
+    The group, not the process: every driver's harness spawns the MCP
+    server as a child, and killing only the harness would leave a validator
+    process holding the scenario's run directory open.
     """
     import signal
 
@@ -406,85 +295,36 @@ def run_harness(
     prompt: str,
     workdir: Path,
     stream_path: Path,
+    driver: HarnessDriver,
 ) -> dict[str, Any]:
-    """Launch the harness and return its parsed telemetry.
+    """Launch the harness (via driver) and return its parsed telemetry.
 
     Also writes two human-readable debug files alongside stream_path (see
-    write_debug_transcripts): harness_transcript.txt (the full conversation —
-    system prompt, every thinking/text/tool_use block, every tool result, in
-    order) and harness_tool_calls.txt (just the MCP/file tool calls and their
-    results, for scanning without reading the whole transcript).
+    driver.write_debug_transcripts): harness_transcript.txt (the full
+    conversation) and harness_tool_calls.txt (just the MCP/file tool calls
+    and their results), plus harness_debug.log where the driver has a
+    wire-level log to offer.
     """
     system_prompt = (REPO_ROOT / "baselines" / "prompts" / f"{config.iac_type}.md").read_text()
-    mcp_path = write_mcp_config(workdir, scenario)
 
-    # Claude Code's own state (session/project files, hook/plugin/CLAUDE.md
-    # discovery) is isolated per scenario attempt — see build_harness_env.
-    claude_config_dir = workdir / ".claude_config"
-    claude_config_dir.mkdir(parents=True, exist_ok=True)
+    # Isolated per-attempt directory for the harness's OWN installation
+    # state (session files, auth cache, etc. — never the MCP server's
+    # scenario state, which lives under ScenarioConfig.workdir separately).
+    # What specifically gets redirected here, and why, is documented in
+    # each driver's build_env.
+    state_dir = workdir / f".{driver.name}_state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    debug_log_path = stream_path.with_name("harness_debug.log")
 
-    cmd = [
-        "claude",
-        "-p",
-        prompt,
-        "--append-system-prompt",
-        system_prompt,
-        "--model",
-        config.harness_model,
-        *(["--effort", config.harness_effort] if config.harness_effort else []),
-        "--mcp-config",
-        str(mcp_path.resolve()),
-        "--strict-mcp-config",
-        # --tools is what actually restricts the built-in tool set (verified:
-        # --allowedTools alone does NOT — a model given only --allowedTools
-        # still sees, and freely uses, Bash). No Bash here deliberately: the
-        # model must go through validate_iac/deploy_iac, not a shelled-out
-        # cfn-lint/aws-cli call that would bypass the iteration counter and
-        # break "one validate_iac call == one iteration" comparability.
-        #
-        # --bare was tried and dropped: its own baseline tool set has no
-        # Write tool at all (confirmed: `--tools Write` under --bare is
-        # rejected as unrecognized — Write only exists outside --bare), which
-        # would force file creation through Bash, reopening exactly the gap
-        # above. --setting-sources "" alone was verified sufficient to block
-        # AGENTS.md/CLAUDE.md auto-discovery (a probe run reported no
-        # awareness of this repo's multi-agent architecture), so --bare's
-        # other guarantees were not worth trading Write away for.
-        "--tools",
-        "Read,Write,Edit",
-        "--allowedTools",
-        "mcp__iacgod__validate_iac",
-        "mcp__iacgod__deploy_iac",
-        "mcp__iacgod__submit_template",
-        "Read",
-        "Write",
-        "Edit",
-        "--permission-mode",
-        "acceptEdits",
-        "--setting-sources",
-        "",
-        "--disable-slash-commands",
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        # api-category debug log, written to its own file (harness_debug.log,
-        # sibling of harness_stream.jsonl). This is the one place that shows
-        # what happens BELOW the content layer: exact request dispatch time,
-        # which routing path was used (firstParty vs a fallback), latency to
-        # first byte, and whether a response stream ever started at all —
-        # none of which harness_stream.jsonl or the transcript files can show,
-        # since they only ever see what Claude Code decided to hand back as
-        # message content. A session with no "Stream started - received
-        # first chunk" line never got a real response from the shim at all
-        # (infra-layer failure); one with that line but still empty content
-        # got a response the model/shim produced as empty (content-layer
-        # failure) — the two are indistinguishable from the transcript alone,
-        # but not from this log.
-        "--debug",
-        "api",
-        "--debug-file",
-        str(stream_path.with_name("harness_debug.log")),
-    ]
+    cmd = driver.build_command(
+        config=config,
+        scenario=scenario,
+        prompt=prompt,
+        workdir=workdir,
+        system_prompt=system_prompt,
+        state_dir=state_dir,
+        debug_log_path=debug_log_path,
+    )
 
     stderr_path = stream_path.with_suffix(".stderr.txt")
     started = time.time()
@@ -498,13 +338,26 @@ def run_harness(
     # timeout can take down the MCP server it spawned as well. subprocess's own
     # timeout kills only the direct child, which over a 250-row sweep would
     # leave an orphaned validator process behind for every scenario that hung.
+    resolved_workdir = str(workdir.resolve())
+    # Popen's cwd= sets the process's real working directory, but leaves the
+    # inherited PWD env var pointing at whatever directory this Python
+    # process happened to be started from. That mismatch is invisible to
+    # most tools (which call getcwd()) but broke OpenCode: it reads
+    # process.env.PWD during startup and bootstrapped a second, conflicting
+    # instance against the researcher's actual repo checkout instead of the
+    # isolated workdir, which surfaced as an opaque "UnknownError" — one
+    # that never reproduced when testing manually from an interactive shell,
+    # because `cd`ing there keeps PWD in sync automatically.
+    env = driver.build_env(config, state_dir)
+    env["PWD"] = resolved_workdir
+
     with stream_path.open("w", encoding="utf-8") as out, stderr_path.open(
         "w", encoding="utf-8"
     ) as err:
         proc = subprocess.Popen(
             cmd,
-            cwd=str(workdir.resolve()),
-            env=build_harness_env(config, claude_config_dir),
+            cwd=resolved_workdir,
+            env=env,
             stdout=out,
             stderr=err,
             text=True,
@@ -522,313 +375,25 @@ def run_harness(
     if not stderr_path.read_text(encoding="utf-8", errors="replace").strip():
         stderr_path.unlink(missing_ok=True)
 
-    write_debug_transcripts(
+    driver.write_debug_transcripts(
         stdout,
         run_id=scenario.run_id,
         system_prompt=system_prompt,
         user_prompt=prompt,
         harness_model_alias=config.harness_model,
         routed_model=config.model,
+        state_dir=state_dir,
+        debug_log_path=debug_log_path,
         transcript_path=stream_path.with_name("harness_transcript.txt"),
         tool_calls_path=stream_path.with_name("harness_tool_calls.txt"),
     )
 
-    return parse_harness_stream(
+    return driver.parse_stream(
         stdout,
         returncode=returncode,
         timed_out=timed_out,
         duration=round(time.time() - started, 3),
     )
-
-
-def _format_tool_input(args: dict[str, Any], indent: str = "    ") -> list[str]:
-    lines: list[str] = []
-    for key, value in args.items():
-        if isinstance(value, str) and "\n" in value:
-            lines.append(f"{indent}{key}:")
-            lines.append(f"{indent}{'-' * 60}")
-            for content_line in value.splitlines():
-                lines.append(f"{indent}| {content_line}")
-            lines.append(f"{indent}{'-' * 60}")
-        else:
-            lines.append(f"{indent}{key}: {value}")
-    return lines
-
-
-def _format_tool_result_text(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "text":
-                parts.append(block.get("text", ""))
-            else:
-                parts.append(json.dumps(block))
-        return "\n".join(parts)
-    return json.dumps(content)
-
-
-def write_debug_transcripts(
-    stdout: str,
-    *,
-    run_id: str,
-    system_prompt: str,
-    user_prompt: str,
-    harness_model_alias: str,
-    routed_model: str | None,
-    transcript_path: Path,
-    tool_calls_path: Path,
-) -> None:
-    """Render the raw stream-json into two human-readable .txt files.
-
-    harness_transcript.txt is the full conversation in order: system prompt,
-    initial user prompt, then every thinking/text/tool_use block and every
-    tool result exactly as they occurred, plus the final result summary.
-    harness_tool_calls.txt is the same session reduced to just the MCP/file
-    tool calls and their results — for scanning a run without reading the
-    full transcript. Both are written even for a stalled or failed session:
-    a transcript showing exactly nothing happened, or where it broke off, is
-    itself the debugging signal.
-
-    Kept deliberately dumb (string formatting, no dependency on
-    parse_harness_stream's dedup/aggregation logic) so a change to token
-    accounting can never silently change what gets recorded for debugging.
-    """
-    header = (
-        f"{'=' * 78}\n"
-        f"Harness Transcript\n"
-        f"Run ID        : {run_id}\n"
-        f"Harness model : {harness_model_alias}"
-        + (f"  (routed to: {routed_model})" if routed_model else "")
-        + f"\n{'=' * 78}\n\n"
-        f"[SYSTEM PROMPT]\n{system_prompt.strip()}\n\n"
-        f"[USER] (initial prompt)\n{user_prompt.strip()}\n\n"
-    )
-
-    transcript_lines: list[str] = [header]
-    tool_call_lines: list[str] = [
-        f"{'=' * 78}\nTool Calls — Run {run_id}\n{'=' * 78}\n\n"
-    ]
-    tool_call_index = 0
-
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        etype = event.get("type")
-
-        if etype == "assistant":
-            for block in (event.get("message") or {}).get("content") or []:
-                btype = block.get("type")
-                if btype == "thinking":
-                    text = (block.get("thinking") or "").strip()
-                    if text:
-                        transcript_lines.append(f"[ASSISTANT — thinking]\n{text}\n\n")
-                elif btype == "text":
-                    text = (block.get("text") or "").strip()
-                    if text:
-                        transcript_lines.append(f"[ASSISTANT — text]\n{text}\n\n")
-                elif btype == "tool_use":
-                    tool_call_index += 1
-                    name = block.get("name", "?")
-                    args = block.get("input") or {}
-                    block_lines = _format_tool_input(args)
-                    entry = (
-                        f"[ASSISTANT — tool_use #{tool_call_index}: {name}]\n"
-                        + ("\n".join(block_lines) + "\n" if block_lines else "  (no arguments)\n")
-                        + "\n"
-                    )
-                    transcript_lines.append(entry)
-                    tool_call_lines.append(entry)
-        elif etype == "user":
-            content = (event.get("message") or {}).get("content")
-            if event.get("isSynthetic"):
-                text = ""
-                if isinstance(content, list):
-                    text = "\n".join(
-                        b.get("text", "") for b in content if b.get("type") == "text"
-                    )
-                transcript_lines.append(
-                    f"[HARNESS NUDGE — empty-turn recovery]\n{text.strip()}\n\n"
-                )
-            elif isinstance(content, list):
-                for block in content:
-                    if block.get("type") == "tool_result":
-                        text = _format_tool_result_text(block.get("content")).strip()
-                        entry = f"[TOOL RESULT]\n{text}\n\n"
-                        transcript_lines.append(entry)
-                        tool_call_lines.append(entry)
-        elif etype == "result":
-            summary = (
-                f"{'=' * 78}\n"
-                f"Session Result\n"
-                f"  is_error    : {event.get('is_error')}\n"
-                f"  subtype     : {event.get('subtype')}\n"
-                f"  stop_reason : {event.get('stop_reason')}\n"
-                f"  num_turns   : {event.get('num_turns')}\n"
-                f"  result text : {event.get('result', '')!r}\n"
-                f"{'=' * 78}\n"
-            )
-            transcript_lines.append(summary)
-            tool_call_lines.append(f"\n{summary}")
-
-    transcript_path.write_text("".join(transcript_lines), encoding="utf-8")
-    if tool_call_index == 0:
-        tool_call_lines.insert(1, "(no tool calls were made in this session)\n\n")
-    tool_calls_path.write_text("".join(tool_call_lines), encoding="utf-8")
-
-
-def tokens_from_model_usage(model_usage: dict[str, Any]) -> dict[str, int]:
-    """Aggregate token counts in the shape _token_totals() produces.
-
-    input/output are populated rather than prompt/completion: Claude Code
-    speaks the Anthropic dialect. token_all_tokens is the sum either way, so it
-    stays the column that compares directly against multi-agent OpenRouter runs
-    (which populate prompt/completion instead).
-    """
-    totals = _empty_tokens()
-    for usage in (model_usage or {}).values():
-        totals["input_tokens"] += _safe_int(usage.get("inputTokens"))
-        totals["output_tokens"] += _safe_int(usage.get("outputTokens"))
-    totals["all_tokens"] = totals["input_tokens"] + totals["output_tokens"]
-    return totals
-
-
-def parse_harness_stream(
-    stdout: str, *, returncode: int, timed_out: bool, duration: float
-) -> dict[str, Any]:
-    """Extract per-call token usage and the final result event.
-
-    Two shapes of the stream have to be handled:
-
-      * Assistant events are emitted once per content block, so a single LLM
-        response arrives as several events sharing one message.id (a thinking
-        block and a tool_use block, say). Deduplicating by id is what makes
-        llm_calls_total mean "LLM round trips" — directly comparable to the
-        multi-agent runs' llm_call_log length — rather than double-counting.
-
-      * Per-message usage comes back all zeros through the OpenRouter
-        Anthropic-compat endpoint; only the result event's modelUsage carries
-        real counts. Per-call usage is still preferred when it is populated
-        (the native Anthropic path does fill it in), with modelUsage as the
-        fallback. See token_usage_source in the emitted payload.
-
-      * A session can end with Claude Code reporting is_error=false and
-        subtype="success" while the model never did anything. Observed with
-        deepseek-v4-flash: the model returns a turn with no text and no
-        tool_use (a genuinely empty completion), or emits its native
-        tool-call syntax as literal text inside a "thinking" block instead of
-        a structured tool_use block, which the OpenRouter shim does not
-        parse — Claude Code sees a content-free turn either way. Claude Code
-        has exactly one built-in recovery: a synthetic user turn
-        ("[Your previous response had no visible output...]", isSynthetic:
-        true). `stalled` is true when that nudge fired and no tool_use
-        appeared in any assistant turn afterward — i.e. the harness's own
-        recovery attempt also failed and it gave up. is_error/returncode
-        cannot detect this: Claude Code still reports success.
-
-      * thinking_tokens_total is pulled out of modelUsage explicitly (NOT
-        buried in the raw stream) because it is the single most diagnostic
-        number for the failure above: the DSML leak has only ever been
-        observed inside a thinking block, and --max-thinking-tokens 0 does
-        NOT reliably prevent it — verified to work cleanly on short, fresh
-        sessions (0 cache reads) but to be overridden by the model on long,
-        cache-heavy mid-repair-loop turns (one observed case: 10,935
-        thinking tokens and the DSML leak, with --max-thinking-tokens 0 set
-        and cache_read_input_tokens in the tens of thousands). Treat
-        --max-thinking-tokens 0 as a partial mitigation, not a fix — this
-        column is what lets you actually see when it did not hold, instead
-        of grepping thousands of raw thinking_tokens ping lines by hand.
-    """
-    calls_by_id: dict[str, dict[str, Any]] = {}
-    result_event: dict[str, Any] = {}
-    last_synthetic_nudge_index: int | None = None
-    tool_use_after_last_nudge = False
-
-    for index, line in enumerate(stdout.splitlines()):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        etype = event.get("type")
-        if etype == "assistant":
-            message = event.get("message") or {}
-            usage = message.get("usage") or {}
-            message_id = message.get("id") or f"anon-{len(calls_by_id)}"
-            if last_synthetic_nudge_index is not None and any(
-                c.get("type") == "tool_use" for c in (message.get("content") or [])
-            ):
-                tool_use_after_last_nudge = True
-            if message_id in calls_by_id:
-                continue
-            calls_by_id[message_id] = {
-                "agent": "harness",
-                "iteration": None,
-                "model": message.get("model"),
-                "message_id": message_id,
-                "prompt": "",  # full transcript lives in harness_stream.jsonl
-                "response": "",
-                "timestamp": datetime.now().isoformat(),
-                "token_usage": {
-                    "input_tokens": _safe_int(usage.get("input_tokens")),
-                    "output_tokens": _safe_int(usage.get("output_tokens")),
-                    "cache_read_input_tokens": _safe_int(
-                        usage.get("cache_read_input_tokens")
-                    ),
-                    "cache_creation_input_tokens": _safe_int(
-                        usage.get("cache_creation_input_tokens")
-                    ),
-                },
-            }
-        elif etype == "user" and event.get("isSynthetic"):
-            last_synthetic_nudge_index = index
-            tool_use_after_last_nudge = False
-        elif etype == "result":
-            result_event = event
-
-    llm_calls = list(calls_by_id.values())
-    model_usage = result_event.get("modelUsage") or {}
-
-    per_call_tokens = _token_totals(llm_calls)
-    if per_call_tokens["all_tokens"] > 0:
-        tokens, token_source = per_call_tokens, "per_call"
-    else:
-        tokens, token_source = tokens_from_model_usage(model_usage), "model_usage"
-
-    stalled = (
-        last_synthetic_nudge_index is not None and not tool_use_after_last_nudge
-    )
-
-    thinking_tokens_total = sum(
-        _safe_int(usage.get("thinkingTokens")) for usage in model_usage.values()
-    )
-
-    return {
-        "llm_call_log": llm_calls,
-        "token_usage": tokens,
-        "token_usage_source": token_source,
-        "num_turns": _safe_int(result_event.get("num_turns")),
-        "session_id": result_event.get("session_id"),
-        "model_usage": model_usage,
-        "thinking_tokens_total": thinking_tokens_total,
-        "is_error": bool(result_event.get("is_error")) or returncode != 0,
-        "stalled": stalled,
-        "stop_reason": result_event.get("stop_reason"),
-        "subtype": result_event.get("subtype"),
-        "returncode": returncode,
-        "timed_out": timed_out,
-        "duration_seconds": duration,
-        "harness_reported_cost_usd": result_event.get("total_cost_usd"),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -954,13 +519,13 @@ def _empty_tokens() -> dict[str, int]:
 
 
 def _run_one_attempt(
-    config: BaselineConfig, prompt: str
+    config: BaselineConfig, prompt: str, driver: HarnessDriver
 ) -> tuple[str, ResearchRecorder, Path, ScenarioConfig, dict[str, Any], dict[str, Any]]:
     """Launch one fresh harness process for one scenario attempt.
 
     Fully self-contained: its own run_id, ResearchRecorder, and workspace.
     Called more than once by run_scenario when an attempt stalls (see
-    parse_harness_stream's `stalled` detection) — each retry is a clean
+    driver.parse_stream's `stalled` detection) — each retry is a clean
     restart, not a resumption, since a stalled session's own context is what
     produced the stall.
     """
@@ -989,13 +554,18 @@ def _run_one_attempt(
         prompt,
         workdir,
         recorder.output_dir / "harness_stream.jsonl",
+        driver,
     )
     final = finalize_scenario(config, scenario, workdir, recorder)
     return run_id, recorder, workdir, scenario, telemetry, final
 
 
 def run_scenario(
-    config: BaselineConfig, row: dict[str, str], row_number: int, prompt: str
+    config: BaselineConfig,
+    row: dict[str, str],
+    row_number: int,
+    prompt: str,
+    driver: HarnessDriver,
 ) -> dict[str, Any]:
     started = time.time()
 
@@ -1029,7 +599,7 @@ def run_scenario(
     attempt = 1
     while True:
         run_id, recorder, workdir, scenario, telemetry, final = _run_one_attempt(
-            config, prompt
+            config, prompt, driver
         )
         if final["passed"] or not telemetry["stalled"] or attempt > config.max_stall_retries:
             if telemetry["stalled"] and final["passed"]:
@@ -1153,6 +723,14 @@ def _append_baseline_csv(path: Path, payload: dict[str, Any]) -> None:
 
 
 def run_baseline(config: BaselineConfig) -> dict[str, Any]:
+    # One driver instance for the whole run, not per scenario: drivers are
+    # stateless (every method takes whatever scenario-specific context it
+    # needs as arguments — see baselines/drivers/base.py), so there is
+    # nothing to gain from re-instantiating per row, and reusing one avoids
+    # ever accidentally relying on instance state that would leak between
+    # scenarios if the driver were ever made stateful later.
+    driver = get_driver(config.harness)
+
     config.output_dir.mkdir(parents=True, exist_ok=True)
     config.runs_dir.mkdir(parents=True, exist_ok=True)
     summary_path = config.output_dir / "summary.json"
@@ -1293,7 +871,7 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
         else:
             row_started = time.time()
             try:
-                payload = run_scenario(config, row, row_number, prompt)
+                payload = run_scenario(config, row, row_number, prompt, driver)
             except Exception as exc:
                 runtime_error_runs += 1
                 payload = {
@@ -1439,11 +1017,29 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--rows", type=str, default=None,
                    help="Comma-separated row_number values to run (e.g. 1,6,7)")
     p.add_argument("--exclude-completed-csv", type=Path, default=None)
-    p.add_argument("--retry-errors", action="store_true")
+    p.add_argument(
+        "--retry-errors",
+        action="store_true",
+        help=(
+            "Requires --exclude-completed-csv. Instead of excluding rows found in "
+            "that CSV, run ONLY the rows that did not get a clean pass there: "
+            "final_validation_passed was False, OR status was anything other "
+            "than 'ok' (harness_stalled, harness_timeout, harness_error, "
+            "runtime_error, skipped_empty_prompt, ...) (row_number match, or "
+            "ground_truth_path match when --rows is not used)."
+        ),
+    )
     p.add_argument("--max-iterations", type=int, default=30)
     p.add_argument("--deploy-target", choices=["none", "localstack", "aws"], default="aws")
 
-    p.add_argument("--harness", choices=["claude_code"], default="claude_code")
+    p.add_argument("--harness", choices=sorted(DRIVERS), default="claude_code",
+                   help="Which coding harness drives the loop. claude_code: Anthropic-"
+                        "compat routing via ANTHROPIC_BASE_URL (see baselines/README.md "
+                        "for the OpenRouter provider-roulette issue this hits with "
+                        "third-party models). opencode: native multi-provider routing, "
+                        "no Anthropic-shape translation involved for OpenRouter models — "
+                        "see baselines/drivers/opencode.py for what has and has not been "
+                        "verified.")
     p.add_argument("--model", type=str, default=None,
                    help="Model id the harness routes to, e.g. deepseek/deepseek-v4-flash. "
                         "Mapped onto every Claude Code model alias.")
@@ -1496,7 +1092,7 @@ def parse_args() -> argparse.Namespace:
                         "with no real content (no tool_use, no non-empty text) — the "
                         "confirmed stalled-session signature, root-caused to OpenRouter's "
                         "per-request provider load-balancing (any of several upstream "
-                        "providers can return this on a given draw; ~93% of raw calls "
+                        "providers can return this on a given draw; ~93%% of raw calls "
                         "succeed in one measured burst, so a fresh retry resolves most "
                         "cases before the harness ever sees a failure). Ignored under "
                         "--native-auth (routes to Claude's own API, not OpenRouter).")
@@ -1539,10 +1135,11 @@ def main() -> None:
     if args.rows:
         rows = [int(r.strip()) for r in args.rows.split(",") if r.strip().isdigit()]
 
-    if shutil.which("claude") is None:
+    harness_binary = {"claude_code": "claude", "opencode": "opencode"}.get(args.harness)
+    if harness_binary and shutil.which(harness_binary) is None:
         raise SystemExit(
-            "The `claude` CLI was not found on PATH. Install Claude Code before "
-            "running the harness baseline."
+            f"The `{harness_binary}` CLI was not found on PATH. Install it before "
+            f"running --harness {args.harness}."
         )
 
     config = BaselineConfig(

@@ -452,9 +452,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help=(
             "Requires --exclude-completed-csv. Instead of excluding rows found in "
-            "that CSV, run ONLY the rows whose final_validation_passed was False "
-            "there (row_number match, or ground_truth_path match when --rows is "
-            "not used)."
+            "that CSV, run ONLY the rows that did not get a clean pass there: "
+            "final_validation_passed was False, OR status was anything other "
+            "than 'ok' (harness_stalled, harness_timeout, harness_error, "
+            "runtime_error, skipped_empty_prompt, ...) (row_number match, or "
+            "ground_truth_path match when --rows is not used)."
         ),
     )
     parser.add_argument("--max-iterations", type=int, default=30)

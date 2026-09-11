@@ -16,6 +16,32 @@ from tools.deploy_validator import (
 )
 
 
+# ---------------------------------------------------------------------------
+# Trivy checks-bundle pin (reproducibility)
+# ---------------------------------------------------------------------------
+# Trivy's misconfiguration rules ("checks") are a separate OCI artifact from
+# the trivy binary itself, fetched/cached independently and auto-refreshed
+# by default (`trivy --version` reports its own binary version alongside a
+# distinct "Check Bundle" digest+download timestamp). Left unpinned, the same
+# template can score differently run to run — not because of any code or
+# template change, but because upstream trivy-checks published a new rule
+# between two benchmark runs. Pinning by digest makes every run (any
+# machine, any time) use byte-identical checks, matching how requirements.txt
+# pins Python deps for the same reason.
+#
+# This is a reproducibility pin, not a calibration: it is set to whatever
+# bundle is currently in use, not chosen to make any particular template
+# (ground truth included) pass. Bump it deliberately (and re-baseline
+# expected results) when you want the rule set to move forward; do not pick
+# a digest based on which findings it does or doesn't produce.
+#
+# Get the current digest with: trivy --version
+_TRIVY_CHECKS_BUNDLE = (
+    "mirror.gcr.io/aquasec/trivy-checks:2"
+    "@sha256:1583562f8b90ed2a071b99f0e5ffff6b57e4ceb6ca3e4796577b4e6a339eb74c"
+)
+
+
 def _derive_policy_rates(
     total_policies: int, passed_policies: int, filtered_failed_policies: int
 ) -> tuple[float, float]:
@@ -505,6 +531,8 @@ def validate_trivy(template: str, iac_type: str = "cloudformation") -> Validatio
                     "trivy", "config",
                     "--format", "json",
                     "--exit-code", "1",
+                    "--checks-bundle-repository", _TRIVY_CHECKS_BUNDLE,
+                    "--skip-check-update",
                     str(tmpdir),
                 ],
                 capture_output=True, text=True, timeout=120,

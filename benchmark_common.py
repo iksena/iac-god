@@ -236,7 +236,22 @@ def _load_failed_scenario_keys(csv_path: Path | None) -> set[str]:
         reader = csv.DictReader(fh)
         for row in reader:
             final_validation_passed = (row.get("final_validation_passed") or "").strip().lower()
-            if final_validation_passed != "false":
+            status = (row.get("status") or "").strip()
+            # A row counts as "failed" (worth retrying) either because the
+            # artifact was scored and didn't pass, or because the run itself
+            # never reached a genuine verdict on the merits — harness_stalled,
+            # harness_timeout, harness_error, runtime_error,
+            # skipped_empty_prompt, etc. Those statuses can carry
+            # final_validation_passed=False already (e.g. harness_stalled), but
+            # not always (a runtime_error row has no final_validation_passed at
+            # all; a timed-out or errored harness could coincidentally leave a
+            # last artifact that happens to validate). status != "ok" is
+            # checked independently so none of those cases slip through
+            # needing final_validation_passed to also be exactly "false". An
+            # empty/missing status (older result CSVs predating this column)
+            # is not itself treated as a failure signal, so old CSVs keep
+            # their prior final_validation_passed-only behaviour.
+            if final_validation_passed != "false" and not (status and status != "ok"):
                 continue
 
             ground_truth_path = (row.get("ground_truth_path") or "").strip()
