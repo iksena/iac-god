@@ -1490,16 +1490,18 @@ def parse_args() -> argparse.Namespace:
                         f"{THINKING_TOKENS_WARN_THRESHOLD} tokens) to see when it did not "
                         "hold, rather than assuming 0 means disabled.")
     p.add_argument("--no-retry-proxy", action="store_true",
-                   help="Disable the local retry proxy (see baselines/retry_proxy.py). "
-                        "On by default: it sits between the harness and OpenRouter and "
-                        "transparently re-issues a request when the response comes back "
-                        "with no real content (no tool_use, no non-empty text) — the "
-                        "confirmed stalled-session signature, root-caused to OpenRouter's "
-                        "per-request provider load-balancing (any of several upstream "
-                        "providers can return this on a given draw; ~93% of raw calls "
-                        "succeed in one measured burst, so a fresh retry resolves most "
-                        "cases before the harness ever sees a failure). Ignored under "
-                        "--native-auth (routes to Claude's own API, not OpenRouter).")
+                   help=(
+                       "Disable the local retry proxy (see baselines/retry_proxy.py). "
+                       "On by default: it sits between the harness and OpenRouter and "
+                       "transparently re-issues a request when the response comes back "
+                       "with no real content (no tool_use, no non-empty text) — the "
+                       "confirmed stalled-session signature, root-caused to OpenRouter's "
+                       "per-request provider load-balancing (any of several upstream "
+                       "providers can return this on a given draw; ~93%% of raw calls "
+                       "succeed in one measured burst, so a fresh retry resolves most "
+                       "cases before the harness ever sees a failure). Ignored under "
+                       "--native-auth (routes to Claude's own API, not OpenRouter)."
+                   ))
     p.add_argument("--retry-proxy-max-retries", type=int, default=3,
                    help="Retries per API call inside the proxy, before it gives up and "
                         "returns the last (empty) response as-is. Distinct from "
