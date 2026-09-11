@@ -212,6 +212,72 @@ any numbers.
      `summary.json`. A different model may not share this exact failure mode
      or respond to this lever at all.
 
+   **Update: the root cause behind all of the above was found and fixed —
+   see "Root cause of the stalled-session failure mode" below.** Everything
+   above stays true as the investigation trail (thinking-block correlation,
+   the DSML leak, the environment-injection hallucination all really
+   happened, and `--max-thinking-tokens`/`--max-stall-retries` still help)
+   but is superseded as the primary defence by the retry proxy.
+
+## Root cause of the stalled-session failure mode, and the fix
+
+Confirmed with a controlled experiment, not inferred: OpenRouter
+load-balances `deepseek-v4-flash` across at least eight upstream providers
+(StreamLake, GMICloud, DigitalOcean, DeepInfra, Novita, SiliconFlow,
+NextBit, Alibaba — seen in practice; there may be more), chosen essentially
+at random per request. A burst of 15 raw calls against `/v1/messages` with
+no tools, no system prompt, nothing else in play landed on 7 different
+providers; 14/15 returned a healthy completion, and the 1 failure
+(`provider: SiliconFlow` that run — a **different** provider failed on a
+repeat of the same test, confirming it is not one specific bad backend)
+burned its entire output-token budget on a `thinking` block and returned
+zero visible content, `stop_reason: "max_tokens"`. That is the exact
+stalled-session signature, reproduced outside Claude Code entirely: fast,
+HTTP 200, healthy-looking — just empty.
+
+This explains the whole shape of the earlier investigation: why stalls
+looked random (which of ~8 providers you draw *is* random), why retries
+sometimes worked and sometimes didn't (restarting the whole harness process
+just draws again — usually enough, but unlucky runs of bad draws happen),
+and why `--max-thinking-tokens 0` helped on some sessions and not others (if
+different providers honour the request differently, which provider you
+happened to draw would explain the inconsistency).
+
+**The fix: `baselines/retry_proxy.py`**, a small local reverse proxy that
+sits between the harness and OpenRouter. `ANTHROPIC_BASE_URL` points at it
+instead of directly at OpenRouter; every request passes through unchanged,
+but when a response comes back with no real content (no `tool_use`, no
+non-empty `text` — exactly the confirmed signature) it transparently
+re-issues the *same* request before Claude Code ever sees the failure. Each
+retry draws a fresh provider from OpenRouter's own load balancer, so most
+failures resolve invisibly. Verified in a direct test (10 calls through the
+proxy): 2 hit the empty-completion signature on the first attempt and were
+both silently retried and resolved on the second — the caller (my test
+script, standing in for Claude Code) saw 10/10 healthy responses and never
+knew 2 of them needed a retry. On the two real scenarios that had failed
+**100% of the time — all 6 retries, both rows** in an actual benchmark run
+(the concrete case that prompted this investigation), both passed cleanly
+on the first attempt with the proxy in place.
+
+On by default (`--no-retry-proxy` to disable; `--retry-proxy-max-retries`,
+default 3, to tune). One proxy process is shared for the whole benchmark
+run — it is stateless, so there is no reason to restart it per scenario —
+and its decisions are logged to `runs/retry_proxy_<timestamp>.log`
+(`{"event": "attempt", "healthy": bool, "provider": str, ...}` per API call,
+plus a `"resolved"` line whenever more than one attempt was needed). Ignored
+under `--native-auth`, since that routes to Claude's own API, not
+OpenRouter, and the retry-worthy failure mode is specific to OpenRouter's
+provider load-balancing.
+
+Distinct from `--max-stall-retries`, not a replacement for it: this retries
+one HTTP request at a fraction of the cost of restarting the whole harness
+process, and should catch the large majority of cases before
+`--max-stall-retries` is ever needed. Keep `--max-stall-retries` at a
+non-zero value regardless — retrying a single request 3 times only helps
+when *some* provider on the retry list is healthy; if OpenRouter itself has
+a bad few minutes across the board, a full process restart (drawn at a
+different time) is the deeper fallback.
+
 ## Output
 
 Identical to `benchmark.py`, so the existing aggregation scripts read both.

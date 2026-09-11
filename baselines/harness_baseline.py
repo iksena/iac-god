@@ -127,6 +127,8 @@ class BaselineConfig:
     max_stall_retries: int
     harness_effort: str | None
     max_thinking_tokens: int | None
+    use_retry_proxy: bool
+    retry_proxy_max_retries: int
     sleep_between_rows: float
     runs_dir: Path
     keep_workspace: bool
@@ -141,10 +143,66 @@ class BaselineConfig:
 
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 
+    # Set by main() once the retry proxy is up: the URL the harness
+    # subprocess actually connects to (http://127.0.0.1:<port>). base_url
+    # itself is left untouched so summary.json keeps reporting the real
+    # upstream (https://openrouter.ai/api) rather than an ephemeral local
+    # port that means nothing once the run ends.
+    effective_base_url: str | None = None
+
 
 # ---------------------------------------------------------------------------
 # OpenRouter pricing
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Retry proxy — see baselines/retry_proxy.py for the full rationale.
+#
+# Root cause of the stalled-session failure mode (confirmed by a controlled
+# 15-call burst against the raw OpenRouter endpoint): deepseek-v4-flash is
+# load-balanced across many upstream providers essentially at random per
+# request, and a small fraction of draws (any provider, not one specific
+# backend — confirmed across multiple runs) burn their entire output budget
+# on a thinking block and return zero visible content. One shared local
+# proxy is started for the whole benchmark run (not per scenario — it is
+# stateless and cheap), and ANTHROPIC_BASE_URL is pointed at it instead of
+# directly at OpenRouter. Every scenario's requests flow through it
+# transparently; Claude Code and the rest of the pipeline are unaware it
+# exists.
+# ---------------------------------------------------------------------------
+
+
+def start_retry_proxy(max_retries: int, log_path: Path) -> tuple[subprocess.Popen, int]:
+    """Launch baselines/retry_proxy.py and return (process, bound_port).
+
+    Reads the port off the proxy's stdout (it prints exactly one line: the
+    port number, once bound) rather than guessing a free port ourselves,
+    which would race with the proxy's own bind.
+    """
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "baselines.retry_proxy",
+         "--port", "0", "--max-retries", str(max_retries), "--log-file", str(log_path)],
+        cwd=str(REPO_ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdout is not None
+    port_line = proc.stdout.readline().strip()
+    if not port_line.isdigit():
+        stderr = proc.stderr.read() if proc.stderr else ""
+        proc.terminate()
+        raise RuntimeError(f"retry_proxy failed to start: {stderr or port_line}")
+    return proc, int(port_line)
+
+
+def stop_retry_proxy(proc: subprocess.Popen) -> None:
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
 
 
 def fetch_openrouter_pricing() -> dict[str, dict[str, float]]:
@@ -288,7 +346,7 @@ def build_harness_env(config: BaselineConfig, claude_config_dir: Path) -> dict[s
 
     env.update(
         {
-            "ANTHROPIC_BASE_URL": config.base_url or "https://openrouter.ai/api",
+            "ANTHROPIC_BASE_URL": config.effective_base_url or config.base_url or "https://openrouter.ai/api",
             "ANTHROPIC_AUTH_TOKEN": api_key,
             "ANTHROPIC_API_KEY": "",
             "ANTHROPIC_DEFAULT_HAIKU_MODEL": config.model,
@@ -1169,6 +1227,10 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
                 "harness_model": config.model or config.harness_model,
                 "harness_alias": config.harness_model,
                 "base_url": None if config.native_auth else config.base_url,
+                "retry_proxy_used": config.effective_base_url is not None,
+                "retry_proxy_max_retries": config.retry_proxy_max_retries
+                if config.effective_base_url is not None
+                else None,
                 "total_cost_usd_openrouter": round(total_cost, 6),
                 "runs_dir": str(config.runs_dir),
                 "rows_stalled": stalled_count,
@@ -1402,6 +1464,22 @@ def parse_args() -> argparse.Namespace:
                         "column (and the inline ⚠ warning above "
                         f"{THINKING_TOKENS_WARN_THRESHOLD} tokens) to see when it did not "
                         "hold, rather than assuming 0 means disabled.")
+    p.add_argument("--no-retry-proxy", action="store_true",
+                   help="Disable the local retry proxy (see baselines/retry_proxy.py). "
+                        "On by default: it sits between the harness and OpenRouter and "
+                        "transparently re-issues a request when the response comes back "
+                        "with no real content (no tool_use, no non-empty text) — the "
+                        "confirmed stalled-session signature, root-caused to OpenRouter's "
+                        "per-request provider load-balancing (any of several upstream "
+                        "providers can return this on a given draw; ~93% of raw calls "
+                        "succeed in one measured burst, so a fresh retry resolves most "
+                        "cases before the harness ever sees a failure). Ignored under "
+                        "--native-auth (routes to Claude's own API, not OpenRouter).")
+    p.add_argument("--retry-proxy-max-retries", type=int, default=3,
+                   help="Retries per API call inside the proxy, before it gives up and "
+                        "returns the last (empty) response as-is. Distinct from "
+                        "--max-stall-retries, which restarts the whole harness process; "
+                        "this retries a single request and is much cheaper.")
     p.add_argument("--sleep-between-rows", type=float, default=0.0)
     p.add_argument("--keep-workspace", action="store_true",
                    help="Keep runs/<run_id>/workspace instead of deleting it after scoring")
@@ -1463,12 +1541,32 @@ def main() -> None:
         max_stall_retries=args.max_stall_retries,
         harness_effort=args.harness_effort,
         max_thinking_tokens=args.max_thinking_tokens,
+        use_retry_proxy=not args.no_retry_proxy,
+        retry_proxy_max_retries=args.retry_proxy_max_retries,
         sleep_between_rows=args.sleep_between_rows,
         runs_dir=args.runs_dir.resolve(),
         keep_workspace=args.keep_workspace,
         pricing={} if args.no_pricing else fetch_openrouter_pricing(),
     )
-    run_baseline(config)
+
+    proxy_proc = None
+    if config.use_retry_proxy and not config.native_auth:
+        config.runs_dir.mkdir(parents=True, exist_ok=True)
+        proxy_log = config.runs_dir / f"retry_proxy_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        proxy_proc, proxy_port = start_retry_proxy(config.retry_proxy_max_retries, proxy_log)
+        print(f"[Baseline] retry proxy listening on 127.0.0.1:{proxy_port} (log: {proxy_log})")
+        # The real OpenRouter base_url this run would otherwise have used is
+        # what the proxy forwards to (baselines/retry_proxy.py:UPSTREAM_BASE)
+        # — overriding it here, rather than changing UPSTREAM_BASE, keeps the
+        # proxy a fixed, reusable piece rather than one wired to this run's
+        # particular --base-url.
+        config.effective_base_url = f"http://127.0.0.1:{proxy_port}"
+
+    try:
+        run_baseline(config)
+    finally:
+        if proxy_proc is not None:
+            stop_retry_proxy(proxy_proc)
 
 
 if __name__ == "__main__":
