@@ -88,11 +88,19 @@ BASELINE_CSV_EXTRA = [
     "harness_stalled",
     "harness_stall_retries_used",
     "harness_stalled_attempt_run_ids",
+    "thinking_tokens_total",
 ]
 BASELINE_CSV_FIELDS = CSV_RESULT_FIELDS + BASELINE_CSV_EXTRA
 
 # Consecutive scenarios that never reached the model before the run aborts.
 DEAD_ROW_ABORT_THRESHOLD = 3
+
+# Console warning threshold for thinking_tokens_total. Not a hard cutoff —
+# there is no evidence a "normal" amount exists, only that the one confirmed
+# DSML-leak-despite---max-thinking-tokens-0 case burned 10,935. Picked low
+# enough to flag that case and similar ones without being noisy on ordinary
+# reasoning.
+THINKING_TOKENS_WARN_THRESHOLD = 3000
 
 
 @dataclass
@@ -225,24 +233,33 @@ def build_harness_env(config: BaselineConfig, claude_config_dir: Path) -> dict[s
     the run is not attributable to a single model.
 
     MAX_THINKING_TOKENS controls extended thinking. When
-    config.max_thinking_tokens == 0, thinking is disabled outright — verified
-    empirically to actually work through this shim (a probe call with it set
+    config.max_thinking_tokens == 0, the harness ASKS to disable thinking
+    outright. This is a real, non-trivial request — a probe call with it set
     returned a plain `text` block, no `thinking` block at all, thinking_tokens
-    reported as None rather than a spent budget). This exists because of a
-    specific, repeatedly-observed failure: deepseek-v4-flash's own native
-    tool-call syntax (`<｜DSML｜tool_calls>...`) has been seen leaking out as
-    literal text INSIDE a thinking block instead of a structured tool_use
-    block — the OpenRouter shim does not parse it there — which is exactly
-    the stalled-session pattern in README §6. The leak has only ever been
-    observed inside thinking content; forcing the model to answer directly
-    removes the channel it happens in.
+    reported as None rather than a spent budget — but it is NOT reliably
+    honoured. This exists because of a specific, repeatedly-observed
+    failure: deepseek-v4-flash's own native tool-call syntax
+    (`<｜DSML｜tool_calls>...`) has been seen leaking out as literal text
+    INSIDE a thinking block instead of a structured tool_use block — the
+    OpenRouter shim does not parse it there — which is exactly the
+    stalled-session pattern in README §6.
 
-    CONFIRMED, not just hypothesised: 14/14 rows passed with zero stalls
-    (single attempt, --max-stall-retries 0) on the diff345 (difficulty 3-5)
-    dataset with this set to 0 — including all 6 rows that had stalled
-    repeatedly (even across 2-5 retries, on a separate machine) without it.
-    --harness-effort (tried by the user first) changes reasoning depth but
-    does not disable thinking, and did not resolve the stalls.
+    Verified split, not a clean fix: 14/14 rows passed with zero stalls
+    (single attempt, --max-stall-retries 0) on short, fresh sessions from the
+    diff345 (difficulty 3-5) dataset with this set to 0 — including 6 rows
+    that had stalled repeatedly without it. But a later, separately-observed
+    case on a long, cache-heavy mid-repair-loop turn (cache_read_input_tokens
+    in the tens of thousands) burned 10,935 thinking tokens with this same
+    setting active, and the DSML leak recurred inside that thinking block.
+    The most likely explanation is deepseek-v4-flash's own always-reasoning
+    behaviour overriding the request once it judges a turn hard enough —
+    plausibly correlated with conversation depth/cache size, not something
+    this flag can force. --harness-effort (tried first) changes reasoning
+    depth but does not disable thinking, and did not resolve the stalls
+    either. Treat this as a partial mitigation to combine with
+    --max-stall-retries, not a substitute for it — and watch
+    thinking_tokens_total in the CSV (see parse_harness_stream) rather than
+    assuming 0 means disabled.
     """
     env = dict(os.environ)
     env.update(
@@ -639,6 +656,19 @@ def parse_harness_stream(
         appeared in any assistant turn afterward — i.e. the harness's own
         recovery attempt also failed and it gave up. is_error/returncode
         cannot detect this: Claude Code still reports success.
+
+      * thinking_tokens_total is pulled out of modelUsage explicitly (NOT
+        buried in the raw stream) because it is the single most diagnostic
+        number for the failure above: the DSML leak has only ever been
+        observed inside a thinking block, and --max-thinking-tokens 0 does
+        NOT reliably prevent it — verified to work cleanly on short, fresh
+        sessions (0 cache reads) but to be overridden by the model on long,
+        cache-heavy mid-repair-loop turns (one observed case: 10,935
+        thinking tokens and the DSML leak, with --max-thinking-tokens 0 set
+        and cache_read_input_tokens in the tens of thousands). Treat
+        --max-thinking-tokens 0 as a partial mitigation, not a fix — this
+        column is what lets you actually see when it did not hold, instead
+        of grepping thousands of raw thinking_tokens ping lines by hand.
     """
     calls_by_id: dict[str, dict[str, Any]] = {}
     result_event: dict[str, Any] = {}
@@ -703,6 +733,10 @@ def parse_harness_stream(
         last_synthetic_nudge_index is not None and not tool_use_after_last_nudge
     )
 
+    thinking_tokens_total = sum(
+        _safe_int(usage.get("thinkingTokens")) for usage in model_usage.values()
+    )
+
     return {
         "llm_call_log": llm_calls,
         "token_usage": tokens,
@@ -710,6 +744,7 @@ def parse_harness_stream(
         "num_turns": _safe_int(result_event.get("num_turns")),
         "session_id": result_event.get("session_id"),
         "model_usage": model_usage,
+        "thinking_tokens_total": thinking_tokens_total,
         "is_error": bool(result_event.get("is_error")) or returncode != 0,
         "stalled": stalled,
         "stop_reason": result_event.get("stop_reason"),
@@ -994,6 +1029,7 @@ def run_scenario(
         "harness_stalled": bool(telemetry["stalled"]),
         "harness_stall_retries_used": len(stalled_run_ids),
         "harness_stalled_attempt_run_ids": ",".join(stalled_run_ids) or None,
+        "thinking_tokens_total": telemetry["thinking_tokens_total"],
     }
 
 
@@ -1210,12 +1246,23 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
                 outcome = "PASS"
             else:
                 outcome = "FAIL"
+            thinking_total = _safe_int(payload.get("thinking_tokens_total"))
+            # Surfaced inline, not just in the CSV: this is the number that
+            # would have caught the --max-thinking-tokens gap immediately
+            # instead of requiring a manual grep through thousands of raw
+            # thinking_tokens ping lines in harness_stream.jsonl. See
+            # parse_harness_stream's docstring — --max-thinking-tokens 0 does
+            # NOT reliably prevent this on long, cache-heavy turns.
+            thinking_flag = (
+                f" | ⚠ thinking={thinking_total}" if thinking_total > THINKING_TOKENS_WARN_THRESHOLD else ""
+            )
             print(
                 f"[Baseline] row {row_number}: {outcome} "
                 f"| iters={payload.get('iterations_used')} "
                 f"| calls={payload.get('llm_calls_total')} "
                 f"| verdict={payload.get('final_verdict_source')} "
                 f"| ${payload.get('cost_usd_openrouter')}"
+                f"{thinking_flag}"
             )
 
         # Fail fast on a misconfiguration. A scenario that makes zero LLM
@@ -1322,20 +1369,22 @@ def parse_args() -> argparse.Namespace:
                         "long reasoning chains in the observed logs, on the hypothesis "
                         "that a lower effort level may shorten them. Not confirmed to help.")
     p.add_argument("--max-thinking-tokens", type=int, default=None,
-                   help="Sets MAX_THINKING_TOKENS for the harness subprocess. Pass 0 to "
-                        "disable extended thinking outright — verified to actually take "
-                        "effect through the OpenRouter shim (a probe call with it set "
-                        "returned a plain text block, no thinking block, thinking_tokens "
-                        "reported as None). Exists because deepseek-v4-flash's native "
-                        "tool-call syntax has been repeatedly observed leaking out as "
-                        "literal text INSIDE a thinking block, which is the stalled-session "
-                        "failure mode (README §6); the leak has only been observed inside "
-                        "thinking content. Unlike --harness-effort (which changes reasoning "
-                        "depth but does not disable thinking), this removes the channel the "
-                        "leak happens in. CONFIRMED: 0 stalls across 14 rows of the diff345 "
-                        "(difficulty 3-5) dataset with this set to 0, including all 6 rows "
-                        "that stalled repeatedly (even after 2-5 retries) without it. "
-                        "Recommended default for deepseek-v4-flash via OpenRouter.")
+                   help="Sets MAX_THINKING_TOKENS for the harness subprocess. Pass 0 to ask "
+                        "the harness to disable extended thinking. PARTIAL MITIGATION ONLY, "
+                        "NOT a fix: reliably honoured on short, fresh sessions (0 cache "
+                        "reads; 14/14 clean in one batch) but overridden by the model on "
+                        "long, cache-heavy mid-repair-loop turns — one confirmed case burned "
+                        "10,935 thinking tokens with this set to 0 and cache_read_input_tokens "
+                        "in the tens of thousands, with the DSML leak recurring inside that "
+                        "thinking block (README §6: deepseek-v4-flash's native tool-call "
+                        "syntax leaking as literal text inside thinking instead of a "
+                        "structured tool_use, which the OpenRouter shim does not parse). "
+                        "Likely deepseek-v4-flash's own always-reasoning behaviour taking "
+                        "precedence over the request once it judges a turn hard enough — not "
+                        "something this flag can force. Watch the thinking_tokens_total CSV "
+                        "column (and the inline ⚠ warning above "
+                        f"{THINKING_TOKENS_WARN_THRESHOLD} tokens) to see when it did not "
+                        "hold, rather than assuming 0 means disabled.")
     p.add_argument("--sleep-between-rows", type=float, default=0.0)
     p.add_argument("--keep-workspace", action="store_true",
                    help="Keep runs/<run_id>/workspace instead of deleting it after scoring")

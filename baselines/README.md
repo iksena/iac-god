@@ -169,35 +169,48 @@ any numbers.
    low`) was also tried and did not help — it changes reasoning depth, not
    whether thinking is enabled at all.
 
-   **`--max-thinking-tokens 0` is the confirmed fix, not a retry-harder
-   workaround.** The leak in both observed failure signatures happens
+   **`--max-thinking-tokens 0` is a partial mitigation, not a fix — it does
+   not reliably hold.** The leak in both observed failure signatures happens
    specifically *inside* a `thinking` content block — either the model's
    native tool-call syntax leaking out as literal text there, or (a third
    variant found investigating this) the model hallucinating a fake
    `<environment_injection_message>` and reacting to its own fiction, again
    inside thinking. `--max-thinking-tokens 0` sets `MAX_THINKING_TOKENS=0` in
-   the harness subprocess's environment, which disables extended thinking
-   outright (verified: a probe call with it set returns a plain `text`
-   block, no `thinking` block at all — not a shrunk budget, no thinking
-   channel). With no thinking channel, there is nowhere for the leak to
-   happen. Tested on the exact diff345 (difficulty 3-5) rows that had
-   stalled repeatedly, including across retries: **14/14 passed with zero
-   stalls**, single attempt each (`--max-stall-retries 0`) — the 6 rows that
-   previously failed even after 2-5 retries, plus 8 fresh rows for
-   confirmation. It is also cheaper per successful outcome: no tokens spent
-   on thinking that produces nothing.
+   the harness subprocess's environment, asking Claude Code to disable
+   extended thinking outright (verified: a probe call with it set returns a
+   plain `text` block, no `thinking` block at all — not a shrunk budget, no
+   thinking channel). Tested on the exact diff345 (difficulty 3-5) rows that
+   had stalled repeatedly, including across retries — a first batch of 14
+   short, fresh-session rows (the 6 that previously failed even after 2-5
+   retries, plus 8 more) **all passed with zero stalls**, single attempt
+   each (`--max-stall-retries 0`).
+
+   **That result did not hold on a longer session.** A separately-observed
+   case on a deep, cache-heavy mid-repair-loop turn
+   (`cache_read_input_tokens` in the tens of thousands) burned **10,935
+   thinking tokens with `--max-thinking-tokens 0` still set**, and the DSML
+   leak recurred inside that thinking block. The most likely explanation:
+   `deepseek-v4-flash`'s own always-reasoning behaviour overrides the
+   request once it judges a turn hard enough — plausibly correlated with
+   conversation depth or cache size, not something this flag can force. The
+   14-row batch that looked clean was, in hindsight, biased toward short
+   sessions; it was real evidence, just not evidence of a structural fix.
 
    Two consequences for using this baseline now:
 
-   - **Pass `--max-thinking-tokens 0`** for `deepseek-v4-flash` runs;
-     treat a non-zero value as the thing to reach for only if you have a
-     specific reason the model needs visible reasoning for this dataset.
-   - `summary.json` still reports both `pass_rate` (over all evaluated rows,
-     matching `benchmark.py`'s denominator for direct comparability) and
-     `pass_rate_excl_stalled` (over rows that got a fair attempt) — keep
-     watching both on a sweep, since 14/14 is strong evidence but not a
-     guarantee of 0% incidence at full dataset scale, and a different model
-     may not share this exact failure mode or fix.
+   - **`thinking_tokens_total`** (CSV column, extracted from `modelUsage`)
+     and an inline `⚠ thinking=<N>` console warning above
+     `THINKING_TOKENS_WARN_THRESHOLD` (3000, in `harness_baseline.py`) exist
+     specifically so this doesn't require grepping thousands of raw
+     `thinking_tokens` ping lines in `harness_stream.jsonl` by hand — that
+     grep is how this gap was found in the first place. Watch that column on
+     any sweep; do not assume `--max-thinking-tokens 0` means 0.
+   - Pass `--max-thinking-tokens 0` anyway — it measurably helps on short
+     sessions and costs nothing when it doesn't — but keep
+     `--max-stall-retries` at a real value (not 0) as the actual safety net,
+     and keep watching `pass_rate` vs `pass_rate_excl_stalled` in
+     `summary.json`. A different model may not share this exact failure mode
+     or respond to this lever at all.
 
 ## Output
 
