@@ -208,6 +208,19 @@ class ScenarioLedger:
             return None, f"{path} is empty. Write the template before validating."
         return content, ""
 
+    def _fully_validated(self) -> bool:
+        """Static clean AND deployed, whenever deployment is part of the run.
+
+        Shared by _snapshot (what a completed iteration claims) and submit
+        (whether an early submission may be accepted) so the two can never
+        disagree about what "done" means for this scenario.
+        """
+        if self.config.deploy_target == "none":
+            return self.last_static_passed
+        return self.last_static_passed and bool(
+            self.last_deploy_result and self.last_deploy_result.get("passed")
+        )
+
     def _snapshot(self, template: str) -> None:
         """Write iteration_NNN.json in the same shape a multi-agent run does.
 
@@ -221,20 +234,13 @@ class ScenarioLedger:
         its deploy_iac must not claim success the deploy has not conferred —
         deploy_iac re-snapshots the same iteration once it has a verdict.
         """
-        if self.config.deploy_target == "none":
-            fully_validated = self.last_static_passed
-        else:
-            fully_validated = self.last_static_passed and bool(
-                self.last_deploy_result and self.last_deploy_result.get("passed")
-            )
-
         self.recorder.save_iteration_snapshot(
             {
                 "current_iteration": self.iteration,
                 "objectives": [],
                 "iac_template": template,
                 "validation_results": self.last_validation_results,
-                "validation_passed": bool(fully_validated),
+                "validation_passed": bool(self._fully_validated()),
                 "deploy_validation_result": self.last_deploy_result,
                 "remediation_history": [],
             }
@@ -447,7 +453,31 @@ class ScenarioLedger:
         the recorded validation results, re-validating if the submitted content
         differs from what was last validated — a harness may submit a template
         it never got to pass.
+
+        Refused while the scenario is not yet fully validated AND iterations
+        remain: the multi-agent pipeline has no equivalent early-exit (graph.py
+        route_after_validator only stops on a genuine pass or max_iterations —
+        the LLM is never offered a "give up now" option), so an harness free to
+        submit_template at any iteration is not a fair comparison and, observed
+        in practice, some models exercise that off-ramp far short of their
+        budget even while validate_iac/deploy_iac keep telling them exactly what
+        to fix next. This does not force more tool calls (nothing can), but it
+        stops an early bail from being recorded as a real submission, and gives
+        a cooperative model another concrete nudge to keep working instead of
+        silently accepting a premature "done."
         """
+        if not self._fully_validated() and self.iteration < self.config.max_iterations:
+            remaining = self.config.max_iterations - self.iteration
+            return ToolOutcome(
+                text=(
+                    "Submission refused: this template is not yet fully validated "
+                    f"and {remaining} iteration(s) remain. Call validate_iac again "
+                    "(and deploy_iac once it passes) — do not submit until it "
+                    "passes or the iteration cap is reached."
+                ),
+                passed=False,
+            )
+
         template, read_error = self._read_template(file_path)
         if template is None:
             return ToolOutcome(text=read_error, passed=False)

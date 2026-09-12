@@ -388,6 +388,19 @@ def run_harness(
         tool_calls_path=stream_path.with_name("harness_tool_calls.txt"),
     )
 
+    # state_dir is the harness's own installation bookkeeping (session DB,
+    # auth cache, and — for OpenCode specifically — a full npm install of
+    # its plugin dependencies under .opencode_state/config, tens of MB per
+    # scenario). Nothing in it is scenario evidence; anything worth keeping
+    # has already been copied out by write_debug_transcripts above (e.g.
+    # OpenCode's internal log -> harness_debug.log). Discarded unconditionally,
+    # independent of --keep-workspace: that flag means "keep this scenario's
+    # own artifacts (template.yaml, etc.) for inspection," not "keep the
+    # harness's internal plumbing too" — leaving it in made --keep-workspace
+    # runs balloon to ~60-70MB/row and broke a plain file copy of the run
+    # directory (large binary/db files silently dropped mid-copy).
+    shutil.rmtree(state_dir, ignore_errors=True)
+
     return driver.parse_stream(
         stdout,
         returncode=returncode,
