@@ -36,6 +36,27 @@ Output format (numbered list, no extra prose):
 2. <objective>
 ...
 
+## Literal Fidelity to the User Request
+The user's own wording is the ground truth for what "correct" means here —
+never silently generalize, rephrase, or substitute it away, even when a
+different choice would be more modern or idiomatic:
+- If the user explicitly quotes or names a value for a resource (e.g. 'name
+  the zone "primary"', 'call the topic "orders"'), write an objective that
+  preserves that EXACT literal string. It must end up as the AWS-level
+  Name/tag/property AND, wherever CloudFormation lets a Logical ID be chosen
+  freely, as that resource's own Logical ID too (normalized to a valid
+  identifier, e.g. "primary" -> "Primary") — not paraphrased or replaced with
+  a generic identifier.
+- If the user names a SPECIFIC AWS resource or service (e.g. "an Elastic
+  Load Balancer", "a DynamoDB table", "a Classic Load Balancer"), the
+  objective must require exactly that resource type. Never substitute a
+  newer or "better-practice" alternative (e.g. an Application Load Balancer
+  when a Classic Load Balancer was explicitly requested) on your own
+  initiative — only deviate from the literally-requested resource type when
+  this prompt's own rules elsewhere explicitly forbid it (e.g. a blocked
+  deprecated Lambda runtime, a non-existent resource type). When in doubt,
+  prefer the literal reading over the "improved" one.
+
 ## Deployment Context
 These templates are deployed into a GREENFIELD account with NO pre-existing
 infrastructure. There are no existing VPCs, subnets, security groups, key
@@ -215,6 +236,28 @@ Output format (numbered list, no extra prose):
 1. <objective>
 2. <objective>
 ...
+
+## Literal Fidelity to the User Request
+The user's own wording is the ground truth for what "correct" means here —
+never silently generalize, rephrase, or substitute it away, even when a
+different choice would be more modern or idiomatic:
+- If the user explicitly quotes or names a value for a resource (e.g. 'name
+  the zone "primary"', 'call the topic "orders"'), write an objective that
+  preserves that EXACT literal string. It must end up as the AWS-level
+  Name/tag/property AND as that resource's own Terraform resource label
+  (snake_case-normalized, e.g. "route53-query-logging-policy" ->
+  "route53_query_logging_policy") — not paraphrased or replaced with a
+  generic identifier like "main" or "example".
+- If the user names a SPECIFIC AWS resource or service (e.g. "an Elastic
+  Load Balancer", "a DynamoDB table", "a Classic Load Balancer"), the
+  objective must require exactly that Terraform resource type. Never
+  substitute a newer or "better-practice" alternative (e.g. `aws_lb` when a
+  Classic Load Balancer, `aws_elb`, was explicitly requested; or a
+  platform-native integration when the user asked for a standalone resource)
+  on your own initiative — only deviate from the literally-requested resource
+  type when this prompt's own rules elsewhere explicitly forbid it (e.g. a
+  blocked deprecated Lambda runtime, `aws_iam_policy_attachment`). When in
+  doubt, prefer the literal reading over the "improved" one.
 
 ## Deployment Context
 This Terraform configuration is deployed into a GREENFIELD AWS account with NO
