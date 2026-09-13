@@ -122,6 +122,21 @@ class OpenCodeDriver:
                         str(REPO_ROOT / "baselines" / "mcp_server.py"),
                     ],
                     "environment": {**scenario.to_env(), "PYTHONPATH": str(REPO_ROOT)},
+                    # OpenCode's default MCP request timeout is far too short
+                    # for deploy_iac: a real AWS CloudFormation create-wait-
+                    # fail-delete cycle routinely takes minutes (1130s observed
+                    # on one EKS scenario, 166-320s on smaller ones). Every
+                    # deploy_iac call that outlasts the timeout comes back as
+                    # an opaque "MCP error -32001: Request timed out" instead
+                    # of a real validation verdict — confirmed directly in a
+                    # run where all 4 of the harness's own deploy_iac attempts
+                    # timed out identically, the model never saw the actual
+                    # AWS errors (an IAM OIDC misconfiguration and a missing
+                    # launch-template disk size) at all, and gave up. Set to
+                    # the scenario's own outer timeout in ms: there is no
+                    # reason for the MCP transport to give up before
+                    # run_harness()'s own process-level timeout would.
+                    "timeout": config.scenario_timeout * 1000,
                 }
             },
             "agent": {
