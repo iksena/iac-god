@@ -87,13 +87,105 @@ def _collect_files_recursive(paths, extension, exclude_filenames=None):
     return sorted(dict.fromkeys(collected))
 
 
+def _coerce_bool_series(series):
+    """Best-effort coercion of a column to True/False/None (unparseable ->
+    None), tolerant of native bools or CSV-round-tripped strings like
+    "True"/"False"/"1"/"0"."""
+    def _coerce(value):
+        if isinstance(value, bool):
+            return value
+        if pd.isna(value):
+            return None
+        text = str(value).strip().lower()
+        if text in ("true", "1", "yes"):
+            return True
+        if text in ("false", "0", "no"):
+            return False
+        return None
+    return series.map(_coerce)
+
+
+def _load_benchmark_row_keys(benchmark_csv):
+    """Read a benchmark dataset CSV and return
+    ``(valid_row_numbers, ground_truth_to_row_number)``:
+    - ``valid_row_numbers``: set of int ``row_number`` values it defines.
+    - ``ground_truth_to_row_number``: dict mapping each ``ground_truth_path``
+      to its authoritative ``row_number`` in this dataset, or None if the CSV
+      has no ``ground_truth_path`` column.
+
+    ``ground_truth_path`` is the stable scenario identity; ``row_number`` is
+    NOT stable across dataset revisions — a result file produced against an
+    older/different revision can record a ``row_number`` for a
+    ``ground_truth_path`` that the current dataset numbers differently. So
+    when ``ground_truth_path`` is available, it alone is used to identify a
+    valid row, and the caller re-derives ``row_number`` from this mapping
+    instead of trusting whatever the source result file recorded.
+
+    Returns ``(None, None)`` when ``benchmark_csv`` is not given.
+    """
+    if benchmark_csv is None:
+        return None, None
+    if not os.path.exists(benchmark_csv):
+        raise FileNotFoundError(f"Benchmark CSV not found: {benchmark_csv}")
+
+    df = pd.read_csv(benchmark_csv)
+    if "row_number" not in df.columns:
+        raise ValueError(f"Column 'row_number' not found in {benchmark_csv}")
+
+    df = df.copy()
+    df["row_number"] = pd.to_numeric(df["row_number"], errors="coerce")
+    df = df.dropna(subset=["row_number"])
+    df["row_number"] = df["row_number"].astype(int)
+
+    valid_row_numbers = set(df["row_number"].tolist())
+
+    ground_truth_to_row_number = None
+    if "ground_truth_path" in df.columns:
+        keyed = df.assign(ground_truth_path=df["ground_truth_path"].astype(str).str.strip())
+        ground_truth_to_row_number = dict(
+            zip(keyed["ground_truth_path"], keyed["row_number"])
+        )
+
+    return valid_row_numbers, ground_truth_to_row_number
+
+
+def _assert_output_path_not_in_inputs(output_path, input_paths, file_label):
+    """Prevent accidental overwrite of any original input file."""
+    if not output_path or not input_paths:
+        return
+
+    output_abs = os.path.abspath(output_path)
+    for input_path in input_paths:
+        if os.path.abspath(input_path) == output_abs:
+            raise ValueError(
+                f"{file_label} output path '{output_path}' matches an input file. "
+                "Use a different output path to avoid modifying originals."
+            )
+
+
 def merge_results_from_paths(
     csv_paths,
     merged_csv_path="results_merged.csv",
     jsonl_paths=None,
     merged_jsonl_path="results_merged.jsonl",
+    benchmark_csv=None,
+    prefer_final_validation_passed=False,
 ):
-    """Recursively expand CSV and JSONL inputs, then merge them."""
+    """Recursively expand inputs, then merge.
+
+    ``benchmark_csv``, when given, is a dataset CSV with ``row_number`` and
+    ``ground_truth_path`` columns. Only merged rows whose ``ground_truth_path``
+    appears there are kept — ``ground_truth_path`` is the stable scenario
+    identity, so a merged row's ``row_number`` is re-derived from the
+    benchmark's own mapping rather than trusted from the source result file
+    (result files from an older dataset revision can record a different,
+    stale ``row_number`` for the same ``ground_truth_path``). This drops
+    stale/out-of-scope rows from old result files without having to
+    hand-maintain a per-file drop list. ``prefer_final_validation_passed``
+    lets a row with ``final_validation_passed=True`` override a same
+    ``row_number``+``ground_truth_path`` row that had ``False``, regardless of
+    which input file it came from.
+    """
     csv_files = _collect_files_recursive(
         csv_paths,
         ".csv",
@@ -114,6 +206,8 @@ def merge_results_from_paths(
         merged_csv_path=merged_csv_path,
         jsonl_paths=jsonl_files,
         merged_jsonl_path=merged_jsonl_path,
+        benchmark_csv=benchmark_csv,
+        prefer_final_validation_passed=prefer_final_validation_passed,
     )
 
 
@@ -121,8 +215,21 @@ def merge_results_from_directory(
     base_dir,
     merged_csv_path="results_merged.csv",
     merged_jsonl_path="results_merged.jsonl",
+    benchmark_csv=None,
+    prefer_final_validation_passed=False,
 ):
-    """Find CSV and JSONL files recursively under ``base_dir`` and merge them."""
+    """Find CSV/JSONL files under ``base_dir`` and merge them.
+
+    - ``benchmark_csv``: path to the benchmark dataset CSV (with
+      ``row_number`` and ``ground_truth_path`` columns); only merged rows
+      whose ``ground_truth_path`` appears there are kept, and their
+      ``row_number`` is re-derived from this dataset's own mapping (not
+      trusted from the source result file, since that can be stale).
+    - ``prefer_final_validation_passed``: when True, a row with
+      ``final_validation_passed=True`` overrides a same
+      ``row_number``+``ground_truth_path`` row that had ``False``, regardless
+      of which input file it came from.
+    """
     resolved_csv_path = (
         merged_csv_path
         if os.path.isabs(merged_csv_path)
@@ -139,7 +246,33 @@ def merge_results_from_directory(
         merged_csv_path=resolved_csv_path,
         jsonl_paths=[base_dir],
         merged_jsonl_path=resolved_jsonl_path,
+        benchmark_csv=benchmark_csv,
+        prefer_final_validation_passed=prefer_final_validation_passed,
     )
+
+
+def filter_runtime_error_rows(
+    input_csv,
+    output_csv="results_without_runtime_error.csv",
+    status_col="status",
+):
+    """Write a copy of ``input_csv`` with ``runtime_error`` rows removed."""
+    if not os.path.exists(input_csv):
+        raise FileNotFoundError(f"Input CSV not found: {input_csv}")
+
+    df = pd.read_csv(input_csv)
+    if status_col not in df.columns:
+        raise ValueError(f"Column '{status_col}' not found in {input_csv}")
+
+    status_values = df[status_col].fillna("").astype(str).str.strip().str.lower()
+    filtered_df = df[status_values != "runtime_error"].copy()
+
+    filtered_df.to_csv(output_csv, index=False)
+    removed_rows = len(df) - len(filtered_df)
+    print(
+        f"Filtered {removed_rows} runtime_error row(s) from '{input_csv}' into '{output_csv}'"
+    )
+    return filtered_df
 
 def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_csv="results_merged.csv"):
     if not os.path.exists(input_csv):
@@ -293,12 +426,39 @@ def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_
     df_merged.to_csv(output_csv, index=False)
     print(f"Successfully created merged results at '{output_csv}'")
 
-def merge_results(csv_paths, merged_csv_path, jsonl_paths=None, merged_jsonl_path=None):
+def merge_results(
+    csv_paths,
+    merged_csv_path,
+    jsonl_paths=None,
+    merged_jsonl_path=None,
+    benchmark_csv=None,
+    prefer_final_validation_passed=False,
+):
     """
     Merges multiple CSV and JSONL files from the same model into single files.
+
+    Optional CSV controls:
+    - ``benchmark_csv``: path to the benchmark dataset CSV (must have
+      ``row_number`` and ``ground_truth_path`` columns). When given, only
+      merged rows whose ``ground_truth_path`` appears in this dataset are
+      kept, and their ``row_number`` is overwritten with this dataset's own
+      row_number for that ``ground_truth_path`` — a source result file from
+      an older dataset revision can record a stale/different row_number for
+      the same scenario, so ``ground_truth_path`` is the identity that's
+      trusted, not ``row_number``. This replaces having to hand-maintain a
+      per-file drop list of stale/out-of-scope rows.
+    - For duplicate ``row_number`` values across files, later files in merge
+      order (files are merged in the order given, i.e. ``csv_paths`` order)
+      replace earlier rows, UNLESS ``prefer_final_validation_passed`` is set,
+      in which case a row with ``final_validation_passed=True`` overrides a
+      same ``row_number``+``ground_truth_path`` row that had ``False``,
+      regardless of merge order.
     """
     # Merge CSVs while preserving original row order across files.
     if csv_paths:
+        _assert_output_path_not_in_inputs(merged_csv_path, csv_paths, "CSV")
+        valid_row_numbers, ground_truth_to_row_number = _load_benchmark_row_keys(benchmark_csv)
+
         dfs = []
         for file_idx, f in enumerate(csv_paths):
             if os.path.exists(f):
@@ -311,9 +471,84 @@ def merge_results(csv_paths, merged_csv_path, jsonl_paths=None, merged_jsonl_pat
         if dfs:
             merged_df = pd.concat(dfs, ignore_index=True)
 
+            if valid_row_numbers is not None:
+                before_count = len(merged_df)
+
+                if ground_truth_to_row_number is not None and "ground_truth_path" in merged_df.columns:
+                    # ground_truth_path is the stable scenario identity across
+                    # dataset revisions; row_number is not — a result file
+                    # from an older/different revision can record a stale
+                    # row_number for the same ground_truth_path. Match on
+                    # ground_truth_path alone and re-derive row_number from
+                    # the benchmark's own mapping rather than trusting
+                    # whatever the source file recorded.
+                    gt_series = merged_df["ground_truth_path"].astype(str).str.strip()
+                    mapped_row_number = gt_series.map(ground_truth_to_row_number)
+                    merged_df = merged_df[mapped_row_number.notna()].copy()
+                    merged_df["row_number"] = mapped_row_number[mapped_row_number.notna()].astype(int)
+                    match_desc = "ground_truth_path is not present"
+                elif "row_number" in merged_df.columns:
+                    row_number_series = pd.to_numeric(merged_df["row_number"], errors="coerce")
+                    merged_df = merged_df[row_number_series.isin(valid_row_numbers)].copy()
+                    match_desc = "row_number is not present"
+                else:
+                    print(
+                        "Warning: benchmark_csv given but merged data has neither "
+                        "'ground_truth_path' nor 'row_number' to filter on; ignoring the filter."
+                    )
+                    match_desc = None
+
+                if match_desc is not None:
+                    removed = before_count - len(merged_df)
+                    if removed > 0:
+                        print(
+                            f"Filtered {removed} row(s) whose {match_desc} "
+                            f"in benchmark CSV '{benchmark_csv}'."
+                        )
+
             # If a `row_number` column exists, prefer sorting by it across all files.
             if "row_number" in merged_df.columns:
                 merged_df["row_number"] = pd.to_numeric(merged_df["row_number"], errors="coerce")
+
+                # Later files in merge order (csv_paths order) replace earlier
+                # rows when they share the same row_number.
+                with_row_number = merged_df[merged_df["row_number"].notna()].copy()
+                without_row_number = merged_df[merged_df["row_number"].isna()].copy()
+                before_dedup_count = len(with_row_number)
+
+                dedup_subset = ["row_number"]
+                sort_columns = ["row_number", "_file_order", "_row_order"]
+                using_passed_override = False
+
+                if prefer_final_validation_passed:
+                    if "final_validation_passed" not in with_row_number.columns or "ground_truth_path" not in with_row_number.columns:
+                        print(
+                            "Warning: prefer_final_validation_passed requires "
+                            "'final_validation_passed' and 'ground_truth_path' columns; ignoring the flag."
+                        )
+                    else:
+                        using_passed_override = True
+                        dedup_subset = ["row_number", "ground_truth_path"]
+                        with_row_number["_passed_rank"] = (
+                            _coerce_bool_series(with_row_number["final_validation_passed"]) == True  # noqa: E712
+                        ).astype(int)
+                        sort_columns = [
+                            "row_number", "ground_truth_path", "_passed_rank", "_file_order", "_row_order",
+                        ]
+
+                with_row_number = with_row_number.sort_values(by=sort_columns, na_position="last")
+                with_row_number = with_row_number.drop_duplicates(subset=dedup_subset, keep="last")
+                if using_passed_override:
+                    with_row_number = with_row_number.drop(columns=["_passed_rank"])
+
+                replaced_count = before_dedup_count - len(with_row_number)
+                if replaced_count > 0:
+                    match_desc = "matching row_number/ground_truth_path" if using_passed_override else "matching row_number"
+                    print(
+                        f"Replaced {replaced_count} earlier row(s) using lower-priority CSV rows with {match_desc}."
+                    )
+
+                merged_df = pd.concat([with_row_number, without_row_number], ignore_index=True)
                 merged_df = merged_df.sort_values(
                     by=["row_number", "_file_order", "_row_order"],
                     na_position="last",
@@ -334,6 +569,7 @@ def merge_results(csv_paths, merged_csv_path, jsonl_paths=None, merged_jsonl_pat
     
     # Merge JSONLs
     if jsonl_paths and merged_jsonl_path:
+        _assert_output_path_not_in_inputs(merged_jsonl_path, jsonl_paths, "JSONL")
         valid_jsonls = [f for f in jsonl_paths if os.path.exists(f)]
         if valid_jsonls:
             with open(merged_jsonl_path, 'w', encoding='utf-8') as outfile:
@@ -420,23 +656,191 @@ def move_run_folders_from_csv(
 
     return moved
 
-if __name__ == "__main__":
-    # merge_results_from_directory(
-    #     base_dir="./benchmark_runs/terraform_20260601_182648 Deepseek V4 Flash",
-    # )
 
-    move_run_folders_from_csv(
-        input_csv='benchmark_runs/cloudformation_20260607_232842 Ablation No Remediation/results.csv',
-        runs_dir='runs',
-        target_subfolder_name='DeepseekV4Flash_sec_ablation_no_remediation',
-        run_id_col='run_id',
-        dry_run=False,
+# ---------------------------------------------------------------------------
+# Terminal display: results CSV -> markdown table
+# ---------------------------------------------------------------------------
+
+def _truncate(text, width: int) -> str:
+    text = "" if text is None or (isinstance(text, float) and pd.isna(text)) else str(text)
+    text = text.strip()
+    return text if len(text) <= width else text[:width] + "..."
+
+
+def _format_number(value) -> str:
+    """Format a possibly-float-typed value for display, dropping a
+    trailing ".0" (pandas reads whole-number columns as float64 whenever
+    any row is NaN/missing, e.g. difficulty=3.0 instead of 3)."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "?"
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _render_markdown_table(headers: list[str], rows: list[list[str]]) -> str:
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join("---" for _ in headers) + " |",
+    ]
+    for row in rows:
+        # Escape pipe characters so a cell can't break the table structure.
+        cells = [str(c).replace("|", "\\|").replace("\n", " ") for c in row]
+        lines.append("| " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
+def display_results_table(
+    results_csv,
+    dataset_csv=None,
+    *,
+    failed_only: bool = False,
+    min_iterations: int | None = None,
+    prompt_chars: int = 20,
+    print_table: bool = True,
+) -> str:
+    """Render a results CSV as a markdown table for terminal display.
+
+    Columns: row_number, run_id, ground_truth_path, prompt (first
+    ``prompt_chars`` characters), difficulty, num_iterations, status
+    ("passed"/"failed").
+
+    ``dataset_csv``, when given, supplies ``prompt``/``difficulty`` (results
+    CSVs don't have these columns — they only exist in the source benchmark
+    dataset) via a lookup on ``ground_truth_path``, falling back to
+    ``row_number`` for rows where that doesn't match — ``ground_truth_path``
+    is the stable scenario identity across dataset revisions (see
+    ``merge_results``'s docstring), so it's preferred. Rows with no match show
+    "?" for both fields. Without ``dataset_csv``, both columns show "?".
+
+    ``failed_only``: keep only rows where ``final_validation_passed`` is not
+    exactly True (covers False, runtime_error, and any other non-passing
+    status — this is a binary passed/failed view, no third state).
+
+    ``min_iterations``: keep only rows where ``iterations_used`` is strictly
+    greater than this value (e.g. ``min_iterations=10`` for "iterations with
+    more than 10").
+
+    Prints the table (unless ``print_table=False``) and returns it as a
+    markdown string.
+    """
+    if not os.path.exists(results_csv):
+        raise FileNotFoundError(f"Results CSV not found: {results_csv}")
+
+    df = pd.read_csv(results_csv)
+    if "row_number" not in df.columns:
+        raise ValueError(f"'row_number' column not found in {results_csv}")
+
+    df = df.copy()
+    df["row_number"] = pd.to_numeric(df["row_number"], errors="coerce")
+    ground_truth = df["ground_truth_path"].fillna("").astype(str).str.strip() \
+        if "ground_truth_path" in df.columns else pd.Series([""] * len(df), index=df.index)
+    run_id = df["run_id"].fillna("").astype(str).str.strip() \
+        if "run_id" in df.columns else pd.Series([""] * len(df), index=df.index)
+
+    prompt_by_gt: dict = {}
+    difficulty_by_gt: dict = {}
+    prompt_by_row: dict = {}
+    difficulty_by_row: dict = {}
+    if dataset_csv is not None:
+        if not os.path.exists(dataset_csv):
+            raise FileNotFoundError(f"Dataset CSV not found: {dataset_csv}")
+        ds = pd.read_csv(dataset_csv)
+        for col in ("prompt", "difficulty"):
+            if col not in ds.columns:
+                raise ValueError(f"'{col}' column not found in {dataset_csv}")
+
+        if "ground_truth_path" in ds.columns:
+            ds_gt = ds["ground_truth_path"].astype(str).str.strip()
+            prompt_by_gt = dict(zip(ds_gt, ds["prompt"]))
+            difficulty_by_gt = dict(zip(ds_gt, ds["difficulty"]))
+        if "row_number" in ds.columns:
+            ds_row_number = pd.to_numeric(ds["row_number"], errors="coerce")
+            prompt_by_row = dict(zip(ds_row_number, ds["prompt"]))
+            difficulty_by_row = dict(zip(ds_row_number, ds["difficulty"]))
+
+    passed_bool = (
+        _coerce_bool_series(df["final_validation_passed"])
+        if "final_validation_passed" in df.columns
+        else pd.Series([None] * len(df), index=df.index)
+    )
+    iterations = (
+        pd.to_numeric(df["iterations_used"], errors="coerce")
+        if "iterations_used" in df.columns
+        else pd.Series([None] * len(df), index=df.index)
     )
 
+    headers = [
+        "row_number", "run_id", "ground_truth_path", "prompt",
+        "difficulty", "num_iterations", "status",
+    ]
+    rows = []
+    for idx in df.index:
+        gt = ground_truth.loc[idx]
+        row_number = df.at[idx, "row_number"]
+
+        prompt = prompt_by_gt.get(gt) if gt else None
+        difficulty = difficulty_by_gt.get(gt) if gt else None
+        if prompt is None and not pd.isna(row_number):
+            prompt = prompt_by_row.get(row_number)
+        if difficulty is None and not pd.isna(row_number):
+            difficulty = difficulty_by_row.get(row_number)
+
+        row_passed = bool(passed_bool.loc[idx]) if passed_bool.loc[idx] is not None else False
+        row_iterations = iterations.loc[idx]
+
+        if failed_only and row_passed:
+            continue
+        if min_iterations is not None and not (pd.notna(row_iterations) and row_iterations > min_iterations):
+            continue
+
+        rows.append([
+            "" if pd.isna(row_number) else int(row_number),
+            run_id.loc[idx] or "?",
+            gt or "?",
+            _truncate(prompt, prompt_chars) if prompt is not None else "?",
+            _format_number(difficulty) if isinstance(difficulty, float) else ("?" if difficulty is None else difficulty),
+            "" if pd.isna(row_iterations) else int(row_iterations),
+            "passed" if row_passed else "failed",
+        ])
+
+    table = _render_markdown_table(headers, rows)
+    if print_table:
+        print(table)
+        print(f"\n{len(rows)} row(s) shown (of {len(df)} total).")
+    return table
+
+
+if __name__ == "__main__":
+    # filter_runtime_error_rows(
+    #     input_csv='benchmark_runs/cloudformation_20260829_102210/results.csv',
+    #     output_csv='benchmark_runs/cloudformation_20260829_102210/results_without_runtime_error.csv',
+    #     status_col='status',
+    # )
+
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/cloudformation_20260826_185515_CFNEvalRealAWS",
+    #     benchmark_csv="data/cfn_eval_benchmark_real_aws_diff345.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/terraform_20260823_213429 TFEvalV2",
+    #     benchmark_csv="data/tf_benchmark_diff_345.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='CFNEvalV2_DeepseekV4Flash_security_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+
     merge_results_with_reports(
-        input_csv="benchmark_runs/cloudformation_20260607_232842 Ablation No Remediation/results.csv", 
-        base_dir="runs/DeepseekV4Flash_sec_ablation_no_remediation", 
-        output_csv="benchmark_runs/cloudformation_20260607_232842 Ablation No Remediation/DeepseekV4Flash_sec_ablation_no_remediation.csv"
+        input_csv="benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/results_merged.csv", 
+        base_dir="runs/CFNEvalV2_DeepseekV4Flash_security_runs", 
+        output_csv="benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/CFNEvalV2_DeepseekV4Flash_security_runs.csv"
     )
 
     # merge_results(
