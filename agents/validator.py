@@ -8,6 +8,7 @@ def validator_agent(
     state: GraphState,
     recorder: ResearchRecorder,
     deploy_config: DeployConfig = DEFAULT_DEPLOY_CONFIG,
+    skip_security: bool = False,
 ) -> GraphState:
     """
     Runs the static validation pipeline then optionally a live deployability
@@ -32,6 +33,7 @@ def validator_agent(
         state["iac_template"],
         iac_type=iac_type,
         deploy_config=deploy_config,
+        skip_security=skip_security,
     )
 
     for r in results:

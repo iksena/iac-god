@@ -71,6 +71,7 @@ def route_after_validator(state: GraphState) -> str:
 def build_graph(
     recorder: ResearchRecorder,
     deploy_config: DeployConfig = DEFAULT_DEPLOY_CONFIG,
+    skip_security: bool = False,
 ) -> StateGraph:
     graph = StateGraph(GraphState)
 
@@ -78,7 +79,10 @@ def build_graph(
     graph.add_node("engineer",        partial(engineer_agent,   recorder=recorder))
     # engineer_simple is the same agent function — mode is detected from state
     graph.add_node("engineer_simple", partial(engineer_agent,   recorder=recorder))
-    graph.add_node("validator",       partial(validator_agent,  recorder=recorder, deploy_config=deploy_config))
+    graph.add_node(
+        "validator",
+        partial(validator_agent, recorder=recorder, deploy_config=deploy_config, skip_security=skip_security),
+    )
     graph.add_node("retriever",       partial(retriever_agent,  recorder=recorder))
     graph.add_node("remediator",      partial(remediator_agent, recorder=recorder))
 

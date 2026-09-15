@@ -1,12 +1,45 @@
+import os
 import subprocess
 import tempfile
+import time
 import json
 from pathlib import Path
 from state import ValidationResult, DeployValidationResult
 from yamllint import linter
 from yamllint.config import YamlLintConfig
 from config import DeployConfig, DeployTarget, DEFAULT_DEPLOY_CONFIG
-from tools.deploy_validator import validate_deployment
+from tools.deploy_validator import (
+    validate_deployment,
+    _TF_INIT_MAX_ATTEMPTS,
+    _TF_INIT_RETRY_BACKOFF_SECONDS,
+    _TF_PLUGIN_CACHE_DIR,
+)
+
+
+# ---------------------------------------------------------------------------
+# Trivy checks-bundle pin (reproducibility)
+# ---------------------------------------------------------------------------
+# Trivy's misconfiguration rules ("checks") are a separate OCI artifact from
+# the trivy binary itself, fetched/cached independently and auto-refreshed
+# by default (`trivy --version` reports its own binary version alongside a
+# distinct "Check Bundle" digest+download timestamp). Left unpinned, the same
+# template can score differently run to run — not because of any code or
+# template change, but because upstream trivy-checks published a new rule
+# between two benchmark runs. Pinning by digest makes every run (any
+# machine, any time) use byte-identical checks, matching how requirements.txt
+# pins Python deps for the same reason.
+#
+# This is a reproducibility pin, not a calibration: it is set to whatever
+# bundle is currently in use, not chosen to make any particular template
+# (ground truth included) pass. Bump it deliberately (and re-baseline
+# expected results) when you want the rule set to move forward; do not pick
+# a digest based on which findings it does or doesn't produce.
+#
+# Get the current digest with: trivy --version
+_TRIVY_CHECKS_BUNDLE = (
+    "mirror.gcr.io/aquasec/trivy-checks:2"
+    "@sha256:1583562f8b90ed2a071b99f0e5ffff6b57e4ceb6ca3e4796577b4e6a339eb74c"
+)
 
 
 def _derive_policy_rates(
@@ -51,10 +84,16 @@ def validate_yaml(template: str) -> ValidationResult:
         f"[{problem.rule}] line {problem.line}, column {problem.column}: {problem.desc}"
         for problem in problems
     ]
+    # yamllint's own "default" ruleset marks several rules level: warning
+    # (truthy, comments, comments-indentation, ...), none of which are
+    # disabled by _YAMLLINT_CONFIG above. Only "error"-level problems should
+    # block the stage; warnings are surfaced to the LLM but non-blocking,
+    # consistent with every other validator's severity handling.
+    passed = not any(problem.level == "error" for problem in problems)
     raw_output = "YAML syntax OK" if not errors else "\n".join(errors)
     return ValidationResult(
         stage="yaml",
-        passed=not errors,
+        passed=passed,
         errors=errors,
         raw_output=raw_output,
     )
@@ -102,17 +141,28 @@ def validate_cfn_lint(template: str) -> ValidationResult:
             ["cfn-lint", tmp_path, "--format", "json"],
             capture_output=True, text=True, timeout=60,
         )
-        errors = []
         raw = result.stdout or result.stderr
-        if result.returncode != 0:
-            try:
-                findings = json.loads(raw)
-                errors = [_format_cfn_lint_finding(f) for f in findings]
-            except json.JSONDecodeError:
-                errors = [raw]
+
+        try:
+            findings = json.loads(raw)
+            errors = [_format_cfn_lint_finding(f) for f in findings]
+            # cfn-lint's own exit code defaults to --non-zero-exit-code=
+            # informational, so it goes non-zero for ANY finding, including
+            # plain Warning/Informational ones (e.g. W3002). Only Error-level
+            # findings should actually fail the stage; Warning/Informational
+            # are surfaced to the LLM but non-blocking, mirroring
+            # validate_tflint's severity handling below.
+            passed = not any(
+                (finding.get("Level") or "").lower() == "error" for finding in findings
+            )
+        except json.JSONDecodeError:
+            # Fallback: not valid JSON (e.g. a crash), trust the exit code.
+            passed = result.returncode == 0
+            errors = [] if passed else [raw]
+
         return ValidationResult(
             stage="cfn-lint",
-            passed=result.returncode == 0,
+            passed=passed,
             errors=errors,
             raw_output=raw,
         )
@@ -247,16 +297,54 @@ def validate_terraform(template: str) -> ValidationResult:
     with tempfile.TemporaryDirectory() as tmpdir:
         tf_path = Path(tmpdir) / "main.tf"
         tf_path.write_text(template, encoding="utf-8")
+
+        # Point at the same persistent plugin cache deploy_validator.py uses,
+        # so this stage doesn't re-download the ~500 MB AWS provider on every
+        # call. Sharing that cache means concurrent processes' `terraform
+        # init`s can race to extract/link the same provider binary and hit a
+        # transient "text file busy" — retried below the same way
+        # deploy_validator.py's init already is.
+        run_env = os.environ.copy()
+        run_env["TF_PLUGIN_CACHE_DIR"] = str(_TF_PLUGIN_CACHE_DIR)
+
         try:
             # Step 1: init (no backend, no input prompts)
-            # Timeout increased to 600s (10 min) to allow provider plugin downloads
-            init_result = subprocess.run(
-                ["terraform", "init", "-backend=false", "-input=false", "-no-color"],
-                cwd=tmpdir,
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
+            # Timeout increased to 1800s (30 min) to allow provider plugin downloads
+            init_result = None
+            for init_attempt in range(1, _TF_INIT_MAX_ATTEMPTS + 1):
+                try:
+                    init_result = subprocess.run(
+                        ["terraform", "init", "-backend=false", "-input=false", "-no-color"],
+                        cwd=tmpdir,
+                        capture_output=True,
+                        text=True,
+                        timeout=1800,
+                        env=run_env,
+                    )
+                except subprocess.TimeoutExpired:
+                    timeout_msg = "terraform init timed out after 1800s — provider download stalled"
+                    return ValidationResult(
+                        stage="terraform-validate",
+                        passed=False,
+                        errors=[timeout_msg],
+                        raw_output=timeout_msg,
+                    )
+
+                if init_result.returncode == 0:
+                    break
+
+                init_err = (init_result.stderr or init_result.stdout or "")
+                if "text file busy" in init_err.lower() and init_attempt < _TF_INIT_MAX_ATTEMPTS:
+                    print(
+                        f"[terraform-validate] init hit a transient plugin-cache race (text file busy) "
+                        f"on attempt {init_attempt}/{_TF_INIT_MAX_ATTEMPTS}, "
+                        f"retrying in {_TF_INIT_RETRY_BACKOFF_SECONDS:.0f}s..."
+                    )
+                    time.sleep(_TF_INIT_RETRY_BACKOFF_SECONDS)
+                    continue
+
+                break
+
             if init_result.returncode != 0:
                 err_text = (init_result.stderr or init_result.stdout).strip()
                 return ValidationResult(
@@ -273,12 +361,13 @@ def validate_terraform(template: str) -> ValidationResult:
                 capture_output=True,
                 text=True,
                 timeout=60,
+                env=run_env,
             )
             raw = val_result.stdout or val_result.stderr
             errors: list[str] = []
             try:
                 data = json.loads(raw)
-                passed = bool(data.get("valid", False))
+                error_severity_count = 0
                 for diag in data.get("diagnostics", []):
                     severity = diag.get("severity", "error").upper()
                     summary  = (diag.get("summary") or "").strip()
@@ -294,6 +383,16 @@ def validate_terraform(template: str) -> ValidationResult:
                     if detail and detail.lower() != summary.lower():
                         parts.append(detail)
                     errors.append(" | ".join(parts))
+                    if severity == "ERROR":
+                        error_severity_count += 1
+
+                # Stage fails only when there are ERROR-severity diagnostics.
+                # WARNING is surfaced to the LLM but non-blocking, consistent
+                # with validate_tflint's severity handling above — previously
+                # this ANDed terraform's own `valid` flag with `not errors`,
+                # which meant a WARNING-only diagnostic (valid=true) still
+                # failed the stage simply because `errors` was non-empty.
+                passed = error_severity_count == 0
             except (json.JSONDecodeError, KeyError):
                 passed = val_result.returncode == 0
                 if not passed:
@@ -301,7 +400,7 @@ def validate_terraform(template: str) -> ValidationResult:
 
             return ValidationResult(
                 stage="terraform-validate",
-                passed=passed and not errors,
+                passed=passed,
                 errors=errors,
                 raw_output=raw,
             )
@@ -383,7 +482,14 @@ def validate_checkov(template: str, iac_type: str = "cloudformation") -> Validat
         ppr, fcr = _derive_policy_rates(total_policies, passed_policies, filtered_failed_policies)
         return ValidationResult(
             stage="checkov",
-            passed=len(errors) == 0,
+            # Only high/critical-severity failed checks block the stage
+            # (filtered_failed_policies, already computed above) — low/medium
+            # findings are still surfaced in `errors` for visibility but are
+            # non-blocking, consistent with every other validator's severity
+            # handling and with trivy's own high/critical threshold below.
+            # Previously this was `len(errors) == 0`, which failed the stage
+            # on ANY severity, inconsistent with filtered_failed_policies.
+            passed=filtered_failed_policies == 0,
             errors=errors,
             raw_output=raw,
             policy_stats={
@@ -425,6 +531,8 @@ def validate_trivy(template: str, iac_type: str = "cloudformation") -> Validatio
                     "trivy", "config",
                     "--format", "json",
                     "--exit-code", "1",
+                    "--checks-bundle-repository", _TRIVY_CHECKS_BUNDLE,
+                    "--skip-check-update",
                     str(tmpdir),
                 ],
                 capture_output=True, text=True, timeout=120,
@@ -482,6 +590,7 @@ def run_all_validators(
     template: str,
     iac_type: str = "cloudformation",
     deploy_config: DeployConfig = DEFAULT_DEPLOY_CONFIG,
+    skip_security: bool = False,
 ) -> tuple[list[ValidationResult], bool, DeployValidationResult]:
     """
     Run the correct validation pipeline for the given IaC type.
@@ -498,10 +607,16 @@ def run_all_validators(
     types. This structural parity is a requirement of the generalisation
     research hypothesis.
 
-    Skipped stages (trivy when structural stages fail, deploy when static
-    validation fails) are represented with passed=True and an empty errors
-    list so that classify_failing_stages() does not count them as failures.
-    A skipped stage is not a failed stage — it simply did not run.
+    Skipped stages (trivy when skip_security=True or structural stages fail,
+    deploy when static validation fails or deploy_config.target is NONE) are
+    represented with passed=True and an empty errors list so that
+    classify_failing_stages() does not count them as failures. A skipped
+    stage is not a failed stage — it simply did not run.
+
+    skip_security=True unconditionally skips the trivy stage (structural
+    stages still run), mirroring deploy_config.target=DeployTarget.NONE for
+    the deploy stage — set both to run structural-validation-only, similar to
+    how IaC-Eval-style evaluations can disable security/deploy checks.
 
     Checkov is wired but currently skipped in both pipelines (kept for future
     re-enablement); trivy covers the security stage.
@@ -523,7 +638,14 @@ def run_all_validators(
         tf_validate_result = validate_terraform(template)
         results: list[ValidationResult] = [tflint_result, tf_validate_result]
 
-        if tflint_result["passed"] and tf_validate_result["passed"]:
+        if skip_security:
+            trivy_result = ValidationResult(
+                stage="trivy",
+                passed=True,
+                errors=[],
+                raw_output="Skipped: security validation disabled (skip_security=True)",
+            )
+        elif tflint_result["passed"] and tf_validate_result["passed"]:
             trivy_result = validate_trivy(template, iac_type="terraform")
         else:
             # passed=True: a skipped stage is not a failed stage.
@@ -566,7 +688,14 @@ def run_all_validators(
         results = [yaml_result, cfn_lint_result]
 
         # Trivy runs only after YAML and cfn-lint succeed
-        if yaml_result["passed"] and cfn_lint_result["passed"]:
+        if skip_security:
+            trivy_result = ValidationResult(
+                stage="trivy",
+                passed=True,
+                errors=[],
+                raw_output="Skipped: security validation disabled (skip_security=True)",
+            )
+        elif yaml_result["passed"] and cfn_lint_result["passed"]:
             trivy_result = validate_trivy(template, iac_type="cloudformation")
         else:
             # passed=True: a skipped stage is not a failed stage.
