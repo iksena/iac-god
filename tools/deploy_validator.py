@@ -25,6 +25,29 @@ from state import DeployValidationResult
 _TF_PLUGIN_CACHE_DIR = Path(tempfile.gettempdir()) / "iac-god-tf-plugin-cache"
 _TF_PLUGIN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# When multiple benchmark processes run terraform/tflocal concurrently, they
+# all populate this same shared plugin cache. Terraform's provider install
+# step has no inter-process lock, so two `init`s racing to extract/link the
+# same provider binary can fail with "text file busy" (one process still has
+# the binary open while another tries to overwrite it). This is transient —
+# retrying once the other process finishes resolves it — so it's retried a
+# few times rather than failing the whole scenario.
+_TF_INIT_MAX_ATTEMPTS = 3
+_TF_INIT_RETRY_BACKOFF_SECONDS = 3.0
+
+# Applied to every CloudFormation stack this harness creates (and, by CFN's
+# stack-level tag propagation, to every resource within it that supports
+# tagging). Stack-name-prefix matching (see _delete_surviving_eval_stacks)
+# only finds *stacks*; an LLM-chosen resource name (e.g. an S3 bucket) can be
+# anything and won't carry that prefix. A resource that outlives its stack's
+# deletion (DeletionPolicy: Retain, or a non-empty S3 bucket CloudFormation
+# can't auto-delete) still carries this tag, which is how
+# _delete_orphaned_eval_resources finds and removes it regardless of name —
+# critical for S3 specifically, since bucket names are globally unique and a
+# single orphan permanently blocks every future run of that same scenario.
+_EVAL_TAG_KEY = "ManagedBy"
+_EVAL_TAG_VALUE = "iac-god-eval"
+
 
 # ---------------------------------------------------------------------------
 # CloudFormation client factory
@@ -164,6 +187,100 @@ def _delete_surviving_eval_stacks(deploy_config: DeployConfig):
         print(f"[Deploy] Stack sweep error: {e}")
 
 
+def _empty_and_delete_bucket(s3_client, bucket_name: str) -> None:
+    """Empty every object version + delete marker, then delete the bucket
+    itself.
+
+    delete_bucket refuses a non-empty bucket, and a versioning-enabled
+    bucket's real contents include every historical version and delete
+    marker, not just the current keys — list_object_versions (not
+    list_objects_v2) is required to actually find and remove all of them.
+    """
+    paginator = s3_client.get_paginator("list_object_versions")
+    for page in paginator.paginate(Bucket=bucket_name):
+        to_delete = [
+            {"Key": v["Key"], "VersionId": v["VersionId"]}
+            for v in page.get("Versions", []) + page.get("DeleteMarkers", [])
+        ]
+        for i in range(0, len(to_delete), 1000):  # delete_objects caps at 1000/call
+            s3_client.delete_objects(
+                Bucket=bucket_name,
+                Delete={"Objects": to_delete[i:i + 1000]},
+            )
+
+    s3_client.delete_bucket(Bucket=bucket_name)
+
+
+def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
+    """Find and delete resources tagged _EVAL_TAG_KEY=_EVAL_TAG_VALUE (see
+    create_stack) that survived their owning stack's deletion.
+
+    Stack-name-prefix matching (_delete_surviving_eval_stacks, which always
+    runs first) only finds *stacks*. A resource an LLM's template caused to
+    outlive its stack — DeletionPolicy: Retain, or an S3 bucket CloudFormation
+    couldn't auto-empty-and-delete — can have any name at all, so only the
+    tag reliably identifies it as ours. Tags live on the resource itself, so
+    they persist even after the owning stack is gone.
+
+    Scoped to S3 buckets: the concrete, high-value case, since bucket names
+    are globally unique and a single orphan permanently blocks every future
+    run of whatever scenario happens to pick that name. Other tagged
+    resource types are reported (for visibility) but not auto-deleted —
+    each AWS service has its own delete semantics, and this project already
+    has broader, manual cleanup tools (nuke-config.yml / aws-nuke,
+    scripts/nuke_vpc_dependencies.py) for the rest.
+    """
+    session = boto3.Session(profile_name=deploy_config.aws_profile)
+    tagging_client = session.client(
+        "resourcegroupstaggingapi", region_name=deploy_config.aws_region
+    )
+
+    try:
+        paginator = tagging_client.get_paginator("get_resources")
+        mappings = []
+        for page in paginator.paginate(
+            TagFilters=[{"Key": _EVAL_TAG_KEY, "Values": [_EVAL_TAG_VALUE]}],
+        ):
+            mappings.extend(page.get("ResourceTagMappingList", []))
+    except Exception as e:
+        print(f"[Deploy] Orphan resource sweep error (non-fatal): {e}")
+        return
+
+    if not mappings:
+        return
+
+    s3_buckets: list[str] = []
+    other: list[str] = []
+    for mapping in mappings:
+        arn = mapping.get("ResourceARN", "")
+        # S3 bucket ARNs: arn:aws:s3:::bucket-name — no account/region
+        # segment, and no further "/" (an object-level ARN would have one).
+        prefix = "arn:aws:s3:::"
+        if arn.startswith(prefix) and "/" not in arn[len(prefix):]:
+            s3_buckets.append(arn[len(prefix):])
+        else:
+            other.append(arn)
+
+    if other:
+        preview = ", ".join(other[:10]) + (" ..." if len(other) > 10 else "")
+        print(
+            f"[Deploy] ⚠️  {len(other)} other tagged resource(s) found with no "
+            f"owning stack (not auto-cleaned, needs a type-specific delete): {preview}"
+        )
+
+    if not s3_buckets:
+        return
+
+    print(f"[Deploy] {len(s3_buckets)} orphaned eval S3 bucket(s) found — emptying and deleting...")
+    s3_client = session.client("s3", region_name=deploy_config.aws_region)
+    for bucket_name in s3_buckets:
+        try:
+            _empty_and_delete_bucket(s3_client, bucket_name)
+            print(f"  [Deploy] Deleted orphaned bucket '{bucket_name}' ✓")
+        except Exception as e:
+            print(f"  [Deploy] Warning: could not delete orphaned bucket '{bucket_name}': {e}")
+
+
 # ---------------------------------------------------------------------------
 # AWS reset helper
 # ---------------------------------------------------------------------------
@@ -171,6 +288,7 @@ def _delete_surviving_eval_stacks(deploy_config: DeployConfig):
 def _reset_aws_state(deploy_config: DeployConfig):
     print("[Deploy] AWS state reset: scanning for prior evaluation stacks...")
     _delete_surviving_eval_stacks(deploy_config)
+    _delete_orphaned_eval_resources(deploy_config)
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +486,58 @@ def _drain_stack_events(
             completed_resources.append(rid)
 
 
+def _fetch_early_validation_failures(cfn_client, stack_id: str) -> list[dict]:
+    """Fetch granular failure detail for CloudFormation's pre-provisioning
+    "early validation" checks (resource-existence checks, hooks, property
+    validation) — introduced Nov 2025.
+
+    These checks run before any resource creation begins, so a failure never
+    produces per-resource StackEvents; describe_stack_events only ever sees
+    one generic stack-level event:
+        "Validation failed with N error(s). Call DescribeEvents to retrieve
+         the full list of issues with resource and property details..."
+    The actual per-issue detail (which resource, which property, why) only
+    exists behind the separate describe_events operation (distinct from
+    describe_stack_events), filtered to failed events.
+
+    Returns a list of {"logical_name": ..., "status_reason": ...} entries,
+    one per underlying validation/hook/provisioning issue, or [] if the API
+    isn't available (older botocore) or returns nothing new.
+    """
+    if not hasattr(cfn_client, "describe_events"):
+        # Older botocore/boto3 without this operation — nothing to enrich with.
+        return []
+
+    try:
+        response = cfn_client.describe_events(
+            StackName=stack_id,
+            Filters={"FailedEvents": True},
+        )
+    except Exception as e:
+        print(f"  [Deploy] describe_events enrichment failed (non-fatal): {e}")
+        return []
+
+    enriched: list[dict] = []
+    for event in response.get("OperationEvents", []):
+        rid = event.get("LogicalResourceId") or "stack"
+        # Prefer the most specific reason available: validation > hook > resource.
+        reason = (
+            event.get("ValidationStatusReason")
+            or event.get("HookStatusReason")
+            or event.get("ResourceStatusReason")
+        )
+        if not reason:
+            continue
+        path = event.get("ValidationPath")
+        if path:
+            reason = f"{reason} (at {path})"
+        entry = {"logical_name": rid, "status_reason": reason}
+        print(f"  [Deploy] early-validation detail — {rid}: {reason}")
+        enriched.append(entry)
+
+    return enriched
+
+
 # ---------------------------------------------------------------------------
 # Custom resource type helper (CloudFormation)
 # ---------------------------------------------------------------------------
@@ -473,22 +643,43 @@ def _validate_terraform_deployment(
         # terraform / tflocal init — with timeout guard (mirrors apply path)
         # ----------------------------------------------------------------
         print(f"[Deploy] Running {tf_bin} init in {tmpdir}...")
-        try:
-            init_result = subprocess.run(
-                [tf_bin, "init", "-backend=false", "-input=false", "-no-color"],
-                cwd=tmpdir, capture_output=True, text=True, timeout=120, env=run_env,
-            )
-        except subprocess.TimeoutExpired:
-            timeout_msg = f"{tf_bin} init timed out after 120s — provider download stalled"
-            deploy_logs.append(timeout_msg)
-            return DeployValidationResult(
-                target=target_name, passed=False, stack_id=None,
-                completed_resources=[],
-                failed_resources=[{"logical_name": "init", "status_reason": timeout_msg}],
-                error_message=timeout_msg,
-                duration_seconds=round(time.time() - start_time, 2),
-                deployment_logs=deploy_logs,
-            )
+        init_result = None
+        for init_attempt in range(1, _TF_INIT_MAX_ATTEMPTS + 1):
+            try:
+                init_result = subprocess.run(
+                    [tf_bin, "init", "-backend=false", "-input=false", "-no-color"],
+                    cwd=tmpdir, capture_output=True, text=True, timeout=120, env=run_env,
+                )
+            except subprocess.TimeoutExpired:
+                timeout_msg = f"{tf_bin} init timed out after 120s — provider download stalled"
+                deploy_logs.append(timeout_msg)
+                return DeployValidationResult(
+                    target=target_name, passed=False, stack_id=None,
+                    completed_resources=[],
+                    failed_resources=[{"logical_name": "init", "status_reason": timeout_msg}],
+                    error_message=timeout_msg,
+                    duration_seconds=round(time.time() - start_time, 2),
+                    deployment_logs=deploy_logs,
+                )
+
+            if init_result.returncode == 0:
+                break
+
+            init_err = (init_result.stderr or init_result.stdout or "")
+            if "text file busy" in init_err.lower() and init_attempt < _TF_INIT_MAX_ATTEMPTS:
+                print(
+                    f"[Deploy] {tf_bin} init hit a transient plugin-cache race (text file busy) "
+                    f"on attempt {init_attempt}/{_TF_INIT_MAX_ATTEMPTS}, "
+                    f"retrying in {_TF_INIT_RETRY_BACKOFF_SECONDS:.0f}s..."
+                )
+                deploy_logs.append(
+                    f"{tf_bin} init: transient plugin-cache race on attempt "
+                    f"{init_attempt}/{_TF_INIT_MAX_ATTEMPTS}, retrying"
+                )
+                time.sleep(_TF_INIT_RETRY_BACKOFF_SECONDS)
+                continue
+
+            break
 
         if init_result.returncode != 0:
             err = (init_result.stderr or init_result.stdout).strip()
@@ -528,8 +719,14 @@ def _validate_terraform_deployment(
         if apply_result.returncode == 0:
             # Parse completed resources from apply output lines like:
             #   aws_vpc.main: Creation complete after 1s [id=vpc-xxx]
+            #   aws_iam_role.this[0]: Creation complete after 1s [id=admin]
+            # NOTE: resource address is matched as "anything but whitespace/colon"
+            # rather than [\w.] so that count/for_each index suffixes such as
+            # [0] or ["admin"] are captured as part of the address (the old
+            # \w.-only pattern silently dropped every indexed resource from
+            # `completed`, undercounting real applies).
             completed: list[str] = re.findall(
-                r'^([\w.]+):\s+Creation complete', apply_output, re.MULTILINE
+                r'^([^\s:]+):\s+Creation complete', apply_output, re.MULTILINE
             )
             print(f"[Deploy] ✅ {tf_bin} apply succeeded ({len(completed)} resources created)")
 
@@ -537,10 +734,43 @@ def _validate_terraform_deployment(
             # terraform / tflocal destroy (cleanup)
             # ----------------------------------------------------------------
             print(f"[Deploy] Cleaning up with {tf_bin} destroy...")
-            subprocess.run(
-                [tf_bin, "destroy", "-auto-approve", "-input=false", "-no-color"],
-                cwd=tmpdir, capture_output=True, text=True, timeout=timeout, env=run_env,
-            )
+            try:
+                subprocess.run(
+                    [tf_bin, "destroy", "-auto-approve", "-input=false", "-no-color"],
+                    cwd=tmpdir, capture_output=True, text=True,
+                    timeout=deploy_config.stack_deletion_timeout, env=run_env,
+                )
+            except subprocess.TimeoutExpired:
+                timeout_msg = (
+                    f"{tf_bin} destroy timed out after {deploy_config.stack_deletion_timeout}s "
+                    f"— resources may still be running in {target_name}; manual cleanup may be required"
+                )
+                print(f"[Deploy] ⚠️  {timeout_msg}")
+                deploy_logs.append(timeout_msg)
+
+            if len(completed) == 0:
+                # `terraform apply` returned 0 and reported no errors, but no
+                # resource ever reached "Creation complete" — this happens when
+                # every resource in the template is gated behind a
+                # `count = var.flag ? 1 : 0` / `for_each = {}` default that
+                # evaluates to zero instances. Terraform legitimately considers
+                # that a successful (no-op) apply, but a template that stands up
+                # nothing is not a deployability pass for benchmark purposes.
+                zero_msg = (
+                    "apply succeeded but created 0 resources — template's "
+                    "resources are likely gated off by a default boolean/"
+                    "count flag; not counted as a deployability pass"
+                )
+                deploy_logs.append(zero_msg)
+                print(f"[Deploy] ⚠️  {tf_bin} apply created 0 resources — not counting as PASS")
+                return DeployValidationResult(
+                    target=target_name, passed=False, stack_id=None,
+                    completed_resources=[],
+                    failed_resources=[{"logical_name": "apply", "status_reason": zero_msg}],
+                    error_message=zero_msg,
+                    duration_seconds=round(time.time() - start_time, 2),
+                    deployment_logs=deploy_logs,
+                )
 
             return DeployValidationResult(
                 target=target_name, passed=True, stack_id=None,
@@ -590,10 +820,20 @@ def _validate_terraform_deployment(
         error_msg = _format_failed_resources(failed_resources)
         print(f"[Deploy] ❌ {tf_bin} apply failed: {error_msg}")
 
-        subprocess.run(
-            [tf_bin, "destroy", "-auto-approve", "-input=false", "-no-color"],
-            cwd=tmpdir, capture_output=True, text=True, timeout=120, env=run_env,
-        )
+        print(f"[Deploy] Cleaning up with {tf_bin} destroy...")
+        try:
+            subprocess.run(
+                [tf_bin, "destroy", "-auto-approve", "-input=false", "-no-color"],
+                cwd=tmpdir, capture_output=True, text=True,
+                timeout=deploy_config.stack_deletion_timeout, env=run_env,
+            )
+        except subprocess.TimeoutExpired:
+            timeout_msg = (
+                f"{tf_bin} destroy timed out after {deploy_config.stack_deletion_timeout}s "
+                f"— resources may still be running in {target_name}; manual cleanup may be required"
+            )
+            print(f"[Deploy] ⚠️  {timeout_msg}")
+            deploy_logs.append(timeout_msg)
 
         return DeployValidationResult(
                 target=target_name, passed=False, stack_id=None,
@@ -721,6 +961,7 @@ def validate_deployment(
             TemplateBody=template,
             OnFailure="DELETE",
             Capabilities=["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM"],
+            Tags=[{"Key": _EVAL_TAG_KEY, "Value": _EVAL_TAG_VALUE}],
         )
         stack_id = create_response["StackId"]
 
@@ -756,9 +997,17 @@ def validate_deployment(
             stack_status = stack["StackStatus"]
 
             if stack_status == "CREATE_COMPLETE":
+                # `completed_resources` includes a stack-level CREATE_COMPLETE
+                # event (LogicalResourceId == stack_name) in addition to any
+                # per-resource events. A template where every resource carries
+                # a false `Condition` reaches CREATE_COMPLETE with that
+                # stack-level event as the *only* entry — i.e. the stack was
+                # created but nothing inside it was. Filter that out before
+                # judging whether anything real was actually deployed.
+                real_completed = [r for r in completed_resources if r != stack_name]
                 print(
                     f"[Deploy] ✅ Stack deployed successfully "
-                    f"({len(completed_resources)} resources)"
+                    f"({len(real_completed)} resources)"
                 )
                 cfn_client.delete_stack(StackName=stack_id)
                 if deploy_config.target == DeployTarget.AWS:
@@ -766,9 +1015,30 @@ def validate_deployment(
                         cfn_client, stack_id, stack_name,
                         deploy_config.stack_deletion_timeout,
                     )
+
+                if len(real_completed) == 0:
+                    # Stack reached CREATE_COMPLETE but created zero actual
+                    # resources — every resource was likely gated behind a
+                    # false `Condition`. Not a deployability pass.
+                    zero_msg = (
+                        "stack reached CREATE_COMPLETE but created 0 resources "
+                        "— template's resources are likely gated off by a "
+                        "false Condition; not counted as a deployability pass"
+                    )
+                    deploy_logs.append(zero_msg)
+                    print(f"[Deploy] ⚠️  Stack created 0 resources — not counting as PASS")
+                    return DeployValidationResult(
+                        target=target_name, passed=False, stack_id=stack_id,
+                        completed_resources=[],
+                        failed_resources=[{"logical_name": "stack", "status_reason": zero_msg}],
+                        error_message=zero_msg,
+                        duration_seconds=round(time.time() - start_time, 2),
+                        deployment_logs=deploy_logs,
+                    )
+
                 return DeployValidationResult(
                     target=target_name, passed=True, stack_id=stack_id,
-                    completed_resources=completed_resources, failed_resources=[],
+                    completed_resources=real_completed, failed_resources=[],
                     error_message=None,
                     duration_seconds=round(time.time() - start_time, 2),
                     deployment_logs=deploy_logs,
@@ -783,6 +1053,20 @@ def validate_deployment(
                     cfn_client, stack_id, seen_events, last_timestamp,
                     failed_resources, completed_resources, deploy_logs,
                 )
+
+                # CloudFormation's pre-provisioning "early validation" checks
+                # (resource-existence, hooks, property validation) never
+                # produce per-resource StackEvents on failure — only a
+                # generic stack-level "Call DescribeEvents..." placeholder.
+                # When that's all _drain_stack_events found, fetch the real
+                # per-issue detail via the separate describe_events operation.
+                if not failed_resources or all(
+                    "describeevents" in (r.get("status_reason") or "").lower()
+                    for r in failed_resources
+                ):
+                    enriched = _fetch_early_validation_failures(cfn_client, stack_id)
+                    if enriched:
+                        failed_resources = enriched
 
                 error_msg = _format_failed_resources(failed_resources)
                 if not failed_resources:

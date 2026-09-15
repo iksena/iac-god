@@ -37,6 +37,10 @@ This is handled automatically; no extra flag is needed.
 from __future__ import annotations
 
 import json
+import time
+
+import anthropic
+import openai
 
 from config import (
     DEFAULT_CONFIG,
@@ -44,6 +48,71 @@ from config import (
     build_openrouter_provider_preferences,
     is_openai_reasoning_model,
 )
+
+
+class EmptyCompletionError(RuntimeError):
+    """Raised when the LLM API returns no usable completion content.
+
+    Carries any token usage the failed attempt still reported (e.g. reasoning
+    tokens burned before the model emitted a blank message), so a retry
+    wrapper can account for it even though the attempt failed.
+    """
+
+    def __init__(self, message: str, usage: dict | None = None):
+        super().__init__(message)
+        self.usage = usage or {}
+
+
+_CONNECTION_ERRORS = (openai.APIConnectionError, anthropic.APIConnectionError)
+# openai.APITimeoutError / anthropic.APITimeoutError both subclass
+# APIConnectionError, so they're covered automatically. Auth/bad-request/
+# rate-limit errors are NOT in this tuple and propagate immediately, unretried.
+
+
+def _merge_usage(usage: dict, wasted: dict) -> dict:
+    merged = dict(usage)
+    for key, value in wasted.items():
+        merged[key] = merged.get(key, 0) + value
+    return merged
+
+
+def _call_with_retry(fn, *, label: str, max_attempts: int, backoff_seconds: float):
+    """Call fn() (a zero-arg closure issuing the exact same request every time)
+    up to max_attempts times, retrying only on connection/timeout errors and
+    EmptyCompletionError. On eventual success, any token usage burned by prior
+    failed attempts is folded into the returned usage dict. Re-raises the last
+    exception unchanged if every attempt fails.
+    """
+    wasted_usage: dict = {}
+    last_exc: Exception | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            content, usage = fn()
+            if wasted_usage:
+                usage = _merge_usage(usage, wasted_usage)
+            return content, usage
+        except EmptyCompletionError as exc:
+            last_exc = exc
+            for key, value in exc.usage.items():
+                wasted_usage[key] = wasted_usage.get(key, 0) + value
+            reason = "empty completion"
+        except _CONNECTION_ERRORS as exc:
+            last_exc = exc
+            reason = "connection error"
+
+        if attempt >= max_attempts:
+            print(f"[LLMClient] {label}: {reason} on attempt {attempt}/{max_attempts}, giving up: {last_exc}")
+            raise last_exc
+
+        delay = backoff_seconds * (2 ** (attempt - 1))
+        print(
+            f"[LLMClient] {label}: {reason} on attempt {attempt}/{max_attempts}, "
+            f"retrying in {delay:.0f}s: {last_exc}"
+        )
+        time.sleep(delay)
+
+    raise last_exc  # unreachable
 
 
 def _build_client():
@@ -98,6 +167,7 @@ def _call_openai_compat(
     *,
     is_reasoning: bool,
     extra_body: dict | None = None,
+    max_tokens_override: int | None = None,
 ) -> tuple[str, dict]:
     """Shared call path for OpenRouter and OpenAI direct (both use openai SDK).
 
@@ -105,51 +175,69 @@ def _call_openai_compat(
       - max_completion_tokens  (not max_tokens)
       - temperature omitted    (API rejects it)
     Standard chat models use the normal max_tokens + temperature params.
+
+    max_tokens_override, when given, replaces DEFAULT_CONFIG.max_tokens for
+    this call only — used by the OpenRouter path to add a separate reasoning
+    token allowance on top of the configured content budget without mutating
+    global config.
     """
     request_kwargs: dict = {
         "model": model,
         "messages": [{"role": "system", "content": system}] + messages,
     }
 
+    max_tokens = max_tokens_override if max_tokens_override is not None else DEFAULT_CONFIG.max_tokens
+
     if is_reasoning:
-        request_kwargs["max_completion_tokens"] = DEFAULT_CONFIG.max_tokens
+        request_kwargs["max_completion_tokens"] = max_tokens
     else:
         request_kwargs["temperature"] = DEFAULT_CONFIG.temperature
-        request_kwargs["max_tokens"] = DEFAULT_CONFIG.max_tokens
+        request_kwargs["max_tokens"] = max_tokens
 
     if extra_body:
         request_kwargs["extra_body"] = extra_body
 
-    r = client.chat.completions.create(**request_kwargs)
+    def _do_call() -> tuple[str, dict]:
+        r = client.chat.completions.create(**request_kwargs)
 
-    choices = getattr(r, "choices", None) or []
-    if not choices:
-        raise RuntimeError(
-            f"OpenAI-compat API returned no choices. "
-            f"model={model} response={_response_debug_blob(r)}"
-        )
+        usage_obj = getattr(r, "usage", None)
+        usage = {
+            "prompt_tokens": _to_int(getattr(usage_obj, "prompt_tokens", 0)),
+            "completion_tokens": _to_int(getattr(usage_obj, "completion_tokens", 0)),
+        }
 
-    message = getattr(choices[0], "message", None)
-    content = getattr(message, "content", None) if message is not None else None
+        choices = getattr(r, "choices", None) or []
+        if not choices:
+            raise EmptyCompletionError(
+                f"OpenAI-compat API returned no choices. "
+                f"model={model} response={_response_debug_blob(r)}",
+                usage=usage,
+            )
 
-    if isinstance(content, list):
-        content = "".join(
-            part.get("text", "") if isinstance(part, dict) else ""
-            for part in content
-        ).strip()
+        message = getattr(choices[0], "message", None)
+        content = getattr(message, "content", None) if message is not None else None
 
-    if not isinstance(content, str) or not content.strip():
-        raise RuntimeError(
-            f"OpenAI-compat API returned empty/non-text content. "
-            f"model={model} response={_response_debug_blob(r)}"
-        )
+        if isinstance(content, list):
+            content = "".join(
+                part.get("text", "") if isinstance(part, dict) else ""
+                for part in content
+            ).strip()
 
-    usage_obj = getattr(r, "usage", None)
-    usage = {
-        "prompt_tokens": _to_int(getattr(usage_obj, "prompt_tokens", 0)),
-        "completion_tokens": _to_int(getattr(usage_obj, "completion_tokens", 0)),
-    }
-    return content, usage
+        if not isinstance(content, str) or not content.strip():
+            raise EmptyCompletionError(
+                f"OpenAI-compat API returned empty/non-text content. "
+                f"model={model} response={_response_debug_blob(r)}",
+                usage=usage,
+            )
+
+        return content, usage
+
+    return _call_with_retry(
+        _do_call,
+        label=f"openai-compat({model})",
+        max_attempts=DEFAULT_CONFIG.llm_retry_max_attempts,
+        backoff_seconds=DEFAULT_CONFIG.llm_retry_backoff_seconds,
+    )
 
 
 def _call_llm_with_history(client, model: str, system: str, messages: list) -> tuple[str, dict]:
@@ -163,12 +251,33 @@ def _call_llm_with_history(client, model: str, system: str, messages: list) -> t
         provider_preferences = build_openrouter_provider_preferences(DEFAULT_CONFIG)
         if provider_preferences:
             extra_body["provider"] = provider_preferences
+        max_tokens_override = None
         if DEFAULT_CONFIG.reasoning_enabled:
-            extra_body["reasoning"] = {"enabled": True}
+            reasoning_opts: dict = {"enabled": True}
+            # OpenRouter rejects requests that set both reasoning.effort and
+            # reasoning.max_tokens ("Only one of ... can be specified"), so
+            # these are mutually exclusive here. max_tokens is the more
+            # precise lever — it directly caps the shared budget rather than
+            # just hinting at it — so it takes precedence when both are
+            # configured (e.g. a stray effort default left over alongside a
+            # newly-added max_tokens override).
+            if DEFAULT_CONFIG.openrouter_reasoning_max_tokens:
+                reasoning_opts["max_tokens"] = DEFAULT_CONFIG.openrouter_reasoning_max_tokens
+                # Reasoning tokens share the same completion budget as content
+                # on OpenRouter, so add the reasoning allowance on top of the
+                # configured max_tokens instead of letting it eat into the
+                # content budget — max_tokens keeps meaning "guaranteed
+                # content budget" even when it's a fixed, research-controlled
+                # parameter that can't itself be changed.
+                max_tokens_override = DEFAULT_CONFIG.max_tokens + DEFAULT_CONFIG.openrouter_reasoning_max_tokens
+            elif DEFAULT_CONFIG.openrouter_reasoning_effort:
+                reasoning_opts["effort"] = DEFAULT_CONFIG.openrouter_reasoning_effort
+            extra_body["reasoning"] = reasoning_opts
         return _call_openai_compat(
             client, model, system, messages,
             is_reasoning=False,  # OpenRouter handles reasoning server-side
             extra_body=extra_body or None,
+            max_tokens_override=max_tokens_override,
         )
 
     if DEFAULT_CONFIG.provider == LLMProvider.OPENAI:
@@ -178,15 +287,33 @@ def _call_llm_with_history(client, model: str, system: str, messages: list) -> t
         )
 
     # Anthropic direct
-    import anthropic as ant  # noqa: F401
-    r = client.messages.create(
-        model=model,
-        system=system,
-        messages=messages,
-        temperature=DEFAULT_CONFIG.temperature,
-        max_tokens=DEFAULT_CONFIG.max_tokens,
+    def _do_call() -> tuple[str, dict]:
+        r = client.messages.create(
+            model=model,
+            system=system,
+            messages=messages,
+            temperature=DEFAULT_CONFIG.temperature,
+            max_tokens=DEFAULT_CONFIG.max_tokens,
+        )
+        usage = {
+            "input_tokens": _to_int(getattr(r.usage, "input_tokens", 0)),
+            "output_tokens": _to_int(getattr(r.usage, "output_tokens", 0)),
+        }
+        blocks = getattr(r, "content", None) or []
+        text = "".join(
+            getattr(b, "text", "") for b in blocks if getattr(b, "type", None) == "text"
+        ).strip()
+        if not text:
+            raise EmptyCompletionError(
+                f"Anthropic API returned empty/non-text content. "
+                f"model={model} response={_response_debug_blob(r)}",
+                usage=usage,
+            )
+        return text, usage
+
+    return _call_with_retry(
+        _do_call,
+        label=f"anthropic({model})",
+        max_attempts=DEFAULT_CONFIG.llm_retry_max_attempts,
+        backoff_seconds=DEFAULT_CONFIG.llm_retry_backoff_seconds,
     )
-    return r.content[0].text, {
-        "input_tokens": r.usage.input_tokens,
-        "output_tokens": r.usage.output_tokens,
-    }

@@ -14,6 +14,15 @@ def _parse_csv_env(value: str | None) -> tuple[str, ...]:
     return tuple(part for part in parts if part)
 
 
+def _parse_optional_int(value: str | None) -> int | None:
+    if not value or not value.strip():
+        return None
+    try:
+        return int(value.strip())
+    except ValueError:
+        return None
+
+
 OPENROUTER_QUANTIZATION_ORDER: tuple[str, ...] = (
     "int4",
     "int8",
@@ -91,10 +100,20 @@ class DeployTarget(Enum):
 class LLMConfig:
     provider: LLMProvider = LLMProvider.OPENROUTER
     # provider: LLMProvider = LLMProvider.OPENAI
-    model: str = "x-ai/grok-4.1-fast"
+    model: str = "deepseek/deepseek-v4-flash"
     temperature: float = 0.0
     max_tokens: int = 8192
     reasoning_enabled: bool = True
+
+    # Retry behavior for transient LLM call failures (connection/timeout
+    # errors and empty/blank completions only — NOT rate limits or auth
+    # errors, and NOT counted against current_iteration).
+    llm_retry_max_attempts: int = field(
+        default_factory=lambda: int(os.getenv("LLM_RETRY_MAX_ATTEMPTS", "4"))
+    )
+    llm_retry_backoff_seconds: float = field(
+        default_factory=lambda: float(os.getenv("LLM_RETRY_BACKOFF_SECONDS", "2.0"))
+    )
 
     # OpenRouter
     openrouter_api_key: str = field(
@@ -106,6 +125,32 @@ class LLMConfig:
     )
     openrouter_min_quantization: str = field(
         default_factory=lambda: os.getenv("OPENROUTER_MIN_QUANTIZATION", "").strip().lower()
+    )
+    # Reasoning effort hint sent as reasoning.effort (e.g. "low", "medium",
+    # "high" — some models also accept "max"/"none"). Empty string means
+    # "not set": reasoning.enabled is still sent per reasoning_enabled, but
+    # without an explicit effort level (provider/model default applies).
+    # Lower effort leaves more of the shared max_tokens completion budget
+    # for actual answer content instead of reasoning — useful for
+    # always-reasoning models (e.g. GLM 5.3 Flash) that can burn the entire
+    # budget on reasoning and return empty content otherwise.
+    openrouter_reasoning_effort: str = field(
+        default_factory=lambda: os.getenv("OPENROUTER_REASONING_EFFORT", "").strip().lower()
+    )
+    # Explicit token budget for reasoning, sent as reasoning.max_tokens.
+    # Support varies by model/provider (OpenRouter documents it for Anthropic,
+    # Gemini, and Alibaba Qwen; not guaranteed for every OpenRouter model —
+    # unsupported models are expected to just ignore it).
+    #
+    # Reasoning tokens share the SAME completion budget as content on
+    # OpenRouter (max_tokens), so setting this does NOT carve reasoning out of
+    # `max_tokens` — it is ADDED on top when building the request, so
+    # `max_tokens` keeps meaning "guaranteed content budget" (useful when
+    # max_tokens is a fixed, research-controlled parameter that can't be
+    # changed) while this field independently bounds how much extra reasoning
+    # the model may spend.
+    openrouter_reasoning_max_tokens: int | None = field(
+        default_factory=lambda: _parse_optional_int(os.getenv("OPENROUTER_REASONING_MAX_TOKENS"))
     )
 
     # Anthropic direct
