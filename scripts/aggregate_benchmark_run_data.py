@@ -310,8 +310,16 @@ def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_
                 "final_template": report.get("final_template", "None"),
             }
 
-            # Extract full deploy_validation_result details
-            deploy_res = report.get("deploy_validation_result", {})
+            # Extract full deploy_validation_result details. `.get(..., {})`
+            # only supplies the default when the key is absent; the harness
+            # baseline runner (baselines/harness_baseline.py) writes an
+            # explicit JSON null here whenever deploy was never required or
+            # never attempted (deploy_target=none, or static validation
+            # failed before deploy was reached) — a key that IS present with
+            # value None, which `.get(..., {})` passes through unchanged and
+            # crashes the very next line. The multi-agent pipeline never hits
+            # this because its GraphState always carries a populated dict.
+            deploy_res = report.get("deploy_validation_result") or {}
             row_extra["deploy_target"] = deploy_res.get("target", "none")
             row_extra["deploy_passed"] = deploy_res.get("passed", False)
             row_extra["deploy_stack_id"] = deploy_res.get("stack_id", "None")
@@ -327,6 +335,7 @@ def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_
 
             # Extract Latest Iteration Errors separated by stage
             rem_history = report.get("remediation_history", [])
+            val_results = report.get("validation_results", [])
             if rem_history:
                 # Total stage error counts with sequential gating:
                 # YAML/CFN_LINT -> SECURITY -> DEPLOYMENT.
@@ -401,9 +410,57 @@ def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_
                         row_extra[f"latest_error_{stage_name}"] = " | ".join(stage_errors)
                     else:
                         row_extra[f"latest_error_{stage_name}"] = "None"
+            elif val_results:
+                # Harness baseline runs (baselines/harness_baseline.py) never
+                # populate remediation_history -- there is no Remediator
+                # agent, by design (see baselines/evaluation.py docstrings).
+                # validation_results is the only per-stage error detail a
+                # harness run has: one flat list of stage results for the
+                # single check that produced the final verdict, not an
+                # iteration history. Treated as a lone pseudo-iteration so
+                # latest_error_<stage> and total_<stage>_errors stay
+                # populated for cross-pipeline comparison instead of
+                # silently disappearing -- "total" here means "this one
+                # check's errors", not a sum across repair attempts the way
+                # it is for benchmark.py (multi-agent) rows.
+                yaml_count = cfn_lint_count = security_count = 0
+                all_yaml_errors, all_cfn_lint_errors, all_security_errors = [], [], []
+
+                for err_stage in val_results:
+                    stage_group = _classify_stage(err_stage.get("stage", "unknown"))
+                    stage_error_count = _count_stage_errors(err_stage)
+                    stage_errors_list = _extract_stage_errors(err_stage)
+
+                    if stage_group == "yaml":
+                        yaml_count += stage_error_count
+                        all_yaml_errors.extend(stage_errors_list)
+                    elif stage_group == "cfn-lint":
+                        cfn_lint_count += stage_error_count
+                        all_cfn_lint_errors.extend(stage_errors_list)
+                    elif stage_group == "security":
+                        security_count += stage_error_count
+                        all_security_errors.extend(stage_errors_list)
+
+                    stage_name = err_stage.get("stage", "unknown")
+                    stage_errors = err_stage.get("errors", [])
+                    if not err_stage.get("passed", True) and stage_errors:
+                        row_extra[f"latest_error_{stage_name}"] = " | ".join(str(e) for e in stage_errors)
+                    else:
+                        row_extra[f"latest_error_{stage_name}"] = "None"
+
+                # Gate later stages if earlier stages have errors, matching
+                # the multi-agent sequencing (YAML/CFN-LINT -> SECURITY).
+                if yaml_count > 0 or cfn_lint_count > 0:
+                    security_count = 0
+
+                row_extra["total_yaml_errors"] = yaml_count
+                row_extra["total_cfn_lint_errors"] = cfn_lint_count
+                row_extra["total_security_errors"] = security_count
+                row_extra["all_yaml_errors"] = " | ".join(all_yaml_errors) if all_yaml_errors else "None"
+                row_extra["all_cfn_lint_errors"] = " | ".join(all_cfn_lint_errors) if all_cfn_lint_errors else "None"
+                row_extra["all_security_errors"] = " | ".join(all_security_errors) if all_security_errors else "None"
 
             # Extract specific validation stage passes (yaml, cfn-lint, etc.)
-            val_results = report.get("validation_results", [])
             for stage_res in val_results:
                 stage_name = stage_res.get("stage", "unknown")
                 row_extra[f"val_stage_{stage_name}_passed"] = stage_res.get("passed", False)
