@@ -778,6 +778,13 @@ def display_results_table(
     greater than this value (e.g. ``min_iterations=10`` for "iterations with
     more than 10").
 
+    When BOTH ``failed_only`` and ``min_iterations`` are given, they combine
+    with OR, not AND: a row is kept if it failed OR it exceeds the iteration
+    threshold (e.g. "all failed scenarios, plus passing scenarios that took
+    more than 10 iterations"). A failed row is always kept regardless of its
+    iteration count. Giving only one of the two filters keeps its original,
+    single-condition behavior.
+
     Prints the table (unless ``print_table=False``) and returns it as a
     markdown string.
     """
@@ -846,10 +853,23 @@ def display_results_table(
         row_passed = bool(passed_bool.loc[idx]) if passed_bool.loc[idx] is not None else False
         row_iterations = iterations.loc[idx]
 
-        if failed_only and row_passed:
-            continue
-        if min_iterations is not None and not (pd.notna(row_iterations) and row_iterations > min_iterations):
-            continue
+        is_failed = not row_passed
+        exceeds_min_iterations = (
+            pd.notna(row_iterations) and row_iterations > min_iterations
+            if min_iterations is not None else None
+        )
+
+        if failed_only and min_iterations is not None:
+            # OR, not AND: show every failed row regardless of its iteration
+            # count, plus any passing row that exceeded the threshold.
+            if not (is_failed or exceeds_min_iterations):
+                continue
+        elif failed_only:
+            if not is_failed:
+                continue
+        elif min_iterations is not None:
+            if not exceeds_min_iterations:
+                continue
 
         rows.append([
             "" if pd.isna(row_number) else int(row_number),
