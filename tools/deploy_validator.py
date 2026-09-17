@@ -211,23 +211,45 @@ def _empty_and_delete_bucket(s3_client, bucket_name: str) -> None:
     s3_client.delete_bucket(Bucket=bucket_name)
 
 
+def _delete_orphaned_ecs_cluster(ecs_client, cluster_arn: str) -> None:
+    """Drain and delete an ECS cluster.
+
+    delete_cluster refuses a cluster with active services or tasks, so those
+    have to be torn down first — mirrors what an LLM-generated ECS stack's
+    own rollback would normally do, since this cluster outlived its stack.
+    """
+    services = ecs_client.list_services(cluster=cluster_arn).get("serviceArns", [])
+    for service_arn in services:
+        ecs_client.update_service(cluster=cluster_arn, service=service_arn, desiredCount=0)
+        ecs_client.delete_service(cluster=cluster_arn, service=service_arn, force=True)
+
+    tasks = ecs_client.list_tasks(cluster=cluster_arn).get("taskArns", [])
+    for task_arn in tasks:
+        ecs_client.stop_task(cluster=cluster_arn, task=task_arn)
+
+    ecs_client.delete_cluster(cluster=cluster_arn)
+
+
 def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
     """Find and delete resources tagged _EVAL_TAG_KEY=_EVAL_TAG_VALUE (see
     create_stack) that survived their owning stack's deletion.
 
     Stack-name-prefix matching (_delete_surviving_eval_stacks, which always
     runs first) only finds *stacks*. A resource an LLM's template caused to
-    outlive its stack — DeletionPolicy: Retain, or an S3 bucket CloudFormation
-    couldn't auto-empty-and-delete — can have any name at all, so only the
-    tag reliably identifies it as ours. Tags live on the resource itself, so
-    they persist even after the owning stack is gone.
+    outlive its stack — DeletionPolicy: Retain, or a resource CloudFormation
+    couldn't auto-delete (a non-empty S3 bucket, an ECS cluster with an
+    orphaned service) — can have any name at all, so only the tag reliably
+    identifies it as ours. Tags live on the resource itself, so they persist
+    even after the owning stack is gone.
 
-    Scoped to S3 buckets: the concrete, high-value case, since bucket names
-    are globally unique and a single orphan permanently blocks every future
-    run of whatever scenario happens to pick that name. Other tagged
-    resource types are reported (for visibility) but not auto-deleted —
-    each AWS service has its own delete semantics, and this project already
-    has broader, manual cleanup tools (nuke-config.yml / aws-nuke,
+    Auto-deleted here: S3 buckets, Cognito user pools, ECS clusters,
+    CloudWatch log groups — each has unambiguous, low-risk delete semantics
+    and a single orphan can permanently block every future run that picks
+    the same name (bucket names and Cognito pool names collide most often).
+    KMS keys and everything else are reported (for visibility) but not
+    auto-deleted — key deletion needs a mandatory waiting period and is too
+    consequential to fire automatically; this project already has broader,
+    manual cleanup tools (nuke-config.yml / aws-nuke,
     scripts/nuke_vpc_dependencies.py) for the rest.
     """
     session = boto3.Session(profile_name=deploy_config.aws_profile)
@@ -250,14 +272,23 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
         return
 
     s3_buckets: list[str] = []
+    cognito_pool_ids: list[str] = []
+    ecs_cluster_arns: list[str] = []
+    log_group_names: list[str] = []
     other: list[str] = []
     for mapping in mappings:
         arn = mapping.get("ResourceARN", "")
         # S3 bucket ARNs: arn:aws:s3:::bucket-name — no account/region
         # segment, and no further "/" (an object-level ARN would have one).
-        prefix = "arn:aws:s3:::"
-        if arn.startswith(prefix) and "/" not in arn[len(prefix):]:
-            s3_buckets.append(arn[len(prefix):])
+        s3_prefix = "arn:aws:s3:::"
+        if arn.startswith(s3_prefix) and "/" not in arn[len(s3_prefix):]:
+            s3_buckets.append(arn[len(s3_prefix):])
+        elif ":cognito-idp:" in arn and "userpool/" in arn:
+            cognito_pool_ids.append(arn.rsplit("/", 1)[1])
+        elif ":ecs:" in arn and ":cluster/" in arn:
+            ecs_cluster_arns.append(arn)
+        elif ":logs:" in arn and ":log-group:" in arn:
+            log_group_names.append(arn.split(":log-group:", 1)[1])
         else:
             other.append(arn)
 
@@ -268,17 +299,49 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
             f"owning stack (not auto-cleaned, needs a type-specific delete): {preview}"
         )
 
-    if not s3_buckets:
-        return
+    if s3_buckets:
+        print(f"[Deploy] {len(s3_buckets)} orphaned eval S3 bucket(s) found — emptying and deleting...")
+        s3_client = session.client("s3", region_name=deploy_config.aws_region)
+        for bucket_name in s3_buckets:
+            try:
+                _empty_and_delete_bucket(s3_client, bucket_name)
+                print(f"  [Deploy] Deleted orphaned bucket '{bucket_name}' ✓")
+            except Exception as e:
+                print(f"  [Deploy] Warning: could not delete orphaned bucket '{bucket_name}': {e}")
 
-    print(f"[Deploy] {len(s3_buckets)} orphaned eval S3 bucket(s) found — emptying and deleting...")
-    s3_client = session.client("s3", region_name=deploy_config.aws_region)
-    for bucket_name in s3_buckets:
-        try:
-            _empty_and_delete_bucket(s3_client, bucket_name)
-            print(f"  [Deploy] Deleted orphaned bucket '{bucket_name}' ✓")
-        except Exception as e:
-            print(f"  [Deploy] Warning: could not delete orphaned bucket '{bucket_name}': {e}")
+    if cognito_pool_ids:
+        print(f"[Deploy] {len(cognito_pool_ids)} orphaned eval Cognito user pool(s) found — deleting...")
+        cognito_client = session.client("cognito-idp", region_name=deploy_config.aws_region)
+        for pool_id in cognito_pool_ids:
+            try:
+                cognito_client.delete_user_pool(UserPoolId=pool_id)
+                print(f"  [Deploy] Deleted orphaned user pool '{pool_id}' ✓")
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+                    continue
+                print(f"  [Deploy] Warning: could not delete orphaned user pool '{pool_id}': {e}")
+
+    if ecs_cluster_arns:
+        print(f"[Deploy] {len(ecs_cluster_arns)} orphaned eval ECS cluster(s) found — draining and deleting...")
+        ecs_client = session.client("ecs", region_name=deploy_config.aws_region)
+        for cluster_arn in ecs_cluster_arns:
+            try:
+                _delete_orphaned_ecs_cluster(ecs_client, cluster_arn)
+                print(f"  [Deploy] Deleted orphaned ECS cluster '{cluster_arn}' ✓")
+            except ClientError as e:
+                print(f"  [Deploy] Warning: could not delete orphaned ECS cluster '{cluster_arn}': {e}")
+
+    if log_group_names:
+        print(f"[Deploy] {len(log_group_names)} orphaned eval CloudWatch log group(s) found — deleting...")
+        logs_client = session.client("logs", region_name=deploy_config.aws_region)
+        for log_group_name in log_group_names:
+            try:
+                logs_client.delete_log_group(logGroupName=log_group_name)
+                print(f"  [Deploy] Deleted orphaned log group '{log_group_name}' ✓")
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+                    continue
+                print(f"  [Deploy] Warning: could not delete orphaned log group '{log_group_name}': {e}")
 
 
 # ---------------------------------------------------------------------------
