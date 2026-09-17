@@ -3,15 +3,20 @@ import os
 import copy
 import time
 import uuid
-import boto3
 import datetime
-import requests
 import subprocess
 import tempfile
 from pathlib import Path
 from botocore.exceptions import ClientError
 from config import DeployConfig, DeployTarget
 from state import DeployValidationResult
+from tools.cfn_utils import build_cfn_client, format_failed_resources, wait_for_stack_deletion
+from tools.deploy_cleanup import (
+    reset_target_state,
+    check_vpc_quota,
+    EVAL_TAG_KEY,
+    EVAL_TAG_VALUE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -34,467 +39,6 @@ _TF_PLUGIN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 # few times rather than failing the whole scenario.
 _TF_INIT_MAX_ATTEMPTS = 3
 _TF_INIT_RETRY_BACKOFF_SECONDS = 3.0
-
-# Applied to every CloudFormation stack this harness creates (and, by CFN's
-# stack-level tag propagation, to every resource within it that supports
-# tagging). Stack-name-prefix matching (see _delete_surviving_eval_stacks)
-# only finds *stacks*; an LLM-chosen resource name (e.g. an S3 bucket) can be
-# anything and won't carry that prefix. A resource that outlives its stack's
-# deletion (DeletionPolicy: Retain, or a non-empty S3 bucket CloudFormation
-# can't auto-delete) still carries this tag, which is how
-# _delete_orphaned_eval_resources finds and removes it regardless of name —
-# critical for S3 specifically, since bucket names are globally unique and a
-# single orphan permanently blocks every future run of that same scenario.
-_EVAL_TAG_KEY = "ManagedBy"
-_EVAL_TAG_VALUE = "iac-god-eval"
-
-
-# ---------------------------------------------------------------------------
-# CloudFormation client factory
-# ---------------------------------------------------------------------------
-
-def _build_cfn_client(deploy_config: DeployConfig):
-    """
-    Build a boto3 CloudFormation client pointed at either LocalStack or real AWS.
-    For LocalStack, endpoint_url redirects all API calls to localhost.
-    """
-    if deploy_config.target == DeployTarget.LOCALSTACK:
-        return boto3.client(
-            "cloudformation",
-            endpoint_url=deploy_config.localstack_endpoint,
-            region_name="us-east-1",
-            aws_access_key_id="test",
-            aws_secret_access_key="test",
-        )
-    else:
-        session = boto3.Session(profile_name=deploy_config.aws_profile)
-        return session.client("cloudformation", region_name=deploy_config.aws_region)
-
-
-# ---------------------------------------------------------------------------
-# Error message formatting
-# ---------------------------------------------------------------------------
-
-def _format_failed_resources(failed_resources: list[dict]) -> str:
-    """
-    Build a human-readable error message that names each responsible resource.
-
-    Format per resource:
-        <LogicalResourceId|resource_address>: <status_reason>
-
-    Multiple failures are joined with " | " so the message stays on one line
-    while still being parseable by the remediator prompt.
-    """
-    if not failed_resources:
-        return "Deployment failed (no resource-level detail available)"
-    parts = [
-        f"{r['logical_name']}: {r['status_reason']}"
-        for r in failed_resources
-        if r.get("logical_name") and r.get("status_reason")
-    ]
-    return " | ".join(parts) if parts else "Deployment failed (unknown reason)"
-
-
-# ---------------------------------------------------------------------------
-# LocalStack reset helpers
-# ---------------------------------------------------------------------------
-
-def _reset_localstack_state(deploy_config: DeployConfig):
-    """
-    Two-phase reset for LocalStack:
-
-    Phase 1 — HTTP state reset
-        POST /_localstack/state/reset clears all service state (S3, IAM, …).
-        This is the broad greenfield reset.
-
-    Phase 2 — Explicit stack deletion
-        The HTTP reset may return 200 while CloudFormation stacks are still
-        present in LocalStack's internal database.  We therefore list every
-        iac-god-eval-* stack and explicitly delete each one through the
-        CloudFormation API before proceeding.
-    """
-    # Phase 1: broad service reset
-    try:
-        resp = requests.post(
-            f"{deploy_config.localstack_endpoint}/_localstack/state/reset",
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            print("[Deploy] LocalStack state reset OK")
-        else:
-            print(f"[Deploy] LocalStack reset returned HTTP {resp.status_code} — proceeding")
-    except requests.exceptions.ConnectionError:
-        print("[Deploy] ⚠️  Could not connect to LocalStack for reset. Is it running?")
-    except Exception as e:
-        print(f"[Deploy] Reset error: {e}")
-
-    time.sleep(deploy_config.localstack_reset_wait)
-
-    # Phase 2: verify + explicitly delete any surviving evaluation stacks
-    _delete_surviving_eval_stacks(deploy_config)
-
-
-def _delete_surviving_eval_stacks(deploy_config: DeployConfig):
-    """
-    List all CloudFormation stacks visible to the target and delete any that
-    carry the iac-god-eval- prefix.
-    """
-    cfn_client = _build_cfn_client(deploy_config)
-    stack_prefix = "iac-god-eval-"
-
-    active_statuses = [
-        "CREATE_IN_PROGRESS", "CREATE_FAILED", "CREATE_COMPLETE",
-        "ROLLBACK_IN_PROGRESS", "ROLLBACK_FAILED", "ROLLBACK_COMPLETE",
-        "DELETE_IN_PROGRESS", "DELETE_FAILED",
-        "UPDATE_IN_PROGRESS", "UPDATE_COMPLETE_CLEANUP_IN_PROGRESS",
-        "UPDATE_COMPLETE", "UPDATE_ROLLBACK_IN_PROGRESS",
-        "UPDATE_ROLLBACK_FAILED", "UPDATE_ROLLBACK_COMPLETE_CLEANUP_IN_PROGRESS",
-        "UPDATE_ROLLBACK_COMPLETE", "REVIEW_IN_PROGRESS",
-        "IMPORT_IN_PROGRESS", "IMPORT_COMPLETE",
-        "IMPORT_ROLLBACK_IN_PROGRESS", "IMPORT_ROLLBACK_FAILED",
-        "IMPORT_ROLLBACK_COMPLETE",
-    ]
-
-    try:
-        paginator = cfn_client.get_paginator("list_stacks")
-        targets: list[tuple[str, str]] = []
-
-        for page in paginator.paginate(StackStatusFilter=active_statuses):
-            for summary in page.get("StackSummaries", []):
-                name = summary.get("StackName", "")
-                sid = summary.get("StackId", "")
-                if name.startswith(stack_prefix) and sid:
-                    targets.append((sid, name))
-
-        if not targets:
-            print("[Deploy] No surviving evaluation stacks found — clean slate confirmed")
-            return
-
-        print(f"[Deploy] Deleting {len(targets)} surviving evaluation stack(s)...")
-        for stack_id, stack_name in targets:
-            print(f"  [Deploy] Deleting '{stack_name}'...")
-            try:
-                cfn_client.delete_stack(StackName=stack_id)
-                _wait_for_stack_deletion(
-                    cfn_client, stack_id, stack_name,
-                    deploy_config.stack_deletion_timeout,
-                )
-                print(f"  [Deploy] '{stack_name}' deleted ✓")
-            except Exception as e:
-                print(f"  [Deploy] Warning: could not delete '{stack_name}': {e}")
-
-    except Exception as e:
-        print(f"[Deploy] Stack sweep error: {e}")
-
-
-def _empty_and_delete_bucket(s3_client, bucket_name: str) -> None:
-    """Empty every object version + delete marker, then delete the bucket
-    itself.
-
-    delete_bucket refuses a non-empty bucket, and a versioning-enabled
-    bucket's real contents include every historical version and delete
-    marker, not just the current keys — list_object_versions (not
-    list_objects_v2) is required to actually find and remove all of them.
-    """
-    paginator = s3_client.get_paginator("list_object_versions")
-    for page in paginator.paginate(Bucket=bucket_name):
-        to_delete = [
-            {"Key": v["Key"], "VersionId": v["VersionId"]}
-            for v in page.get("Versions", []) + page.get("DeleteMarkers", [])
-        ]
-        for i in range(0, len(to_delete), 1000):  # delete_objects caps at 1000/call
-            s3_client.delete_objects(
-                Bucket=bucket_name,
-                Delete={"Objects": to_delete[i:i + 1000]},
-            )
-
-    s3_client.delete_bucket(Bucket=bucket_name)
-
-
-def _delete_orphaned_ecs_cluster(ecs_client, cluster_arn: str) -> None:
-    """Drain and delete an ECS cluster.
-
-    delete_cluster refuses a cluster with active services or tasks, so those
-    have to be torn down first — mirrors what an LLM-generated ECS stack's
-    own rollback would normally do, since this cluster outlived its stack.
-    """
-    services = ecs_client.list_services(cluster=cluster_arn).get("serviceArns", [])
-    for service_arn in services:
-        ecs_client.update_service(cluster=cluster_arn, service=service_arn, desiredCount=0)
-        ecs_client.delete_service(cluster=cluster_arn, service=service_arn, force=True)
-
-    tasks = ecs_client.list_tasks(cluster=cluster_arn).get("taskArns", [])
-    for task_arn in tasks:
-        ecs_client.stop_task(cluster=cluster_arn, task=task_arn)
-
-    ecs_client.delete_cluster(cluster=cluster_arn)
-
-
-def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
-    """Find and delete resources tagged _EVAL_TAG_KEY=_EVAL_TAG_VALUE (see
-    create_stack) that survived their owning stack's deletion.
-
-    Stack-name-prefix matching (_delete_surviving_eval_stacks, which always
-    runs first) only finds *stacks*. A resource an LLM's template caused to
-    outlive its stack — DeletionPolicy: Retain, or a resource CloudFormation
-    couldn't auto-delete (a non-empty S3 bucket, an ECS cluster with an
-    orphaned service) — can have any name at all, so only the tag reliably
-    identifies it as ours. Tags live on the resource itself, so they persist
-    even after the owning stack is gone.
-
-    Auto-deleted here: S3 buckets, Cognito user pools, ECS clusters,
-    CloudWatch log groups — each has unambiguous, low-risk delete semantics
-    and a single orphan can permanently block every future run that picks
-    the same name (bucket names and Cognito pool names collide most often).
-    KMS keys and everything else are reported (for visibility) but not
-    auto-deleted — key deletion needs a mandatory waiting period and is too
-    consequential to fire automatically; this project already has broader,
-    manual cleanup tools (nuke-config.yml / aws-nuke,
-    scripts/nuke_vpc_dependencies.py) for the rest.
-    """
-    session = boto3.Session(profile_name=deploy_config.aws_profile)
-    tagging_client = session.client(
-        "resourcegroupstaggingapi", region_name=deploy_config.aws_region
-    )
-
-    try:
-        paginator = tagging_client.get_paginator("get_resources")
-        mappings = []
-        for page in paginator.paginate(
-            TagFilters=[{"Key": _EVAL_TAG_KEY, "Values": [_EVAL_TAG_VALUE]}],
-        ):
-            mappings.extend(page.get("ResourceTagMappingList", []))
-    except Exception as e:
-        print(f"[Deploy] Orphan resource sweep error (non-fatal): {e}")
-        return
-
-    if not mappings:
-        return
-
-    s3_buckets: list[str] = []
-    cognito_pool_ids: list[str] = []
-    ecs_cluster_arns: list[str] = []
-    log_group_names: list[str] = []
-    other: list[str] = []
-    for mapping in mappings:
-        arn = mapping.get("ResourceARN", "")
-        # S3 bucket ARNs: arn:aws:s3:::bucket-name — no account/region
-        # segment, and no further "/" (an object-level ARN would have one).
-        s3_prefix = "arn:aws:s3:::"
-        if arn.startswith(s3_prefix) and "/" not in arn[len(s3_prefix):]:
-            s3_buckets.append(arn[len(s3_prefix):])
-        elif ":cognito-idp:" in arn and "userpool/" in arn:
-            cognito_pool_ids.append(arn.rsplit("/", 1)[1])
-        elif ":ecs:" in arn and ":cluster/" in arn:
-            ecs_cluster_arns.append(arn)
-        elif ":logs:" in arn and ":log-group:" in arn:
-            log_group_names.append(arn.split(":log-group:", 1)[1])
-        else:
-            other.append(arn)
-
-    if other:
-        preview = ", ".join(other[:10]) + (" ..." if len(other) > 10 else "")
-        print(
-            f"[Deploy] ⚠️  {len(other)} other tagged resource(s) found with no "
-            f"owning stack (not auto-cleaned, needs a type-specific delete): {preview}"
-        )
-
-    if s3_buckets:
-        print(f"[Deploy] {len(s3_buckets)} orphaned eval S3 bucket(s) found — emptying and deleting...")
-        s3_client = session.client("s3", region_name=deploy_config.aws_region)
-        for bucket_name in s3_buckets:
-            try:
-                _empty_and_delete_bucket(s3_client, bucket_name)
-                print(f"  [Deploy] Deleted orphaned bucket '{bucket_name}' ✓")
-            except Exception as e:
-                print(f"  [Deploy] Warning: could not delete orphaned bucket '{bucket_name}': {e}")
-
-    if cognito_pool_ids:
-        print(f"[Deploy] {len(cognito_pool_ids)} orphaned eval Cognito user pool(s) found — deleting...")
-        cognito_client = session.client("cognito-idp", region_name=deploy_config.aws_region)
-        for pool_id in cognito_pool_ids:
-            try:
-                cognito_client.delete_user_pool(UserPoolId=pool_id)
-                print(f"  [Deploy] Deleted orphaned user pool '{pool_id}' ✓")
-            except ClientError as e:
-                if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
-                    continue
-                print(f"  [Deploy] Warning: could not delete orphaned user pool '{pool_id}': {e}")
-
-    if ecs_cluster_arns:
-        print(f"[Deploy] {len(ecs_cluster_arns)} orphaned eval ECS cluster(s) found — draining and deleting...")
-        ecs_client = session.client("ecs", region_name=deploy_config.aws_region)
-        for cluster_arn in ecs_cluster_arns:
-            try:
-                _delete_orphaned_ecs_cluster(ecs_client, cluster_arn)
-                print(f"  [Deploy] Deleted orphaned ECS cluster '{cluster_arn}' ✓")
-            except ClientError as e:
-                print(f"  [Deploy] Warning: could not delete orphaned ECS cluster '{cluster_arn}': {e}")
-
-    if log_group_names:
-        print(f"[Deploy] {len(log_group_names)} orphaned eval CloudWatch log group(s) found — deleting...")
-        logs_client = session.client("logs", region_name=deploy_config.aws_region)
-        for log_group_name in log_group_names:
-            try:
-                logs_client.delete_log_group(logGroupName=log_group_name)
-                print(f"  [Deploy] Deleted orphaned log group '{log_group_name}' ✓")
-            except ClientError as e:
-                if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
-                    continue
-                print(f"  [Deploy] Warning: could not delete orphaned log group '{log_group_name}': {e}")
-
-
-# ---------------------------------------------------------------------------
-# AWS reset helper
-# ---------------------------------------------------------------------------
-
-def _reset_aws_state(deploy_config: DeployConfig):
-    print("[Deploy] AWS state reset: scanning for prior evaluation stacks...")
-    _delete_surviving_eval_stacks(deploy_config)
-    _delete_orphaned_eval_resources(deploy_config)
-
-
-# ---------------------------------------------------------------------------
-# Unified reset dispatcher
-# ---------------------------------------------------------------------------
-
-def _reset_target_state(deploy_config: DeployConfig):
-    """Run pre-deployment state reset for the configured target."""
-    if deploy_config.target == DeployTarget.LOCALSTACK:
-        _reset_localstack_state(deploy_config)
-    elif deploy_config.target == DeployTarget.AWS:
-        _reset_aws_state(deploy_config)
-
-
-# ---------------------------------------------------------------------------
-# Stack deletion waiter
-# ---------------------------------------------------------------------------
-
-def _wait_for_stack_deletion(cfn_client, stack_id: str, stack_name: str, timeout: int):
-    start = time.time()
-    while time.time() - start < timeout:
-        try:
-            stack = cfn_client.describe_stacks(StackName=stack_id)["Stacks"][0]
-            status = stack["StackStatus"]
-            if status == "DELETE_COMPLETE":
-                return
-            if status in ("ROLLBACK_COMPLETE", "CREATE_FAILED", "DELETE_FAILED"):
-                try:
-                    cfn_client.delete_stack(StackName=stack_name)
-                except Exception:
-                    pass
-        except ClientError as e:
-            if "does not exist" in str(e):
-                return
-            raise
-        time.sleep(3)
-
-    print(f"[Deploy] ⚠️  Stack deletion timed out after {timeout}s")
-    try:
-        current_status = cfn_client.describe_stacks(StackName=stack_id)["Stacks"][0]["StackStatus"]
-        print(f"[Deploy] Stack '{stack_name}' left in status: {current_status}")
-        if current_status == "DELETE_FAILED":
-            cfn_client.delete_stack(StackName=stack_id, RetainResources=[])
-            print(f"[Deploy] Issued force-delete for '{stack_name}'")
-    except ClientError as e:
-        if "does not exist" in str(e):
-            return
-        print(f"[Deploy] Could not force-delete '{stack_name}': {e}")
-
-
-# ---------------------------------------------------------------------------
-# VPC quota pre-flight
-# ---------------------------------------------------------------------------
-
-def _delete_all_non_default_vpcs(deploy_config: DeployConfig) -> None:
-    if deploy_config.target != DeployTarget.AWS:
-        return
-
-    session = boto3.Session(profile_name=deploy_config.aws_profile)
-    ec2 = session.client("ec2", region_name=deploy_config.aws_region)
-
-    try:
-        earlier_vpcs = ec2.describe_vpcs()["Vpcs"]
-    except Exception as e:
-        print(f"[Deploy] VPC pre-flight: could not list VPCs: {e}")
-        return
-
-    non_default = [v for v in earlier_vpcs if not v.get("IsDefault", False)]
-    if not non_default:
-        return
-
-    print(f"[Deploy] VPC pre-flight: deleting {len(non_default)} non-default VPC(s) to free quota...")
-
-    for vpc in non_default:
-        vpc_id = vpc["VpcId"]
-        try:
-            igws = ec2.describe_internet_gateways(
-                Filters=[{"Name": "attachment.vpc-id", "Values": [vpc_id]}]
-            )["InternetGateways"]
-            for igw in igws:
-                igw_id = igw["InternetGatewayId"]
-                ec2.detach_internet_gateway(InternetGatewayId=igw_id, VpcId=vpc_id)
-                ec2.delete_internet_gateway(InternetGatewayId=igw_id)
-
-            subnets = ec2.describe_subnets(
-                Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
-            )["Subnets"]
-            for subnet in subnets:
-                ec2.delete_subnet(SubnetId=subnet["SubnetId"])
-
-            rts = ec2.describe_route_tables(
-                Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
-            )["RouteTables"]
-            for rt in rts:
-                is_main = any(
-                    assoc.get("Main") for assoc in rt.get("Associations", [])
-                )
-                if not is_main:
-                    ec2.delete_route_table(RouteTableId=rt["RouteTableId"])
-
-            sgs = ec2.describe_security_groups(
-                Filters=[{"Name": "vpc-id", "Values": [vpc_id]}]
-            )["SecurityGroups"]
-            for sg in sgs:
-                if sg["GroupName"] != "default":
-                    ec2.delete_security_group(GroupId=sg["GroupId"])
-
-            ec2.delete_vpc(VpcId=vpc_id)
-            print(f"[Deploy] VPC pre-flight: deleted {vpc_id} ✓")
-
-        except Exception as e:
-            print(f"[Deploy] VPC pre-flight: could not fully delete {vpc_id}: {e}")
-
-
-def _check_vpc_quota(deploy_config: DeployConfig) -> str | None:
-    if deploy_config.target != DeployTarget.AWS:
-        return None
-
-    session = boto3.Session(profile_name=deploy_config.aws_profile)
-    ec2 = session.client("ec2", region_name=deploy_config.aws_region)
-
-    try:
-        vpcs = ec2.describe_vpcs()["Vpcs"]
-        quota = 5
-        try:
-            sq = session.client("service-quotas", region_name=deploy_config.aws_region)
-            quota = int(
-                sq.get_service_quota(
-                    ServiceCode="vpc", QuotaCode="L-F678F1CE"
-                )["Quota"]["Value"]
-            )
-        except Exception:
-            pass
-
-        if len(vpcs) >= quota:
-            return (
-                f"VPC_QUOTA_EXHAUSTED: {len(vpcs)}/{quota} VPCs in use in "
-                f"{deploy_config.aws_region} — free VPC quota before deploying"
-            )
-    except Exception:
-        pass
-
-    return None
 
 
 # ---------------------------------------------------------------------------
@@ -852,7 +396,7 @@ def _validate_terraform_deployment(
         #   <detail>
         # ----------------------------------------------------------------
         failed_resources: list[dict] = []
-        error_blocks = re.split(r'(?m)^\u2502?\s*Error:', apply_output)
+        error_blocks = re.split(r'(?m)^│?\s*Error:', apply_output)
         resource_re = re.compile(
             r'on \S+\.tf line (\d+), in resource "([^"]+)"\s+"([^"]+)"'
         )
@@ -880,7 +424,7 @@ def _validate_terraform_deployment(
             raw_err = (apply_result.stderr or apply_result.stdout or "unknown apply error").strip()
             failed_resources = [{"logical_name": "apply", "status_reason": raw_err[:500]}]
 
-        error_msg = _format_failed_resources(failed_resources)
+        error_msg = format_failed_resources(failed_resources)
         print(f"[Deploy] ❌ {tf_bin} apply failed: {error_msg}")
 
         print(f"[Deploy] Cleaning up with {tf_bin} destroy...")
@@ -940,6 +484,10 @@ def validate_deployment(
       - VPC quota pre-flight for real AWS
       - Creates CFN stack with CREATE_FAILED event polling
       - Deletes stack on success/failure
+
+    All pre-deployment reset/cleanup (LocalStack reset, orphaned-resource
+    sweep, VPC quota pre-flight) lives in tools/deploy_cleanup.py — see
+    reset_target_state() and cleanup_scenario_resources() there.
     """
     if deploy_config.target == DeployTarget.NONE:
         return DeployValidationResult(
@@ -959,7 +507,7 @@ def validate_deployment(
     # Terraform deploy path
     # ------------------------------------------------------------------
     if iac_type == "terraform":
-        _reset_target_state(deploy_config)
+        reset_target_state(deploy_config)
         return _validate_terraform_deployment(template, deploy_config, start_time)
 
     # ------------------------------------------------------------------
@@ -968,10 +516,11 @@ def validate_deployment(
     target_name = deploy_config.target.value
     deploy_logs: list[str] = []
 
-    _reset_target_state(deploy_config)
+    reset_target_state(deploy_config)
 
-    _delete_all_non_default_vpcs(deploy_config)
-    vpc_error = _check_vpc_quota(deploy_config)
+    # VPC pre-flight (ALB/NAT/RDS/ElastiCache/EFS-aware) runs inside
+    # reset_target_state -> _reset_aws_state for both CFN and Terraform.
+    vpc_error = check_vpc_quota(deploy_config)
     if vpc_error:
         deploy_logs.append(vpc_error)
         failed = [{"logical_name": "VPC", "status_reason": vpc_error}]
@@ -981,12 +530,12 @@ def validate_deployment(
             stack_id=None,
             completed_resources=[],
             failed_resources=failed,
-            error_message=_format_failed_resources(failed),
+            error_message=format_failed_resources(failed),
             duration_seconds=round(time.time() - start_time, 2),
             deployment_logs=deploy_logs,
         )
 
-    cfn_client = _build_cfn_client(deploy_config)
+    cfn_client = build_cfn_client(deploy_config)
     stack_name = f"iac-god-eval-{uuid.uuid4().hex[:8]}"
 
     try:
@@ -1007,7 +556,7 @@ def validate_deployment(
                 {"logical_name": name, "status_reason": "Required parameter has no Default value"}
                 for name in required_params
             ]
-            error_msg = _format_failed_resources(failed)
+            error_msg = format_failed_resources(failed)
             deploy_logs.append(error_msg)
             return DeployValidationResult(
                 target=target_name, passed=False, stack_id=None,
@@ -1024,7 +573,7 @@ def validate_deployment(
             TemplateBody=template,
             OnFailure="DELETE",
             Capabilities=["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM"],
-            Tags=[{"Key": _EVAL_TAG_KEY, "Value": _EVAL_TAG_VALUE}],
+            Tags=[{"Key": EVAL_TAG_KEY, "Value": EVAL_TAG_VALUE}],
         )
         stack_id = create_response["StackId"]
 
@@ -1074,7 +623,7 @@ def validate_deployment(
                 )
                 cfn_client.delete_stack(StackName=stack_id)
                 if deploy_config.target == DeployTarget.AWS:
-                    _wait_for_stack_deletion(
+                    wait_for_stack_deletion(
                         cfn_client, stack_id, stack_name,
                         deploy_config.stack_deletion_timeout,
                     )
@@ -1131,12 +680,12 @@ def validate_deployment(
                     if enriched:
                         failed_resources = enriched
 
-                error_msg = _format_failed_resources(failed_resources)
+                error_msg = format_failed_resources(failed_resources)
                 if not failed_resources:
                     error_msg = f"Stack entered terminal status: {stack_status}"
 
                 print(f"[Deploy] ❌ Deployment failed: {error_msg}")
-                _wait_for_stack_deletion(
+                wait_for_stack_deletion(
                     cfn_client, stack_id, stack_name,
                     deploy_config.stack_deletion_timeout,
                 )
@@ -1169,7 +718,7 @@ def validate_deployment(
                     )
                 )
                 stall_failed = [{"logical_name": last_active_resource, "status_reason": stall_reason}]
-                stall_msg = _format_failed_resources(stall_failed)
+                stall_msg = format_failed_resources(stall_failed)
                 deploy_logs.append(f"STALL_DETECTED: {stall_msg}")
                 print(f"[Deploy] ⚠️  Stall detected: {stall_msg}")
 
@@ -1177,7 +726,7 @@ def validate_deployment(
                     cfn_client.delete_stack(StackName=stack_id)
                     print(f"[Deploy] Cancellation requested for stalled stack '{stack_name}'")
                     if deploy_config.target == DeployTarget.AWS:
-                        _wait_for_stack_deletion(
+                        wait_for_stack_deletion(
                             cfn_client, stack_id, stack_name,
                             deploy_config.stack_deletion_timeout,
                         )
@@ -1227,7 +776,7 @@ def validate_deployment(
             cfn_client.delete_stack(StackName=stack_id)
             print(f"[Deploy] Cancellation requested for timed-out stack '{stack_name}'")
             if deploy_config.target == DeployTarget.AWS:
-                _wait_for_stack_deletion(
+                wait_for_stack_deletion(
                     cfn_client, stack_id, stack_name,
                     deploy_config.stack_deletion_timeout,
                 )
@@ -1237,7 +786,7 @@ def validate_deployment(
         return DeployValidationResult(
             target=target_name, passed=False, stack_id=stack_id,
             completed_resources=completed_resources, failed_resources=timeout_failed,
-            error_message=_format_failed_resources(timeout_failed) if timeout_failed else timeout_msg,
+            error_message=format_failed_resources(timeout_failed) if timeout_failed else timeout_msg,
             duration_seconds=round(time.time() - start_time, 2),
             deployment_logs=deploy_logs,
         )

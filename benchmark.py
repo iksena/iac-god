@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from main import run_pipeline
+from config import DeployConfig, DeployTarget
+from tools.deploy_cleanup import cleanup_scenario_resources
 
 
 @dataclass
@@ -341,6 +343,21 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
             print(f"[Benchmark] Row {row_number} failed: {error_message}")
             print("[Benchmark] Traceback:")
             print(error_traceback)
+        finally:
+            # Scenario-finished cleanup: this row has now either passed or
+            # exhausted config.max_iterations (or raised) -- run once here,
+            # regardless of outcome, rather than relying solely on the next
+            # row's per-iteration pre-flight reset to eventually catch
+            # anything real AWS resources this row left running. A no-op for
+            # LOCALSTACK/NONE targets. See cleanup_scenario_resources()'s
+            # docstring in tools/deploy_validator.py for why this is a
+            # separate stage from the per-iteration reset rather than a
+            # duplicate of it.
+            try:
+                cleanup_scenario_resources(DeployConfig(target=DeployTarget(config.deploy_target)))
+            except Exception as cleanup_exc:
+                print(f"[Benchmark] Warning: scenario-finished cleanup for row {row_number} "
+                      f"failed unexpectedly: {cleanup_exc}")
 
         rows_out.append(result_payload)
 
