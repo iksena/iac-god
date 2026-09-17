@@ -28,6 +28,7 @@ def run_pipeline(
     openrouter_reasoning_effort: str | None = None,
     openrouter_reasoning_max_tokens: int | None = None,
     disable_reasoning: bool = False,
+    max_tokens: int | None = None,
     skip_security: bool = False,
     iac_type: str = "cloudformation",
 ) -> GraphState:
@@ -65,6 +66,13 @@ def run_pipeline(
             DEFAULT_CONFIG.openrouter_reasoning_max_tokens = openrouter_reasoning_max_tokens
         if disable_reasoning:
             DEFAULT_CONFIG.reasoning_enabled = False
+
+    # max_tokens is shared across all providers (OpenRouter, OpenAI direct,
+    # and Anthropic direct all read DEFAULT_CONFIG.max_tokens — see
+    # agents/llm_client.py), so it's set unconditionally here rather than
+    # inside a provider-specific branch above.
+    if max_tokens is not None:
+        DEFAULT_CONFIG.max_tokens = max_tokens
 
     # ------------------------------------------------------------------
     # Configure deploy target
@@ -201,16 +209,35 @@ if __name__ == "__main__":
         "--disable-reasoning",
         action="store_true",
         help=(
-            "Fully disable reasoning (sends reasoning.enabled=false to OpenRouter), "
-            "instead of trying to bound it via --openrouter-reasoning-effort / "
-            "--openrouter-reasoning-max-tokens. Some models (e.g. GLM 5.3 Flash) "
-            "ignore effort/max_tokens hints entirely and can burn the whole "
-            "completion budget on reasoning regardless, leaving empty content — "
-            "confirmed for deepseek/deepseek-v4-flash by direct testing: effort "
-            "and max_tokens hints were both ignored (reasoning consumed the full "
-            "budget either way), but reasoning.enabled=false reliably produced "
-            "real content. Not every model can disable reasoning at all (also "
-            "confirmed for GLM 5.3 Flash) — test before relying on this."
+            "Fully disable reasoning (omits the reasoning field entirely, which "
+            "tested identically to sending reasoning.enabled=false). Some models "
+            "don't reliably bound their reasoning length via --openrouter-"
+            "reasoning-effort / --openrouter-reasoning-max-tokens — confirmed for "
+            "deepseek/deepseek-v4-flash by direct testing, both hints were "
+            "ignored — and if reasoning runs longer than --max-tokens, it gets cut "
+            "off mid-thought with nothing left over for an actual answer "
+            "(empty content). Two ways to avoid that: disable reasoning entirely "
+            "(this flag — a guarantee, but loses reasoning's benefits), or raise "
+            "--max-tokens generously so reasoning has room to finish on its own "
+            "before hitting the ceiling (cost-neutral when not needed, since "
+            "billing is by actual tokens used — but not a hard guarantee, since "
+            "reasoning length varies by prompt). Not every model can disable "
+            "reasoning at all (confirmed for GLM 5.3 Flash, which cannot) — "
+            "test before relying on this."
+        ),
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Max output tokens for the base content budget (default 8192, "
+            "config.py's LLMConfig.max_tokens). On OpenRouter this is shared "
+            "with reasoning (see --disable-reasoning) — raising it gives "
+            "reasoning-heavy models room to finish thinking before hitting the "
+            "ceiling, instead of getting cut off with no content produced. Not "
+            "additive with --openrouter-reasoning-max-tokens; that flag still "
+            "adds its own value on top of whatever this is set to."
         ),
     )
     parser.add_argument(
@@ -262,6 +289,7 @@ if __name__ == "__main__":
             openrouter_reasoning_effort=args.openrouter_reasoning_effort,
             openrouter_reasoning_max_tokens=args.openrouter_reasoning_max_tokens,
             disable_reasoning=args.disable_reasoning,
+            max_tokens=args.max_tokens,
             skip_security=args.skip_security,
             iac_type=args.iac_type,
         )
