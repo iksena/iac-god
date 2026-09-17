@@ -211,19 +211,28 @@ def nuke_ecs(session, region, actions):
         actions.do(f"delete ECS cluster {cluster_arn}", lambda c=cluster_arn: ecs.delete_cluster(cluster=c))
 
 
+def nuke_one_eks_cluster(eks, cluster_name: str, actions) -> None:
+    """Delete nodegroups + Fargate profiles for one named EKS cluster, then
+    the cluster itself. Factored out of nuke_eks() so a caller that already
+    knows the exact cluster name it wants gone (e.g. a tag-scoped orphan
+    sweep) doesn't have to enumerate every cluster in the account/region to
+    reach it."""
+    for ng in paginate(eks, "list_nodegroups", "nodegroups", clusterName=cluster_name):
+        actions.do(f"delete EKS nodegroup {cluster_name}/{ng}",
+                   lambda c=cluster_name, n=ng: eks.delete_nodegroup(clusterName=c, nodegroupName=n))
+    for fp in paginate(eks, "list_fargate_profiles", "fargateProfileNames", clusterName=cluster_name):
+        actions.do(f"delete EKS fargate profile {cluster_name}/{fp}",
+                   lambda c=cluster_name, f=fp: eks.delete_fargate_profile(clusterName=c, fargateProfileName=f))
+    # Nodegroups/Fargate profiles take minutes to actually disappear, so this
+    # cluster delete will often fail on the first pass -- that's expected;
+    # re-running the script later picks it back up.
+    actions.do(f"delete EKS cluster {cluster_name}", lambda c=cluster_name: eks.delete_cluster(name=c))
+
+
 def nuke_eks(session, region, actions):
     eks = session.client("eks", region_name=region)
     for cluster_name in paginate(eks, "list_clusters", "clusters"):
-        for ng in paginate(eks, "list_nodegroups", "nodegroups", clusterName=cluster_name):
-            actions.do(f"delete EKS nodegroup {cluster_name}/{ng}",
-                       lambda c=cluster_name, n=ng: eks.delete_nodegroup(clusterName=c, nodegroupName=n))
-        for fp in paginate(eks, "list_fargate_profiles", "fargateProfileNames", clusterName=cluster_name):
-            actions.do(f"delete EKS fargate profile {cluster_name}/{fp}",
-                       lambda c=cluster_name, f=fp: eks.delete_fargate_profile(clusterName=c, fargateProfileName=f))
-        # Nodegroups/Fargate profiles take minutes to actually disappear, so this
-        # cluster delete will often fail on the first pass -- that's expected;
-        # re-running the script later picks it back up.
-        actions.do(f"delete EKS cluster {cluster_name}", lambda c=cluster_name: eks.delete_cluster(name=c))
+        nuke_one_eks_cluster(eks, cluster_name, actions)
 
 
 def nuke_lambda(session, region, actions):

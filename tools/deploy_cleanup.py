@@ -50,6 +50,7 @@ from scripts.nuke_vpc_dependencies import (
     nuke_vpn,
     nuke_egress_only_igw,
     nuke_one_kms_key,
+    nuke_one_eks_cluster,
 )
 
 # Applied to every CloudFormation stack this harness creates (and, by CFN's
@@ -166,17 +167,65 @@ def _empty_and_delete_bucket(s3_client, bucket_name: str) -> None:
     bucket's real contents include every historical version and delete
     marker, not just the current keys — list_object_versions (not
     list_objects_v2) is required to actually find and remove all of them.
+
+    Two unlock steps run first, both confirmed necessary against real
+    accounts (see scripts/nuke_vpc_dependencies.py's unlock_locked_s3_buckets
+    for the same logic applied account-wide):
+      1. A resource-based bucket policy with an explicit Deny (a common
+         pattern for a Terraform-state-style bucket a template creates to
+         "protect" itself) overrides even the bucket owner's IAM Allow and
+         blocks ListBucketVersions/DeleteObject/DeleteBucket outright --
+         cleared here before anything else is attempted. If the Deny also
+         covers DeleteBucketPolicy, this fails too and everything below it
+         will keep failing; that specific bucket needs the AWS account's
+         true root user or an AWS Support case, not a script.
+      2. Object Lock legal holds / GOVERNANCE-mode retention likewise block
+         DeleteObject regardless of IAM permissions; COMPLIANCE-mode has no
+         bypass by design and is left alone until it expires.
     """
+    try:
+        s3_client.delete_bucket_policy(Bucket=bucket_name)
+    except ClientError:
+        pass  # no policy, or its own Deny blocks removing it -- either way, proceed and see
+
+    try:
+        lock_enabled = s3_client.get_object_lock_configuration(Bucket=bucket_name).get(
+            "ObjectLockConfiguration", {}
+        ).get("ObjectLockEnabled") == "Enabled"
+    except ClientError:
+        lock_enabled = False
+
     paginator = s3_client.get_paginator("list_object_versions")
     for page in paginator.paginate(Bucket=bucket_name):
-        to_delete = [
-            {"Key": v["Key"], "VersionId": v["VersionId"]}
-            for v in page.get("Versions", []) + page.get("DeleteMarkers", [])
-        ]
+        versions = page.get("Versions", []) + page.get("DeleteMarkers", [])
+        if lock_enabled:
+            for v in versions:
+                key, version_id = v["Key"], v["VersionId"]
+                try:
+                    hold = s3_client.get_object_legal_hold(Bucket=bucket_name, Key=key, VersionId=version_id)
+                    if hold.get("LegalHold", {}).get("Status") == "ON":
+                        s3_client.put_object_legal_hold(
+                            Bucket=bucket_name, Key=key, VersionId=version_id,
+                            LegalHold={"Status": "OFF"},
+                        )
+                except ClientError:
+                    pass
+                try:
+                    mode = s3_client.get_object_retention(
+                        Bucket=bucket_name, Key=key, VersionId=version_id
+                    ).get("Retention", {}).get("Mode")
+                except ClientError:
+                    mode = None
+                if mode == "COMPLIANCE":
+                    continue  # no bypass by design -- leave it, deletion below will just fail on it
+
+        to_delete = [{"Key": v["Key"], "VersionId": v["VersionId"]} for v in versions]
         for i in range(0, len(to_delete), 1000):  # delete_objects caps at 1000/call
+            batch = to_delete[i:i + 1000]
             s3_client.delete_objects(
                 Bucket=bucket_name,
-                Delete={"Objects": to_delete[i:i + 1000]},
+                Delete={"Objects": batch},
+                BypassGovernanceRetention=lock_enabled,
             )
 
     s3_client.delete_bucket(Bucket=bucket_name)
@@ -247,6 +296,11 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
     secret_arns: list[str] = []
     webacl_arns: list[str] = []
     codebuild_project_names: list[str] = []
+    eks_cluster_names: list[str] = []
+    codecommit_repo_names: list[str] = []
+    sns_topic_arns: list[str] = []
+    vpc_flow_log_ids: list[str] = []
+    cognito_identity_pool_ids: list[str] = []
     other: list[str] = []
     for mapping in mappings:
         arn = mapping.get("ResourceARN", "")
@@ -275,6 +329,20 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
             webacl_arns.append(arn)
         elif ":codebuild:" in arn and ":project/" in arn:
             codebuild_project_names.append(arn.rsplit("/", 1)[1])
+        elif ":eks:" in arn and ":cluster/" in arn:
+            eks_cluster_names.append(arn.rsplit("/", 1)[1])
+        elif ":codecommit:" in arn:
+            # arn:aws:codecommit:<region>:<account>:<repo-name> — the repo
+            # name is the whole final colon-separated segment, no slash.
+            codecommit_repo_names.append(arn.rsplit(":", 1)[1])
+        elif ":sns:" in arn:
+            sns_topic_arns.append(arn)
+        elif ":ec2:" in arn and ":vpc-flow-log/" in arn:
+            vpc_flow_log_ids.append(arn.rsplit("/", 1)[1])
+        elif ":cognito-identity:" in arn and "identitypool/" in arn:
+            cognito_identity_pool_ids.append(arn.rsplit("/", 1)[1])
+        elif ":cloudformation:" in arn and ":stack/" in arn:
+            pass  # the stack itself -- already handled by _delete_surviving_eval_stacks
         else:
             other.append(arn)
 
@@ -423,6 +491,65 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
         nuke_actions = _NukeActions(dry_run=False)
         for key_id in kms_key_ids:
             nuke_one_kms_key(kms_client, key_id, nuke_actions, caller_arn)
+
+    if eks_cluster_names:
+        # An EKS cluster's control-plane ENI blocks its VPC's subnet/security
+        # group/VPC deletion with DependencyViolation until the cluster is
+        # gone -- and nodegroup/cluster deletion is asynchronous (minutes),
+        # so this first pass will typically only *start* the teardown; the
+        # VPC pre-flight below will keep failing on this cluster's ENI until
+        # a later cleanup pass (next iteration, or a manual
+        # scripts/nuke_vpc_dependencies.py re-run) finds it already gone.
+        print(f"[Deploy] {len(eks_cluster_names)} orphaned eval EKS cluster(s) found — deleting "
+              f"nodegroups/Fargate profiles then the cluster (async — may need a follow-up pass)...")
+        eks_client = session.client("eks", region_name=deploy_config.aws_region)
+        eks_actions = _NukeActions(dry_run=False)
+        for cluster_name in eks_cluster_names:
+            nuke_one_eks_cluster(eks_client, cluster_name, eks_actions)
+
+    if codecommit_repo_names:
+        print(f"[Deploy] {len(codecommit_repo_names)} orphaned eval CodeCommit repo(s) found — deleting...")
+        cc_client = session.client("codecommit", region_name=deploy_config.aws_region)
+        for repo_name in codecommit_repo_names:
+            try:
+                cc_client.delete_repository(repositoryName=repo_name)
+                print(f"  [Deploy] Deleted orphaned CodeCommit repo '{repo_name}' ✓")
+            except ClientError as e:
+                print(f"  [Deploy] Warning: could not delete orphaned CodeCommit repo '{repo_name}': {e}")
+
+    if sns_topic_arns:
+        print(f"[Deploy] {len(sns_topic_arns)} orphaned eval SNS topic(s) found — deleting...")
+        sns_client = session.client("sns", region_name=deploy_config.aws_region)
+        for topic_arn in sns_topic_arns:
+            try:
+                sns_client.delete_topic(TopicArn=topic_arn)
+                print(f"  [Deploy] Deleted orphaned SNS topic '{topic_arn}' ✓")
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "NotFound":
+                    continue
+                print(f"  [Deploy] Warning: could not delete orphaned SNS topic '{topic_arn}': {e}")
+
+    if vpc_flow_log_ids:
+        print(f"[Deploy] {len(vpc_flow_log_ids)} orphaned eval VPC flow log(s) found — deleting...")
+        ec2_client = session.client("ec2", region_name=deploy_config.aws_region)
+        try:
+            ec2_client.delete_flow_logs(FlowLogIds=vpc_flow_log_ids)
+            print(f"  [Deploy] Deleted {len(vpc_flow_log_ids)} orphaned VPC flow log(s) ✓")
+        except ClientError as e:
+            print(f"  [Deploy] Warning: could not delete orphaned VPC flow log(s): {e}")
+
+    if cognito_identity_pool_ids:
+        print(f"[Deploy] {len(cognito_identity_pool_ids)} orphaned eval Cognito identity pool(s) "
+              f"found — deleting...")
+        ci_client = session.client("cognito-identity", region_name=deploy_config.aws_region)
+        for pool_id in cognito_identity_pool_ids:
+            try:
+                ci_client.delete_identity_pool(IdentityPoolId=pool_id)
+                print(f"  [Deploy] Deleted orphaned identity pool '{pool_id}' ✓")
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+                    continue
+                print(f"  [Deploy] Warning: could not delete orphaned identity pool '{pool_id}': {e}")
 
 
 # ---------------------------------------------------------------------------

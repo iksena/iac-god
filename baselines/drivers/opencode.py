@@ -91,7 +91,7 @@ class OpenCodeDriver:
             # mirrors ClaudeCodeDriver's native_auth path, which likewise
             # leaves model selection to the harness's own configuration.
             return config.harness_model
-        return f"openrouter/{config.model}"
+        return f"{config.provider_name}/{config.model}"
 
     def _write_config(
         self,
@@ -167,13 +167,19 @@ class OpenCodeDriver:
         }
 
         if not config.native_auth:
-            cfg["small_model"] = f"openrouter/{model_id}"
+            cfg["small_model"] = f"{config.provider_name}/{model_id}"
             cfg["provider"] = {
-                "openrouter": {
+                config.provider_name: {
                     "npm": "@ai-sdk/openai-compatible",
-                    "name": "OpenRouter",
+                    "name": config.provider_name,
                     "options": {
                         "baseURL": base_url,
+                        # OpenCode's AI SDK adapter wants a non-empty apiKey
+                        # even against a backend that ignores it (a local
+                        # Ollama daemon: the real auth lives in its own
+                        # `ollama signin` session, not this token — see
+                        # --api-key-env's help text for the dummy-value
+                        # convention that covers that case).
                         "apiKey": f"{{env:{config.api_key_env}}}",
                     },
                     "models": {model_id: {"name": model_id}},
