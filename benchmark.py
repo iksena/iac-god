@@ -88,17 +88,26 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
 
     filtered_row_count = 0
     if config.exclude_completed_csv is not None:
+        # match_ground_truth_path=True unconditionally: these filters only
+        # ever keep/skip rows already selected above (by --rows or
+        # --start-row/--max-rows) — they never add rows from outside that
+        # set, so ground_truth_path matching can't "pull in" anything
+        # unintended even when --rows is used. row_number is not stable
+        # across dataset revisions (exclude_completed_csv may have been
+        # built from a differently-numbered dataset than --dataset), so
+        # ground_truth_path should be preferred whenever available,
+        # regardless of whether --rows narrowed the row set.
         if config.retry_errors:
             selected_rows, filtered_row_count = _filter_rows_in_failed_csv(
                 selected_rows,
                 config.exclude_completed_csv,
-                match_ground_truth_path=not bool(config.rows),
+                match_ground_truth_path=True,
             )
         else:
             selected_rows, filtered_row_count = _filter_rows_not_in_completed_csv(
                 selected_rows,
                 config.exclude_completed_csv,
-                match_ground_truth_path=not bool(config.rows),
+                match_ground_truth_path=True,
             )
     rows_after_filter = len(selected_rows)
 
