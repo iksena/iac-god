@@ -29,6 +29,7 @@ class BenchmarkConfig:
     openrouter_min_quantization: str | None
     openrouter_reasoning_effort: str | None
     openrouter_reasoning_max_tokens: int | None
+    disable_reasoning: bool
     skip_security: bool
     iac_type: str           # "cloudformation" | "terraform"
 
@@ -263,6 +264,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 openrouter_min_quantization=config.openrouter_min_quantization,
                 openrouter_reasoning_effort=config.openrouter_reasoning_effort,
                 openrouter_reasoning_max_tokens=config.openrouter_reasoning_max_tokens,
+                disable_reasoning=config.disable_reasoning,
                 skip_security=config.skip_security,
                 iac_type=config.iac_type,
             )
@@ -528,6 +530,22 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--disable-reasoning",
+        action="store_true",
+        help=(
+            "Fully disable reasoning (sends reasoning.enabled=false to OpenRouter), "
+            "instead of trying to bound it via --openrouter-reasoning-effort / "
+            "--openrouter-reasoning-max-tokens. Some models (e.g. GLM 5.3 Flash) "
+            "ignore effort/max_tokens hints entirely and can burn the whole "
+            "completion budget on reasoning regardless, leaving empty content — "
+            "confirmed for deepseek/deepseek-v4-flash by direct testing: effort "
+            "and max_tokens hints were both ignored (reasoning consumed the full "
+            "budget either way), but reasoning.enabled=false reliably produced "
+            "real content. Not every model can disable reasoning at all (also "
+            "confirmed for GLM 5.3 Flash) — test before relying on this."
+        ),
+    )
+    parser.add_argument(
         "--deploy-target",
         choices=["none", "localstack", "aws"],
         default="localstack",
@@ -591,6 +609,7 @@ if __name__ == "__main__":
         openrouter_min_quantization=args.openrouter_min_quantization,
         openrouter_reasoning_effort=args.openrouter_reasoning_effort,
         openrouter_reasoning_max_tokens=args.openrouter_reasoning_max_tokens,
+        disable_reasoning=args.disable_reasoning,
         skip_security=args.skip_security,
         iac_type=args.iac_type,
     )

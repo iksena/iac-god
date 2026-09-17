@@ -145,6 +145,7 @@ class BaselineConfig:
     openrouter_min_quantization: str | None = None
     openrouter_reasoning_effort: str | None = None
     openrouter_reasoning_max_tokens: int | None = None
+    disable_reasoning: bool = False
     skip_security: bool = False
 
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
