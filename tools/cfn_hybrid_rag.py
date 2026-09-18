@@ -107,6 +107,13 @@ _CONTEXT_MODE: str = os.getenv("CHROMA_CONTEXT_MODE", "compact").lower().strip()
 # Maximum number of optional properties shown per resource in the Neo4j block.
 _MAX_OPTIONAL_PROPS = 10
 
+# Reciprocal Rank Fusion smoothing constant (Cormack, Clarke & Buettcher, 2009).
+# Fuses per-query ChromaDB rankings into one relevance signal used to order
+# resources/properties in the assembled context, replacing the previous
+# first-query-wins dedup and alphabetical resource ordering. 60 is the
+# standard RRF constant; not tuned for this corpus.
+_RRF_K = 60
+
 
 # ---------------------------------------------------------------------------
 # Chunk parsing — structured property data extracted from raw chunk text
@@ -123,6 +130,8 @@ class _PropertyChunk:
     update_type: str = ""
     is_example: bool = False
     raw_text: str = ""  # fallback for unparseable chunks
+    prop_key: str = ""  # dedup/RRF identity, set at append time in _semantic_search
+    rrf_score: float = 0.0  # fused across all queries that surfaced prop_key
 
 
 _FIELD_RE = re.compile(
@@ -176,6 +185,7 @@ class _ResourceChunks:
     properties: list[_PropertyChunk] = field(default_factory=list)
     examples: list[str] = field(default_factory=list)
     raw_chunks: list[str] = field(default_factory=list)  # unparseable fallbacks
+    rrf_score: float = 0.0  # max RRF contribution across all this resource's hits
 
 
 def _format_resource_block_compact(rc: _ResourceChunks) -> str:
@@ -422,12 +432,22 @@ def _semantic_search(
         )
 
         seen_prop_keys: set[str] = set()
+        rrf_scores: dict[str, float] = defaultdict(float)
         kept = 0
         dropped = 0
         filtered_out = 0
 
         for query in retrieval_queries:
             scored_chunks = vectorstore.similarity_search_with_score(query, k=3)
+
+            # Filter first (distance threshold, then resource scope), THEN
+            # rank among survivors only — a chunk rejected by resource_filter
+            # must not consume a rank position that biases the RRF score of
+            # whatever legitimately took its place. Scoping and ranking are
+            # deliberately kept as two separate stages: resource_filter is a
+            # hard admit/reject gate (never softened into a rank penalty),
+            # RRF only ever operates on what already survived that gate.
+            survivors: list[tuple] = []
             for chunk, score in scored_chunks:
                 if score > CHROMA_DISTANCE_THRESHOLD:
                     dropped += 1
@@ -443,20 +463,35 @@ def _semantic_search(
                     filtered_out += 1
                     continue
 
+                survivors.append((chunk, meta, res))
+
+            for rank, (chunk, meta, res) in enumerate(survivors, start=1):
+                rrf_contribution = 1.0 / (_RRF_K + rank)
+
                 prop = meta.get("property_name", "") or meta.get("property_path", "")
                 prop_key = (
                     f"{res}.{prop}" if prop
                     else f"{res}::content::{hash(chunk.page_content)}"
                 )
+                # Accumulate this query's contribution regardless of whether
+                # prop_key has already been stored — RRF sums reciprocal rank
+                # across every query that surfaced an item, not just its best
+                # appearance. Only the content-storage step below is
+                # first-occurrence-wins (the underlying chunk is the same
+                # document no matter which query found it).
+                rrf_scores[prop_key] += rrf_contribution
+
+                rc = resource_chunks[res]
+                rc.name = rc.name or res
+                rc.rrf_score = max(rc.rrf_score, rrf_contribution)
+
                 if prop_key in seen_prop_keys:
                     continue
                 seen_prop_keys.add(prop_key)
 
-                rc = resource_chunks[res]
-                rc.name = rc.name or res
-
                 if _CONTEXT_MODE == "compact":
                     parsed = _parse_chunk(chunk.page_content, meta)
+                    parsed.prop_key = prop_key
                     if parsed.is_example:
                         rc.examples.append(parsed.raw_text)
                     elif parsed.property_name:
@@ -476,6 +511,25 @@ def _semantic_search(
                 kept += 1
                 if res and res != "_unknown":
                     found_resources.add(res)
+
+        # Resolve final RRF scores now that every query has been processed
+        # (a property first stored while handling query #1 may still gain
+        # contributions from query #5), then order properties within each
+        # resource: required properties always lead — that distinction is
+        # load-bearing for repair (a missing required property fails
+        # deployment; a missing optional one does not) — with RRF score
+        # breaking ties among properties of equal required-ness, and
+        # property name as a final deterministic tiebreak.
+        for rc in resource_chunks.values():
+            for p in rc.properties:
+                p.rrf_score = rrf_scores.get(p.prop_key, 0.0)
+            rc.properties.sort(
+                key=lambda p: (
+                    0 if str(p.required).lower() == "true" else 1,
+                    -p.rrf_score,
+                    p.property_name,
+                )
+            )
 
         print(
             f"[RAG Tool] Stage 1: {kept + dropped + filtered_out} chunks retrieved, "
@@ -581,7 +635,14 @@ def _assemble_retrieval_context(
 
     if resource_chunks:
         resource_sections: list[str] = []
-        for resource_name, rc in sorted(resource_chunks.items()):
+        # Ordered by fused RRF relevance (descending), not alphabetically —
+        # a resource every query's top hit agreed on should not print after
+        # an unrelated one purely because its name sorts earlier. Resource
+        # name is a deterministic tiebreak, not the primary key.
+        for resource_name, rc in sorted(
+            resource_chunks.items(),
+            key=lambda item: (-item[1].rrf_score, item[0]),
+        ):
             if _CONTEXT_MODE == "compact":
                 block = _format_resource_block_compact(rc)
             else:
