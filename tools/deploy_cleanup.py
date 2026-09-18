@@ -368,6 +368,14 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
         cognito_client = session.client("cognito-idp", region_name=deploy_config.aws_region)
         for pool_id in cognito_pool_ids:
             try:
+                # DeletionProtection ('ACTIVE'/'INACTIVE') blocks delete_user_pool
+                # outright, same as ALB deletion protection -- clear it first.
+                try:
+                    pool = cognito_client.describe_user_pool(UserPoolId=pool_id)["UserPool"]
+                    if pool.get("DeletionProtection") == "ACTIVE":
+                        cognito_client.update_user_pool(UserPoolId=pool_id, DeletionProtection="INACTIVE")
+                except ClientError:
+                    pass  # couldn't check/clear -- still attempt the delete below
                 cognito_client.delete_user_pool(UserPoolId=pool_id)
                 print(f"  [Deploy] Deleted orphaned user pool '{pool_id}' ✓")
             except ClientError as e:
