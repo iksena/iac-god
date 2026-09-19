@@ -148,6 +148,51 @@ yet — if one turns up, the proxy will need an OpenAI-shaped (`/v1/chat/complet
 streaming-JSON) parsing path before it can help OpenCode runs the way it
 already helps Claude Code runs.
 
+### Alternate backends: Ollama
+
+`--base-url`/`--api-key-env` were already generic (not OpenRouter-specific),
+and `--provider-name` (default `openrouter`, opencode only — sets the
+`provider.<name>` key, `small_model` prefix and `--model <name>/<model>` arg;
+claude_code routes purely on `--base-url`/`--api-key-env` and ignores it)
+makes both drivers work unmodified against a local Ollama daemon, which
+exposes both shapes natively: an OpenAI-compatible endpoint at
+`http://localhost:11434/v1` for OpenCode, and an Anthropic-compatible one at
+the bare `http://localhost:11434` for Claude Code. `ollama signin` handles
+real auth on the daemon's side — the token this repo passes as
+`ANTHROPIC_AUTH_TOKEN`/the OpenCode provider's `apiKey` is a dummy value
+Ollama's own docs use literally (`ollama`); `--api-key-env` just needs to
+point at any env var set to that string.
+
+```bash
+export OLLAMA_DUMMY_KEY=ollama  # any dummy value; the real auth is ollama signin
+
+python -m baselines.harness_baseline \
+  --harness opencode --iac-type cloudformation \
+  --dataset data/cfn_eval_benchmark_real_aws.csv \
+  --model deepseek-v4-flash:cloud \
+  --base-url http://localhost:11434 --api-key-env OLLAMA_DUMMY_KEY \
+  --provider-name ollama --no-retry-proxy \
+  --deploy-target none --max-rows 10
+```
+
+`--no-retry-proxy` is required, not optional, against a non-OpenRouter
+`--base-url` — `retry_proxy.py` forwards every request to a hardcoded
+`UPSTREAM_BASE = "https://openrouter.ai/api"`, and left on it would silently
+redirect every call to OpenRouter instead of Ollama with no error. `main()`
+refuses to start otherwise (checks for `"openrouter"` in `--base-url`).
+
+Verified before wiring this up, not assumed: a 40-call burst (20 through each
+harness's actual endpoint shape, `deepseek-v4-flash:cloud`, realistic
+`max_tokens`) came back 40/40 healthy — 0 empty completions, against
+OpenRouter's confirmed ~7% on the Anthropic-compat path alone (see the
+root-cause section below). Single backend, no multi-provider roulette, so
+`--no-retry-proxy` isn't a loss here — it's the whole reason the proxy
+exists in the first place going away by construction. Not yet swept at
+scale, so treat as promising rather than confirmed at the sample sizes the
+OpenRouter numbers below rest on. `deepseek-v4-flash:cloud` needs Ollama
+Cloud usage credits or a subscription on the signed-in account, separate
+from `ollama signin` itself.
+
 ## What is held constant, and what is not
 
 **Held constant** — `run_all_validators()` is the exact function

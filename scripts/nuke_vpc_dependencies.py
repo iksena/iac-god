@@ -211,19 +211,28 @@ def nuke_ecs(session, region, actions):
         actions.do(f"delete ECS cluster {cluster_arn}", lambda c=cluster_arn: ecs.delete_cluster(cluster=c))
 
 
+def nuke_one_eks_cluster(eks, cluster_name: str, actions) -> None:
+    """Delete nodegroups + Fargate profiles for one named EKS cluster, then
+    the cluster itself. Factored out of nuke_eks() so a caller that already
+    knows the exact cluster name it wants gone (e.g. a tag-scoped orphan
+    sweep) doesn't have to enumerate every cluster in the account/region to
+    reach it."""
+    for ng in paginate(eks, "list_nodegroups", "nodegroups", clusterName=cluster_name):
+        actions.do(f"delete EKS nodegroup {cluster_name}/{ng}",
+                   lambda c=cluster_name, n=ng: eks.delete_nodegroup(clusterName=c, nodegroupName=n))
+    for fp in paginate(eks, "list_fargate_profiles", "fargateProfileNames", clusterName=cluster_name):
+        actions.do(f"delete EKS fargate profile {cluster_name}/{fp}",
+                   lambda c=cluster_name, f=fp: eks.delete_fargate_profile(clusterName=c, fargateProfileName=f))
+    # Nodegroups/Fargate profiles take minutes to actually disappear, so this
+    # cluster delete will often fail on the first pass -- that's expected;
+    # re-running the script later picks it back up.
+    actions.do(f"delete EKS cluster {cluster_name}", lambda c=cluster_name: eks.delete_cluster(name=c))
+
+
 def nuke_eks(session, region, actions):
     eks = session.client("eks", region_name=region)
     for cluster_name in paginate(eks, "list_clusters", "clusters"):
-        for ng in paginate(eks, "list_nodegroups", "nodegroups", clusterName=cluster_name):
-            actions.do(f"delete EKS nodegroup {cluster_name}/{ng}",
-                       lambda c=cluster_name, n=ng: eks.delete_nodegroup(clusterName=c, nodegroupName=n))
-        for fp in paginate(eks, "list_fargate_profiles", "fargateProfileNames", clusterName=cluster_name):
-            actions.do(f"delete EKS fargate profile {cluster_name}/{fp}",
-                       lambda c=cluster_name, f=fp: eks.delete_fargate_profile(clusterName=c, fargateProfileName=f))
-        # Nodegroups/Fargate profiles take minutes to actually disappear, so this
-        # cluster delete will often fail on the first pass -- that's expected;
-        # re-running the script later picks it back up.
-        actions.do(f"delete EKS cluster {cluster_name}", lambda c=cluster_name: eks.delete_cluster(name=c))
+        nuke_one_eks_cluster(eks, cluster_name, actions)
 
 
 def nuke_lambda(session, region, actions):
@@ -506,6 +515,67 @@ def nuke_egress_only_igw(session, region, actions):
 # rather than by an attachment. aws-nuke has no notion of fixing these itself.
 # ---------------------------------------------------------------------------
 
+def nuke_one_kms_key(kms, key_id: str, actions, caller_arn: str | None) -> None:
+    """Schedule deletion of a single KMS key, self-granting via PutKeyPolicy
+    and retrying once if the key's own resource policy denies
+    kms:ScheduleKeyDeletion to the caller. Factored out of nuke_kms_keys() so
+    a caller that already knows the exact key ID it wants gone (e.g. a
+    tag-scoped orphan sweep) doesn't have to enumerate every key in the
+    account to reach it."""
+    try:
+        meta = kms.describe_key(KeyId=key_id)["KeyMetadata"]
+    except Exception as e:
+        log(f"describe KMS key {key_id} ✗ ({e})")
+        return
+    if meta.get("KeyManager") != "CUSTOMER" or meta.get("KeyState") in ("PendingDeletion", "PendingReplicaDeletion"):
+        return
+
+    if actions.dry_run:
+        # Whether AWS would deny kms:ScheduleKeyDeletion (requiring the
+        # self-grant retry below) can only be known by actually calling
+        # it -- which a dry run must never do. Report the plan generically
+        # instead of guessing which branch a live run would take.
+        log(f"[dry-run] would schedule deletion of KMS key {key_id} (7-day window; if its key "
+            f"policy denies that, would self-grant via PutKeyPolicy and retry once)")
+        return
+
+    try:
+        kms.schedule_key_deletion(KeyId=key_id, PendingWindowInDays=7)
+        log(f"schedule deletion of KMS key {key_id} (7-day window) ✓")
+        return
+    except botocore.exceptions.ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "AccessDeniedException" or not caller_arn:
+            log(f"schedule deletion of KMS key {key_id} ✗ ({e.response.get('Error', {}).get('Code', e)})")
+            return
+    except Exception as e:
+        log(f"schedule deletion of KMS key {key_id} ✗ ({e})")
+        return
+
+    # Denied by the key's own resource policy, not by IAM -- try
+    # self-granting via PutKeyPolicy (only works if PutKeyPolicy itself
+    # is allowed by the current policy) and retry once. Both calls are
+    # real AWS mutations, only reachable once the dry-run guard above has
+    # already returned -- i.e. never during --dry-run.
+    log(f"  KMS key {key_id} denies kms:ScheduleKeyDeletion to {caller_arn} -- "
+        f"attempting to self-grant via its key policy")
+    try:
+        policy_doc = json.loads(kms.get_key_policy(KeyId=key_id, PolicyName="default")["Policy"])
+        policy_doc.setdefault("Statement", []).append({
+            "Sid": "NukeVpcDependenciesSelfGrant",
+            "Effect": "Allow",
+            "Principal": {"AWS": caller_arn},
+            "Action": "kms:*",
+            "Resource": "*",
+        })
+        kms.put_key_policy(KeyId=key_id, PolicyName="default", Policy=json.dumps(policy_doc))
+        log(f"grant {caller_arn} kms:* on key {key_id} via key policy ✓")
+        kms.schedule_key_deletion(KeyId=key_id, PendingWindowInDays=7)
+        log(f"schedule deletion of KMS key {key_id} (7-day window) ✓")
+    except Exception as e:
+        log(f"  could not self-grant on KMS key {key_id}: {e} -- this key needs the AWS account's "
+            f"actual root user (not just an IAM admin) to fix its key policy before it can be deleted.")
+
+
 def nuke_kms_keys(session, region, actions):
     kms = session.client("kms", region_name=region)
     try:
@@ -515,58 +585,7 @@ def nuke_kms_keys(session, region, actions):
         caller_arn = None
 
     for key in paginate(kms, "list_keys", "Keys"):
-        key_id = key["KeyId"]
-        try:
-            meta = kms.describe_key(KeyId=key_id)["KeyMetadata"]
-        except Exception:
-            continue
-        if meta.get("KeyManager") != "CUSTOMER" or meta.get("KeyState") in ("PendingDeletion", "PendingReplicaDeletion"):
-            continue
-
-        if actions.dry_run:
-            # Whether AWS would deny kms:ScheduleKeyDeletion (requiring the
-            # self-grant retry below) can only be known by actually calling
-            # it -- which a dry run must never do. Report the plan generically
-            # instead of guessing which branch a live run would take.
-            log(f"[dry-run] would schedule deletion of KMS key {key_id} (7-day window; if its key "
-                f"policy denies that, would self-grant via PutKeyPolicy and retry once)")
-            continue
-
-        try:
-            kms.schedule_key_deletion(KeyId=key_id, PendingWindowInDays=7)
-            log(f"schedule deletion of KMS key {key_id} (7-day window) ✓")
-            continue
-        except botocore.exceptions.ClientError as e:
-            if e.response.get("Error", {}).get("Code") != "AccessDeniedException" or not caller_arn:
-                log(f"schedule deletion of KMS key {key_id} ✗ ({e.response.get('Error', {}).get('Code', e)})")
-                continue
-        except Exception as e:
-            log(f"schedule deletion of KMS key {key_id} ✗ ({e})")
-            continue
-
-        # Denied by the key's own resource policy, not by IAM -- try
-        # self-granting via PutKeyPolicy (only works if PutKeyPolicy itself
-        # is allowed by the current policy) and retry once. Both calls are
-        # real AWS mutations, only reachable once the dry-run guard above has
-        # already returned -- i.e. never during --dry-run.
-        log(f"  KMS key {key_id} denies kms:ScheduleKeyDeletion to {caller_arn} -- "
-            f"attempting to self-grant via its key policy")
-        try:
-            policy_doc = json.loads(kms.get_key_policy(KeyId=key_id, PolicyName="default")["Policy"])
-            policy_doc.setdefault("Statement", []).append({
-                "Sid": "NukeVpcDependenciesSelfGrant",
-                "Effect": "Allow",
-                "Principal": {"AWS": caller_arn},
-                "Action": "kms:*",
-                "Resource": "*",
-            })
-            kms.put_key_policy(KeyId=key_id, PolicyName="default", Policy=json.dumps(policy_doc))
-            log(f"grant {caller_arn} kms:* on key {key_id} via key policy ✓")
-            kms.schedule_key_deletion(KeyId=key_id, PendingWindowInDays=7)
-            log(f"schedule deletion of KMS key {key_id} (7-day window) ✓")
-        except Exception as e:
-            log(f"  could not self-grant on KMS key {key_id}: {e} -- this key needs the AWS account's "
-                f"actual root user (not just an IAM admin) to fix its key policy before it can be deleted.")
+        nuke_one_kms_key(kms, key["KeyId"], actions, caller_arn)
 
 
 def unlock_locked_s3_buckets(session, region, actions):

@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from main import run_pipeline
+from config import DeployConfig, DeployTarget
+from tools.deploy_cleanup import cleanup_scenario_resources
 
 
 @dataclass
@@ -29,6 +31,8 @@ class BenchmarkConfig:
     openrouter_min_quantization: str | None
     openrouter_reasoning_effort: str | None
     openrouter_reasoning_max_tokens: int | None
+    disable_reasoning: bool
+    max_tokens: int | None
     skip_security: bool
     iac_type: str           # "cloudformation" | "terraform"
 
@@ -88,17 +92,26 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
 
     filtered_row_count = 0
     if config.exclude_completed_csv is not None:
+        # match_ground_truth_path=True unconditionally: these filters only
+        # ever keep/skip rows already selected above (by --rows or
+        # --start-row/--max-rows) — they never add rows from outside that
+        # set, so ground_truth_path matching can't "pull in" anything
+        # unintended even when --rows is used. row_number is not stable
+        # across dataset revisions (exclude_completed_csv may have been
+        # built from a differently-numbered dataset than --dataset), so
+        # ground_truth_path should be preferred whenever available,
+        # regardless of whether --rows narrowed the row set.
         if config.retry_errors:
             selected_rows, filtered_row_count = _filter_rows_in_failed_csv(
                 selected_rows,
                 config.exclude_completed_csv,
-                match_ground_truth_path=not bool(config.rows),
+                match_ground_truth_path=True,
             )
         else:
             selected_rows, filtered_row_count = _filter_rows_not_in_completed_csv(
                 selected_rows,
                 config.exclude_completed_csv,
-                match_ground_truth_path=not bool(config.rows),
+                match_ground_truth_path=True,
             )
     rows_after_filter = len(selected_rows)
 
@@ -254,6 +267,8 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 openrouter_min_quantization=config.openrouter_min_quantization,
                 openrouter_reasoning_effort=config.openrouter_reasoning_effort,
                 openrouter_reasoning_max_tokens=config.openrouter_reasoning_max_tokens,
+                disable_reasoning=config.disable_reasoning,
+                max_tokens=config.max_tokens,
                 skip_security=config.skip_security,
                 iac_type=config.iac_type,
             )
@@ -328,6 +343,21 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
             print(f"[Benchmark] Row {row_number} failed: {error_message}")
             print("[Benchmark] Traceback:")
             print(error_traceback)
+        finally:
+            # Scenario-finished cleanup: this row has now either passed or
+            # exhausted config.max_iterations (or raised) -- run once here,
+            # regardless of outcome, rather than relying solely on the next
+            # row's per-iteration pre-flight reset to eventually catch
+            # anything real AWS resources this row left running. A no-op for
+            # LOCALSTACK/NONE targets. See cleanup_scenario_resources()'s
+            # docstring in tools/deploy_validator.py for why this is a
+            # separate stage from the per-iteration reset rather than a
+            # duplicate of it.
+            try:
+                cleanup_scenario_resources(DeployConfig(target=DeployTarget(config.deploy_target)))
+            except Exception as cleanup_exc:
+                print(f"[Benchmark] Warning: scenario-finished cleanup for row {row_number} "
+                      f"failed unexpectedly: {cleanup_exc}")
 
         rows_out.append(result_payload)
 
@@ -519,6 +549,41 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--disable-reasoning",
+        action="store_true",
+        help=(
+            "Fully disable reasoning (omits the reasoning field entirely, which "
+            "tested identically to sending reasoning.enabled=false). Some models "
+            "don't reliably bound their reasoning length via --openrouter-"
+            "reasoning-effort / --openrouter-reasoning-max-tokens — confirmed for "
+            "deepseek/deepseek-v4-flash by direct testing, both hints were "
+            "ignored — and if reasoning runs longer than --max-tokens, it gets cut "
+            "off mid-thought with nothing left over for an actual answer "
+            "(empty content). Two ways to avoid that: disable reasoning entirely "
+            "(this flag — a guarantee, but loses reasoning's benefits), or raise "
+            "--max-tokens generously so reasoning has room to finish on its own "
+            "before hitting the ceiling (cost-neutral when not needed, since "
+            "billing is by actual tokens used — but not a hard guarantee, since "
+            "reasoning length varies by prompt). Not every model can disable "
+            "reasoning at all (confirmed for GLM 5.3 Flash, which cannot) — "
+            "test before relying on this."
+        ),
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help=(
+            "Max output tokens for the base content budget (default 8192, "
+            "config.py's LLMConfig.max_tokens). On OpenRouter this is shared "
+            "with reasoning (see --disable-reasoning) — raising it gives "
+            "reasoning-heavy models room to finish thinking before hitting the "
+            "ceiling, instead of getting cut off with no content produced. Not "
+            "additive with --openrouter-reasoning-max-tokens; that flag still "
+            "adds its own value on top of whatever this is set to."
+        ),
+    )
+    parser.add_argument(
         "--deploy-target",
         choices=["none", "localstack", "aws"],
         default="localstack",
@@ -582,6 +647,8 @@ if __name__ == "__main__":
         openrouter_min_quantization=args.openrouter_min_quantization,
         openrouter_reasoning_effort=args.openrouter_reasoning_effort,
         openrouter_reasoning_max_tokens=args.openrouter_reasoning_max_tokens,
+        disable_reasoning=args.disable_reasoning,
+        max_tokens=args.max_tokens,
         skip_security=args.skip_security,
         iac_type=args.iac_type,
     )

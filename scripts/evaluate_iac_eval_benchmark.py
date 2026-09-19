@@ -12,7 +12,7 @@ from datasets import load_dataset
 
 # Import your repository's existing deployment configuration and reset tools
 from config import DeployConfig, DeployTarget
-from tools.deploy_validator import _reset_target_state, _delete_all_non_default_vpcs
+from tools.deploy_cleanup import reset_target_state
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Test Terraform deployability from autoiac-project/iac-eval with resume capabilities.")
@@ -207,9 +207,10 @@ def main():
             # ---------------------------------------------------------
             if args.deploy_target != "none":
                 print(f"  -> Resetting {args.deploy_target} state...")
-                _reset_target_state(deploy_config)
-                if args.deploy_target == "aws":
-                    _delete_all_non_default_vpcs(deploy_config) # Free up VPC quotas in AWS
+                # For AWS, reset_target_state already includes the VPC quota
+                # pre-flight (tools/deploy_cleanup._delete_all_non_default_vpcs)
+                # -- no separate call needed here anymore.
+                reset_target_state(deploy_config)
 
             tf_code = row.get("Reference output", "")
             
