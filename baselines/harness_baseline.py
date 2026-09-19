@@ -64,6 +64,7 @@ from benchmark_common import (
     _safe_int,
 )
 from config import DeployConfig, DeployTarget
+from tools.deploy_cleanup import cleanup_scenario_resources
 from tools.deploy_validator import validate_deployment
 from tools.validators import run_all_validators
 from tracking.recorder import ResearchRecorder
@@ -128,6 +129,7 @@ class BaselineConfig:
     harness_model: str
     base_url: str | None
     api_key_env: str
+    provider_name: str
     native_auth: bool
     scenario_timeout: int
     max_stall_retries: int
@@ -145,6 +147,8 @@ class BaselineConfig:
     openrouter_min_quantization: str | None = None
     openrouter_reasoning_effort: str | None = None
     openrouter_reasoning_max_tokens: int | None = None
+    disable_reasoning: bool = False
+    max_tokens: int | None = None
     skip_security: bool = False
 
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
@@ -903,6 +907,30 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
                 }
                 print(f"[Baseline] Row {row_number} failed: {exc}")
                 print(traceback.format_exc())
+            finally:
+                # Scenario-finished cleanup: this row has now either passed,
+                # exhausted its iteration budget, stalled, timed out, or
+                # raised — run once here regardless of outcome, matching
+                # benchmark.py's equivalent finally block (see
+                # cleanup_scenario_resources()'s docstring in
+                # tools/deploy_cleanup.py). Without this the harness baseline
+                # only ever got the per-ITERATION reset_target_state()
+                # pre-flight that already runs inside every
+                # validate_deployment() call (deploy_iac and
+                # finalize_scenario() both go through it) — leftover
+                # resources from THIS row would sit unswept until the NEXT
+                # row's own pre-flight happened to catch them, and the very
+                # last row of a sweep would never get swept at all. A no-op
+                # for deploy_target=none/localstack.
+                try:
+                    cleanup_scenario_resources(
+                        DeployConfig(target=DeployTarget(config.deploy_target))
+                    )
+                except Exception as cleanup_exc:
+                    print(
+                        f"[Baseline] Warning: scenario-finished cleanup for row "
+                        f"{row_number} failed unexpectedly: {cleanup_exc}"
+                    )
 
         # Aggregate only rows that actually produced a scored run. Skipped
         # (empty prompt) and runtime-error rows are recorded but excluded, so
@@ -1059,7 +1087,19 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--harness-model", type=str, default="sonnet",
                    help="Alias passed to `claude --model` (default: sonnet)")
     p.add_argument("--base-url", type=str, default="https://openrouter.ai/api")
-    p.add_argument("--api-key-env", type=str, default="OPENROUTER_API_KEY")
+    p.add_argument("--api-key-env", type=str, default="OPENROUTER_API_KEY",
+                   help="Env var holding the auth token sent as ANTHROPIC_AUTH_TOKEN "
+                        "(claude_code) or the OpenCode provider's apiKey (opencode). "
+                        "For a local Ollama daemon (already `ollama signin`-authenticated) "
+                        "this can point at any env var set to a dummy value — Ollama's "
+                        "own docs use the literal token \"ollama\" — since the daemon, "
+                        "not this token, carries the real auth.")
+    p.add_argument("--provider-name", type=str, default="openrouter",
+                   help="opencode only: the OpenCode provider id to declare (used for "
+                        "the config's `provider.<name>` key, `small_model` prefix, and "
+                        "the `--model <name>/<model>` arg). Has no effect on claude_code, "
+                        "which routes purely on --base-url/--api-key-env. Set to "
+                        "\"ollama\" when --base-url points at a local Ollama daemon.")
     p.add_argument("--native-auth", action="store_true",
                    help="Use Claude Code's own auth and models; ignore --model/--base-url.")
 
@@ -1127,6 +1167,26 @@ def parse_args() -> argparse.Namespace:
         p.error("--retry-errors requires --exclude-completed-csv")
     if not args.native_auth and not args.model:
         p.error("--model is required unless --native-auth is given")
+    if (
+        not args.native_auth
+        and not args.no_retry_proxy
+        and "openrouter" not in args.base_url.lower()
+    ):
+        # baselines/retry_proxy.py forwards every request to a hardcoded
+        # UPSTREAM_BASE = "https://openrouter.ai/api" — it exists
+        # specifically to work around OpenRouter's confirmed multi-provider
+        # empty-completion rate (see baselines/README.md), not as a generic
+        # passthrough. Left on by default against a different --base-url
+        # (e.g. a local Ollama daemon), it would silently redirect every
+        # single request to OpenRouter instead — a wrong-backend bug with
+        # no error, not a fallback worth having. Fail loud instead.
+        p.error(
+            f"--base-url {args.base_url!r} does not look like OpenRouter, but the "
+            "retry proxy (on by default) only knows how to forward to OpenRouter and "
+            "would silently misroute every request there instead. Pass --no-retry-proxy "
+            "for non-OpenRouter backends (e.g. a local Ollama daemon, which doesn't need "
+            "it in the first place — see baselines/README.md)."
+        )
     return args
 
 
@@ -1173,6 +1233,7 @@ def main() -> None:
         harness_model=args.harness_model,
         base_url=args.base_url,
         api_key_env=args.api_key_env,
+        provider_name=args.provider_name,
         native_auth=args.native_auth,
         scenario_timeout=args.scenario_timeout,
         max_stall_retries=args.max_stall_retries,
