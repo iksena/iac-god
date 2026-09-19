@@ -37,6 +37,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,8 +67,10 @@ ENV_RUNS_DIR = "IACGOD_RUNS_DIR"
 ENV_MAX_ITERATIONS = "IACGOD_MAX_ITERATIONS"
 ENV_DEPLOY_TARGET = "IACGOD_DEPLOY_TARGET"
 ENV_USER_REQUEST = "IACGOD_USER_REQUEST"
+ENV_ENABLE_RETRIEVAL = "IACGOD_ENABLE_RETRIEVAL"
 
 STATE_FILENAME = "baseline_state.json"
+RETRIEVAL_LOG_FILENAME = "retrieval_log.jsonl"
 
 TEMPLATE_FILENAME = {
     "cloudformation": "template.yaml",
@@ -110,6 +113,7 @@ class ScenarioConfig:
     max_iterations: int
     deploy_target: str
     user_request: str = ""
+    enable_retrieval: bool = False
 
     @classmethod
     def from_env(cls) -> "ScenarioConfig":
@@ -131,6 +135,7 @@ class ScenarioConfig:
             max_iterations=int(os.environ[ENV_MAX_ITERATIONS]),
             deploy_target=os.environ.get(ENV_DEPLOY_TARGET, "none"),
             user_request=os.environ.get(ENV_USER_REQUEST, ""),
+            enable_retrieval=os.environ.get(ENV_ENABLE_RETRIEVAL) == "1",
         )
 
     def to_env(self) -> dict[str, str]:
@@ -142,6 +147,7 @@ class ScenarioConfig:
             ENV_MAX_ITERATIONS: str(self.max_iterations),
             ENV_DEPLOY_TARGET: self.deploy_target,
             ENV_USER_REQUEST: self.user_request,
+            ENV_ENABLE_RETRIEVAL: "1" if self.enable_retrieval else "0",
         }
 
 
@@ -174,6 +180,14 @@ class ScenarioLedger:
     last_static_passed: bool = False
     last_validation_results: list[dict[str, Any]] = field(default_factory=list)
     last_deploy_result: dict[str, Any] | None = None
+    # The exact text last passed to validate_iac. retrieve_context works from
+    # this, not from the file on disk, because IaCGOD's Retriever reads
+    # state["iac_template"] — the template the failing validation judged —
+    # and the harness may already have started editing the file since.
+    last_validated_template: str | None = None
+
+    retrievals: list[dict[str, Any]] = field(default_factory=list)
+    retrieval_iterations: set[int] = field(default_factory=set)
 
     submitted: dict[str, Any] | None = None
 
@@ -221,6 +235,26 @@ class ScenarioLedger:
             self.last_deploy_result and self.last_deploy_result.get("passed")
         )
 
+    def _retrieval_step(self) -> str:
+        """Instruction prepended to a failure message when retrieval is on.
+
+        IaCGOD's Retriever runs on every failed iteration; a first E2E run
+        showed a system-prompt instruction alone isn't enough (the harness
+        skipped retrieval for its first two failures), so the step is also
+        stated at the point of failure. Empty when retrieval is off, keeping
+        the plain baseline's messages byte-identical.
+        """
+        if (
+            not self.config.enable_retrieval
+            or self.iteration >= self.config.max_iterations
+            or self.iteration in self.retrieval_iterations
+        ):
+            return ""
+        return (
+            "First call retrieve_context (once for this iteration) to look up the "
+            "documentation for these errors. "
+        )
+
     def _snapshot(self, template: str) -> None:
         """Write iteration_NNN.json in the same shape a multi-agent run does.
 
@@ -262,6 +296,8 @@ class ScenarioLedger:
                     "last_static_passed": self.last_static_passed,
                     "last_validation_results": self.last_validation_results,
                     "last_deploy_result": self.last_deploy_result,
+                    "retrieval_enabled": self.config.enable_retrieval,
+                    "retrievals": self.retrievals,
                     "submitted": self.submitted,
                     "updated_at": _now(),
                 },
@@ -303,6 +339,7 @@ class ScenarioLedger:
 
         self.iteration += 1
         self.last_validated_sha = _sha(template)
+        self.last_validated_template = template
         self.last_static_passed = static_passed
         self.last_validation_results = results
         # A fresh edit invalidates any previous deploy verdict.
@@ -345,6 +382,7 @@ class ScenarioLedger:
             text=(
                 f"[iteration {self.iteration}] STATIC VALIDATION FAILED.\n\n"
                 f"{errors}\n\n"
+                f"{self._retrieval_step()}"
                 "Fix every error above in the template, then call validate_iac again. "
                 "Do not suppress or comment out any check."
             ),
@@ -440,10 +478,119 @@ class ScenarioLedger:
             text=(
                 f"[iteration {self.iteration}] DEPLOYMENT FAILED.\n\n"
                 f"{errors}\n\n"
+                f"{self._retrieval_step()}"
                 "Fix the template so these resources deploy, then call validate_iac "
                 "again followed by deploy_iac."
             ),
             passed=False,
+        )
+
+    def retrieve(self, schema_queries: Any) -> ToolOutcome:
+        """Knowledge-base retrieval (Harness + Retriever ablation arm only).
+
+        Gated to IaCGOD's own cadence: the Retriever node only ever runs after
+        the Validator reports a failure, once per iteration, and never after
+        the iteration cap (graph.py routes straight to END). A refused call has
+        no side effects. Like deploy, retrieval never opens or counts an
+        iteration.
+        """
+        from baselines.retrieval import MAX_SCHEMA_QUERIES, retrieve_for_scenario
+
+        if not self.config.enable_retrieval:
+            return ToolOutcome(text="retrieve_context is not enabled for this run.", passed=False)
+        if not isinstance(schema_queries, list) or not all(
+            isinstance(q, str) for q in schema_queries
+        ):
+            return ToolOutcome(
+                text="schema_queries must be a list of strings (it may be empty).",
+                passed=False,
+            )
+
+        if self.last_validated_template is None:
+            return ToolOutcome(
+                text=(
+                    "Nothing has failed yet. retrieve_context is only available after "
+                    "validate_iac or deploy_iac reports a failure — write the template "
+                    "and call validate_iac first."
+                ),
+                passed=False,
+            )
+        if self.iteration >= self.config.max_iterations:
+            return ToolOutcome(
+                text=(
+                    f"ITERATION CAP REACHED ({self.config.max_iterations} iterations used). "
+                    "Retrieved context could not be validated any more. Call "
+                    "submit_template now with your best template."
+                ),
+                passed=False,
+            )
+        deploy_failed = bool(
+            self.last_deploy_result is not None and not self.last_deploy_result.get("passed")
+        )
+        if self.last_static_passed and not deploy_failed:
+            if self._fully_validated():
+                text = "The template already passed validation. Call submit_template and stop."
+            else:
+                text = (
+                    "Static validation passed and nothing has failed since. Call "
+                    "deploy_iac next — retrieve_context is only available after a failure."
+                )
+            return ToolOutcome(text=text, passed=False)
+        if self.iteration in self.retrieval_iterations:
+            return ToolOutcome(
+                text=(
+                    f"retrieve_context was already used for iteration {self.iteration}. "
+                    "It is available once per iteration: fix the template with what you "
+                    "have, then call validate_iac again."
+                ),
+                passed=False,
+            )
+
+        truncated = len(schema_queries) > MAX_SCHEMA_QUERIES
+        started = time.time()
+        context, meta = retrieve_for_scenario(
+            iac_type=self.config.iac_type,
+            schema_queries=schema_queries,
+            template=self.last_validated_template,
+            validation_results=self.last_validation_results,
+            deploy_result=self.last_deploy_result,
+        )
+        duration = round(time.time() - started, 3)
+
+        self.retrieval_iterations.add(self.iteration)
+        self.retrievals.append(
+            {
+                "iteration": self.iteration,
+                "harness_queries": list(schema_queries),
+                **meta,
+                "context_chars": len(context),
+                "duration_seconds": duration,
+                "timestamp": _now(),
+            }
+        )
+        # Full record in its own append-only file. Not retriever_history.txt:
+        # recorder.save_iteration_snapshot() rewrites that file wholesale on
+        # every snapshot, which would wipe these entries at the next
+        # validate_iac.
+        with (self.recorder.output_dir / RETRIEVAL_LOG_FILENAME).open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({**self.retrievals[-1], "context": context}) + "\n")
+        self._persist()
+
+        notes = []
+        if truncated:
+            notes.append(f"Only the first {MAX_SCHEMA_QUERIES} schema_queries were used.")
+        if meta["used_fallback"]:
+            notes.append("No queries were given, so the raw error messages were used as queries.")
+        header = f"[iteration {self.iteration}] KNOWLEDGE-BASE CONTEXT"
+        if notes:
+            header += "\n" + "\n".join(notes)
+        body = context or "No matching knowledge-base entries were found."
+        return ToolOutcome(
+            text=(
+                f"{header}\n\n{body}\n\n"
+                "Fix the template using this context, then call validate_iac again."
+            ),
+            passed=bool(context),
         )
 
     def submit(self, file_path: str) -> ToolOutcome:

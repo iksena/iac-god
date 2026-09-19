@@ -37,7 +37,42 @@ PROTOCOL_VERSION = "2024-11-05"
 SERVER_INFO = {"name": "iacgod-eval", "version": "1.0.0"}
 
 
-def _tool_definitions(iac_type: str) -> list[dict[str, Any]]:
+_QUERY_EXAMPLE = {
+    "cloudformation": "AWS::EC2::VPC required properties CidrBlock",
+    "terraform": "aws_vpc required arguments cidr_block",
+}
+
+
+def _retrieve_tool_definition(iac_type: str) -> dict[str, Any]:
+    example = _QUERY_EXAMPLE.get(iac_type, _QUERY_EXAMPLE["cloudformation"])
+    return {
+        "name": "retrieve_context",
+        "description": (
+            "Search knowledge base (resource schema properties, schema graph, "
+            "security-rule guidance) for documentation that fixes the errors your most "
+            "recent failed validate_iac/deploy_iac call reported. Only available after a "
+            "failure, at most once per iteration; does not count as an iteration. Write "
+            "schema_queries by following the query-planning guide in your instructions."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "schema_queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 8,
+                    "description": (
+                        f"Up to 8 short retrieval queries, e.g. \"{example}\". "
+                        "An empty list searches with the raw error messages."
+                    ),
+                }
+            },
+            "required": ["schema_queries"],
+        },
+    }
+
+
+def _tool_definitions(iac_type: str, enable_retrieval: bool = False) -> list[dict[str, Any]]:
     fname = template_filename(iac_type)
     lang = "Terraform HCL" if iac_type == "terraform" else "CloudFormation YAML"
     path_schema = {
@@ -50,7 +85,7 @@ def _tool_definitions(iac_type: str) -> list[dict[str, Any]]:
         },
         "required": ["file_path"],
     }
-    return [
+    tools = [
         {
             "name": "validate_iac",
             "description": (
@@ -79,6 +114,9 @@ def _tool_definitions(iac_type: str) -> list[dict[str, Any]]:
             "inputSchema": path_schema,
         },
     ]
+    if enable_retrieval:
+        tools.append(_retrieve_tool_definition(iac_type))
+    return tools
 
 
 def _send(payload: dict[str, Any]) -> None:
@@ -99,6 +137,10 @@ def _text_result(text: str, is_error: bool = False) -> dict[str, Any]:
 
 
 def _dispatch_tool(ledger: ScenarioLedger, name: str, args: dict[str, Any]) -> dict[str, Any]:
+    if name == "retrieve_context":
+        outcome = ledger.retrieve(args.get("schema_queries", []))
+        return _text_result(outcome.text, is_error=False)
+
     file_path = args.get("file_path")
     if not file_path:
         return _text_result("file_path is required.", is_error=True)
@@ -126,7 +168,7 @@ def main() -> int:
         return 1
 
     ledger: ScenarioLedger | None = None
-    tools = _tool_definitions(config.iac_type)
+    tools = _tool_definitions(config.iac_type, config.enable_retrieval)
 
     for line in sys.stdin:
         line = line.strip()

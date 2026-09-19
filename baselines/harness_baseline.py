@@ -71,6 +71,7 @@ from tracking.recorder import ResearchRecorder
 
 from baselines.drivers import DRIVERS, get_driver
 from baselines.drivers.base import HarnessDriver
+from baselines.retrieval import build_retrieval_addendum
 from baselines.evaluation import (
     STATE_FILENAME,
     ScenarioConfig,
@@ -96,6 +97,8 @@ BASELINE_CSV_EXTRA = [
     "harness_stall_retries_used",
     "harness_stalled_attempt_run_ids",
     "thinking_tokens_total",
+    "retrieval_enabled",
+    "retrieval_calls",
 ]
 BASELINE_CSV_FIELDS = CSV_RESULT_FIELDS + BASELINE_CSV_EXTRA
 
@@ -150,6 +153,10 @@ class BaselineConfig:
     disable_reasoning: bool = False
     max_tokens: int | None = None
     skip_security: bool = False
+
+    # Harness + Retriever ablation arm: expose IaCGOD's retrieval as the
+    # retrieve_context MCP tool (see baselines/retrieval.py).
+    enable_retrieval: bool = False
 
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
 
@@ -310,6 +317,8 @@ def run_harness(
     wire-level log to offer.
     """
     system_prompt = (REPO_ROOT / "baselines" / "prompts" / f"{config.iac_type}.md").read_text()
+    if config.enable_retrieval:
+        system_prompt += build_retrieval_addendum(config.iac_type)
 
     # Isolated per-attempt directory for the harness's OWN installation
     # state (session files, auth cache, etc. — never the MCP server's
@@ -563,6 +572,7 @@ def _run_one_attempt(
         max_iterations=config.max_iterations,
         deploy_target=config.deploy_target,
         user_request=prompt,
+        enable_retrieval=config.enable_retrieval,
     )
 
     telemetry = run_harness(
@@ -717,6 +727,8 @@ def run_scenario(
         "harness_stall_retries_used": len(stalled_run_ids),
         "harness_stalled_attempt_run_ids": ",".join(stalled_run_ids) or None,
         "thinking_tokens_total": telemetry["thinking_tokens_total"],
+        "retrieval_enabled": config.enable_retrieval,
+        "retrieval_calls": len(state.get("retrievals") or []),
     }
 
 
@@ -855,6 +867,7 @@ def run_baseline(config: BaselineConfig) -> dict[str, Any]:
                 "runs_dir": str(config.runs_dir),
                 "rows_stalled": stalled_count,
                 "pass_rate_excl_stalled": (pass_count / non_stalled) if non_stalled else None,
+                "retrieval_enabled": config.enable_retrieval,
             }
         )
         summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -1159,6 +1172,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sleep-between-rows", type=float, default=0.0)
     p.add_argument("--keep-workspace", action="store_true",
                    help="Keep runs/<run_id>/workspace instead of deleting it after scoring")
+    p.add_argument("--enable-retrieval", action="store_true",
+                   help="Harness + Retriever ablation arm: expose IaCGOD's retrieval "
+                        "(ChromaDB + Neo4j) as the retrieve_context MCP tool. The "
+                        "harness LLM writes the schema queries IaCGOD's Retriever LLM "
+                        "would; needs ChromaDB and Neo4j running.")
     p.add_argument("--no-pricing", action="store_true",
                    help="Skip the OpenRouter pricing fetch; cost columns will be null.")
 
@@ -1204,7 +1222,8 @@ def main() -> None:
         output_dir = args.output_dir
     else:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        output_dir = Path("benchmark_runs") / f"baseline_{args.harness}_{args.iac_type}_{ts}"
+        variant = f"{args.harness}_retriever" if args.enable_retrieval else args.harness
+        output_dir = Path("benchmark_runs") / f"baseline_{variant}_{args.iac_type}_{ts}"
 
     rows = None
     if args.rows:
@@ -1244,6 +1263,7 @@ def main() -> None:
         sleep_between_rows=args.sleep_between_rows,
         runs_dir=args.runs_dir.resolve(),
         keep_workspace=args.keep_workspace,
+        enable_retrieval=args.enable_retrieval,
         pricing={} if args.no_pricing else fetch_openrouter_pricing(),
     )
 

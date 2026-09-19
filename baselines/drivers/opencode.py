@@ -161,6 +161,11 @@ class OpenCodeDriver:
                         f"{MCP_SERVER_NAME}_validate_iac": "allow",
                         f"{MCP_SERVER_NAME}_deploy_iac": "allow",
                         f"{MCP_SERVER_NAME}_submit_template": "allow",
+                        **(
+                            {f"{MCP_SERVER_NAME}_retrieve_context": "allow"}
+                            if config.enable_retrieval
+                            else {}
+                        ),
                     },
                 }
             },

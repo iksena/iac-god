@@ -33,6 +33,7 @@ ordinary tools, regardless of which harness is driving.
 | `validate_iac(file_path)` | Static validation. **One call = one iteration.** Refuses past the cap and tells the harness to submit. |
 | `deploy_iac(file_path)` | Live deploy. Gated: refuses unless *this exact content* passed `validate_iac`. Attaches to the current iteration, never opens one. |
 | `submit_template(file_path)` | Records the final answer. A claim, not a verdict. |
+| `retrieve_context(schema_queries)` | Only with `--enable-retrieval` (see "Harness + Retriever" below). IaCGOD's knowledge-base retrieval, with the harness writing the queries. Only after a failure, once per iteration; never opens an iteration. |
 
 ## Usage
 
@@ -192,6 +193,60 @@ scale, so treat as promising rather than confirmed at the sample sizes the
 OpenRouter numbers below rest on. `deepseek-v4-flash:cloud` needs Ollama
 Cloud usage credits or a subscription on the signed-in account, separate
 from `ollama signin` itself.
+
+## Harness + Retriever (ablation arm)
+
+`--enable-retrieval` adds a fourth tool, `retrieve_context`, that exposes
+IaCGOD's retrieval — ChromaDB property chunks (RRF-fused), the Neo4j schema
+graph, and Neo4j security rules. It measures how much of IaCGOD's advantage is
+retrieval versus its Planner/Remediator orchestration.
+
+**One thing differs from IaCGOD's Retriever: who writes the queries.** The
+Retriever asks a separate LLM for up to 8 short, error-targeted schema queries
+(`agents/retriever.py`, the `_call_query_generator` step). Here the harness's
+own LLM writes them and passes them as `schema_queries`. Everything after that
+is IaCGOD's code, imported rather than re-implemented (`baselines/retrieval.py`):
+the same error extraction, schema/security routing, resource seeding, retrieval
+entry points, and context assembly. The harness is given the Retriever's own
+query-planning prompt, `get_query_gen_system()`, verbatim in its system prompt,
+so both write queries under the same rules. An empty list falls back to the raw
+error messages, as the Retriever does. Verified: for the same queries, template
+and errors, `retrieve_for_scenario` passes identical arguments to the retrieval
+functions and returns byte-identical context to `retriever_agent` (CFN schema,
+CFN security-only, and Terraform cases, with and without the fallback).
+
+**Cadence matches IaCGOD's graph.** The tool is available only after
+`validate_iac` or `deploy_iac` reports a failure, once per iteration, and never
+after the iteration cap. It doesn't count as an iteration. The Retriever runs
+on every failed iteration, so the failure messages also tell the harness to call
+it. A first run with only the system-prompt instruction showed the harness
+skipping retrieval for its first two failures.
+
+**Artifacts:** `runs/<run_id>/retrieval_log.jsonl` has one line per call: the
+harness's queries, the queries actually used, `used_fallback`, security IDs,
+the full returned context, and timing. `baseline_state.json` carries the same
+summaries under `retrievals`. The CSV adds `retrieval_enabled` and
+`retrieval_calls`. The log isn't written to `retriever_history.txt`, because
+`recorder.save_iteration_snapshot()` rewrites that file on every snapshot and
+would wipe it.
+
+**Preflight:** ChromaDB and Neo4j must be running (`docker compose up -d
+chromadb neo4j`) with **populated** volumes. Check that the collections aren't
+empty, not just that the heartbeat answers. An empty `iac-god_chromadb_data`
+volume still answers 200, and retrieval silently degrades to Neo4j-only. The
+embedding model must match the one that built the index (`.env`
+`EMBEDDING_PROVIDER=ollama`, so `ollama pull mxbai-embed-large`).
+
+```bash
+python -m baselines.harness_baseline --harness opencode --iac-type cloudformation \
+  --dataset data/cfn_eval_benchmark_ablation.csv --enable-retrieval \
+  --deploy-target aws --max-iterations 15 --scenario-timeout 7200 \
+  --model deepseek-v4-flash:cloud --base-url http://localhost:11434 \
+  --api-key-env OLLAMA_DUMMY_KEY --provider-name ollama --no-retry-proxy
+```
+
+Run the same command without `--enable-retrieval` for the matching harness-only
+arm.
 
 ## What is held constant, and what is not
 

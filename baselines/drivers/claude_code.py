@@ -95,6 +95,7 @@ class ClaudeCodeDriver:
             "mcp__iacgod__validate_iac",
             "mcp__iacgod__deploy_iac",
             "mcp__iacgod__submit_template",
+            *(["mcp__iacgod__retrieve_context"] if config.enable_retrieval else []),
             "Read",
             "Write",
             "Edit",
