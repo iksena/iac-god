@@ -4,6 +4,7 @@ import copy
 import time
 import uuid
 import fcntl
+import getpass
 import datetime
 import contextlib
 import subprocess
@@ -29,27 +30,53 @@ from tools.deploy_cleanup import (
 # The AWS provider binary is ~500 MB; without this each TemporaryDirectory
 # invocation triggers a full re-download, which eventually exceeds the 120 s
 # init timeout under slow registry responses or repeated iteration.
-_TF_PLUGIN_CACHE_DIR = Path(tempfile.gettempdir()) / "iac-god-tf-plugin-cache"
+
+def _current_user_slug() -> str:
+    """Best-effort OS username, for scoping the plugin cache per account.
+
+    Falls back to a fixed placeholder on the rare environment with no
+    resolvable user (e.g. some minimal containers) rather than letting cache
+    directory setup itself become a new failure point.
+    """
+    try:
+        return getpass.getuser()
+    except Exception:
+        return "unknown-user"
+
+
+# tempfile.gettempdir() (typically /tmp) is machine-wide, not per-account —
+# on a shared research server, every user running this harness under a
+# different login previously collided on the exact same cache path with no
+# isolation at all. tf_init_lock() (below) only serializes `init` calls
+# against each other; it can't see contention from a DIFFERENT user's
+# process (their `ps`/lsof wouldn't even show up in your own session), and a
+# provider plugin binary still being *executed* by someone else's apply/
+# validate/destroy is a separate failure mode the lock was never meant to
+# cover. Scoping the directory by username costs one extra one-time ~500 MB
+# download per account (same amortization as before, just per-user instead
+# of per-machine) and removes cross-user contention entirely.
+_TF_PLUGIN_CACHE_DIR = Path(tempfile.gettempdir()) / f"iac-god-tf-plugin-cache-{_current_user_slug()}"
 _TF_PLUGIN_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Multiple benchmark processes (e.g. parallel tmux/harness runs) share this
-# one cache directory on purpose — giving each process its own cache would
-# mean each one re-downloads the ~500 MB AWS provider. Terraform's provider
-# install step has no inter-process lock of its own, so without one, two
-# `init`s racing to extract/link the same provider binary can fail with
-# "text file busy" (one process still has the binary open while another
-# tries to overwrite it).
+# Multiple benchmark processes under the SAME account (e.g. parallel tmux/
+# harness runs) still share this one cache directory on purpose — giving
+# each process its own cache would mean each one re-downloads the provider.
+# Terraform's provider install step has no inter-process lock of its own, so
+# without one, two `init`s racing to extract/link the same provider binary
+# can fail with "text file busy" (one process still has the binary open
+# while another tries to overwrite it).
 #
 # Rather than hoping a blind retry lands after the race window closes, every
 # `terraform`/`tflocal init` in this codebase acquires `_tf_init_lock()`
-# first, which serializes provider installation across *all* processes on
-# the machine via an flock() on a lock file inside the cache dir. Only the
-# init step is serialized (apply/destroy run outside the lock), so this
-# does not block concurrent deployments — it only prevents two inits from
-# touching the shared cache at the same instant. The retry-on-"text file
-# busy" logic is kept as a defensive fallback (e.g. flock is POSIX-only; a
-# process that started before this lock existed, or a filesystem where
-# flock is unsupported, still gets the old best-effort behavior).
+# first, which serializes provider installation across *all* processes
+# under this account via an flock() on a lock file inside the cache dir.
+# Only the init step is serialized (apply/destroy run outside the lock), so
+# this does not block concurrent deployments — it only prevents two inits
+# from touching the shared cache at the same instant. The retry-on-"text
+# file busy" logic is kept as a defensive fallback (e.g. flock is
+# POSIX-only; a process that started before this lock existed, or a
+# filesystem where flock is unsupported, still gets the old best-effort
+# behavior).
 _TF_INIT_LOCK_PATH = _TF_PLUGIN_CACHE_DIR / ".init.lock"
 _TF_INIT_MAX_ATTEMPTS = 3
 _TF_INIT_RETRY_BACKOFF_SECONDS = 3.0
