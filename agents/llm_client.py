@@ -287,8 +287,9 @@ def _call_openai_compat(
     request shape here is byte-identical to before this parameter existed.
 
     session_id, when given, is forwarded as OpenRouter's sticky-routing key
-    (see build_session_id) — a plain request field, safe and beneficial for
-    every OpenRouter model regardless of use_cache_control.
+    (see build_session_id) via extra_body (it isn't a parameter the openai
+    SDK's own create() signature recognizes) — safe and beneficial for every
+    OpenRouter model regardless of use_cache_control.
     """
     if use_cache_control:
         chat_messages = (
@@ -302,8 +303,6 @@ def _call_openai_compat(
         "model": model,
         "messages": chat_messages,
     }
-    if session_id:
-        request_kwargs["session_id"] = session_id
 
     max_tokens = max_tokens_override if max_tokens_override is not None else DEFAULT_CONFIG.max_tokens
 
@@ -313,8 +312,17 @@ def _call_openai_compat(
         request_kwargs["temperature"] = DEFAULT_CONFIG.temperature
         request_kwargs["max_tokens"] = max_tokens
 
-    if extra_body:
-        request_kwargs["extra_body"] = extra_body
+    # session_id is an OpenRouter-specific field with no place in the openai
+    # SDK's own typed create() signature (confirmed: TypeError "unexpected
+    # keyword argument" if passed directly, same as any other non-standard
+    # field) -- it has to travel inside extra_body, exactly like `reasoning`
+    # and `provider` already do, so the SDK injects it into the raw JSON
+    # body instead of validating it against its own parameter list.
+    merged_extra_body: dict = dict(extra_body) if extra_body else {}
+    if session_id:
+        merged_extra_body["session_id"] = session_id
+    if merged_extra_body:
+        request_kwargs["extra_body"] = merged_extra_body
 
     def _do_call() -> tuple[str, dict]:
         r = client.chat.completions.create(**request_kwargs)
