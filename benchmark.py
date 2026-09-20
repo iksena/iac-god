@@ -137,6 +137,9 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "all_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "reasoning_tokens": 0,
     }
 
     print(f"\n{'=' * 80}")
@@ -204,6 +207,9 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                     "prompt_tokens": 0,
                     "completion_tokens": 0,
                     "all_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                    "reasoning_tokens": 0,
                 },
                 "iteration_records": [],
                 "validation_results_final": [],
