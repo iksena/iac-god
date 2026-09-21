@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from state import GraphState, RemediationHistory, Message, append_and_cap
-from agents.llm_client import _build_client, _call_llm_with_history
+from agents.llm_client import _build_client, _call_llm_with_history, build_session_id
 from prompts.remediator_prompt import get_remediator_system_prompt, REMEDIATOR_USER
 from tools.retriever_helpers import (
     format_cfn_lint_errors,
@@ -210,6 +210,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
         model,
         system,
         state.get("remediator_history", []) + [user_msg],
+        session_id=build_session_id(state, "remediator"),
     )
     assistant_msg: Message = {"role": "assistant", "content": content}
 

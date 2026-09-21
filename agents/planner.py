@@ -1,6 +1,6 @@
 # agents/planner.py
 from state import GraphState, Message, compact_message_history, append_and_cap
-from agents.llm_client import _build_client, _call_llm_with_history
+from agents.llm_client import _build_client, _call_llm_with_history, build_session_id
 from prompts.planner_prompt import get_planner_system_prompt, get_planner_user
 from tracking.recorder import ResearchRecorder
 
@@ -22,7 +22,10 @@ def planner_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
 
     messages = compact_message_history(list(state["planner_history"])) + [user_msg]
 
-    content, usage = _call_llm_with_history(client, model, system_prompt, messages)
+    content, usage = _call_llm_with_history(
+        client, model, system_prompt, messages,
+        session_id=build_session_id(state, "planner"),
+    )
 
     assistant_msg: Message = {"role": "assistant", "content": content}
 

@@ -73,6 +73,10 @@ _CONTEXT_MODE: str = os.getenv("CHROMA_CONTEXT_MODE", "compact").lower().strip()
 # directly comparable across CFN and TF benchmark runs.
 _MAX_OPTIONAL_ATTRS = 10
 
+# Reciprocal Rank Fusion smoothing constant (Cormack, Clarke & Buettcher, 2009).
+# Mirrors cfn_hybrid_rag._RRF_K exactly — see that file for the full rationale.
+_RRF_K = 60
+
 # ChromaDB collection populated by scripts/graphrag/terraform/ ingestion pipeline.
 _TF_COLLECTION_NAME = "tf_schema_properties"
 
@@ -119,6 +123,8 @@ class _AttributeChunk:
     force_new: str = ""
     is_example: bool = False
     raw_text: str = ""  # fallback for unparseable chunks
+    attr_key: str = ""  # dedup/RRF identity, set at append time in _semantic_search
+    rrf_score: float = 0.0  # fused across all queries that surfaced attr_key
 
 
 _FIELD_RE = re.compile(
@@ -170,6 +176,7 @@ class _ResourceChunks:
     attributes: list[_AttributeChunk] = field(default_factory=list)
     examples: list[str] = field(default_factory=list)
     raw_chunks: list[str] = field(default_factory=list)  # unparseable fallbacks
+    rrf_score: float = 0.0  # max RRF contribution across all this resource's hits
 
 
 def _format_resource_block_compact(rc: _ResourceChunks) -> str:
@@ -419,12 +426,20 @@ def _semantic_search(
         )
 
         seen_attr_keys: set[str] = set()
+        rrf_scores: dict[str, float] = defaultdict(float)
         kept = 0
         dropped = 0
         filtered_out = 0
 
         for query in retrieval_queries:
             scored_chunks = vectorstore.similarity_search_with_score(query, k=3)
+
+            # Filter first (distance threshold, then resource scope), THEN
+            # rank among survivors only — mirrors cfn_hybrid_rag._semantic_search
+            # exactly. resource_filter is a hard admit/reject gate, never
+            # softened into a rank penalty; RRF only ever runs on what
+            # already survived that gate.
+            survivors: list[tuple] = []
             for chunk, score in scored_chunks:
                 if score > CHROMA_DISTANCE_THRESHOLD:
                     dropped += 1
@@ -437,21 +452,36 @@ def _semantic_search(
                     filtered_out += 1
                     continue
 
+                survivors.append((chunk, meta, res))
+
+            for rank, (chunk, meta, res) in enumerate(survivors, start=1):
+                rrf_contribution = 1.0 / (_RRF_K + rank)
+
                 # Deduplicate by (resource, attribute) pair — mirrors CFN prop dedup.
                 attr = meta.get("attribute_name", "") or meta.get("attribute_path", "")
                 attr_key = (
                     f"{res}.{attr}" if attr
                     else f"{res}::content::{hash(chunk.page_content)}"
                 )
+                # Accumulate this query's contribution regardless of whether
+                # attr_key has already been stored — RRF sums reciprocal rank
+                # across every query that surfaced an item, not just its best
+                # appearance. Only content storage below is first-occurrence-
+                # wins (the underlying chunk is the same document regardless
+                # of which query found it).
+                rrf_scores[attr_key] += rrf_contribution
+
+                rc = resource_chunks[res]
+                rc.name = rc.name or res
+                rc.rrf_score = max(rc.rrf_score, rrf_contribution)
+
                 if attr_key in seen_attr_keys:
                     continue
                 seen_attr_keys.add(attr_key)
 
-                rc = resource_chunks[res]
-                rc.name = rc.name or res
-
                 if _CONTEXT_MODE == "compact":
                     parsed = _parse_chunk(chunk.page_content, meta)
+                    parsed.attr_key = attr_key
                     if parsed.is_example:
                         rc.examples.append(parsed.raw_text)
                     elif parsed.attribute_name:
@@ -468,6 +498,23 @@ def _semantic_search(
                 kept += 1
                 if res and res != "_unknown":
                     found_resources.add(res)
+
+        # Resolve final RRF scores now that every query has been processed,
+        # then order attributes within each resource: required attributes
+        # always lead (that distinction is load-bearing for repair — a
+        # missing required attribute fails deployment, a missing optional
+        # one does not), RRF score breaks ties among equal required-ness,
+        # attribute name is the final deterministic tiebreak.
+        for rc in resource_chunks.values():
+            for a in rc.attributes:
+                a.rrf_score = rrf_scores.get(a.attr_key, 0.0)
+            rc.attributes.sort(
+                key=lambda a: (
+                    0 if str(a.required).lower() == "true" else 1,
+                    -a.rrf_score,
+                    a.attribute_name,
+                )
+            )
 
         print(
             f"[TF RAG] Stage 1: {kept + dropped + filtered_out} chunks retrieved, "
@@ -575,7 +622,12 @@ def _assemble_retrieval_context(
 
     if resource_chunks:
         resource_sections: list[str] = []
-        for resource_name, rc in sorted(resource_chunks.items()):
+        # Ordered by fused RRF relevance (descending), not alphabetically —
+        # mirrors cfn_hybrid_rag._assemble_retrieval_context exactly.
+        for resource_name, rc in sorted(
+            resource_chunks.items(),
+            key=lambda item: (-item[1].rrf_score, item[0]),
+        ):
             if _CONTEXT_MODE == "compact":
                 block = _format_resource_block_compact(rc)
             else:
