@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 
 from state import GraphState, RemediationHistory, Message, append_and_cap
-from agents.llm_client import _build_client, _call_llm_with_history
+from agents.llm_client import _build_client, _call_llm_with_history, build_session_id
 from prompts.retriever_prompt import get_query_gen_system
 from tools.template_annotator import (
     TemplateAnnotation,
@@ -497,6 +497,7 @@ def _get_active_error_types(state: GraphState) -> tuple[bool, bool]:
 def _call_query_generator(
     user_content: str,
     system_prompt: str,
+    session_id: str | None = None,
 ) -> tuple[str, str, dict | None]:
     """Send the retrieval prompt to the LLM without conversation history.
 
@@ -507,6 +508,11 @@ def _call_query_generator(
     no value and risked stale prior-iteration reasoning leaking into the
     current query set.
 
+    session_id (OpenRouter only) still pins these otherwise-single-turn
+    calls to the same warm replica across a scenario's iterations, since the
+    (static, per-iac_type) system prompt benefits from cache/routing
+    affinity even though the conversation itself never grows.
+
     Returns (model, raw_response, token_usage).
     """
     client, model = _build_client()
@@ -515,6 +521,7 @@ def _call_query_generator(
         model,
         system=system_prompt,
         messages=[{"role": "user", "content": user_content}],
+        session_id=session_id,
     )
     return model, raw_response, usage
 
@@ -650,6 +657,7 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
         # model, raw_response, usage = _call_query_generator(
         #     user_content=user_content,
         #     system_prompt=query_gen_system,
+        #     session_id=build_session_id(state, "retriever"),
         # )
         # parsed_queries = parse_query_response(raw_response)
         # schema_queries = parsed_queries.get("schema_queries", [])

@@ -13,6 +13,7 @@ from tools.deploy_validator import (
     _TF_INIT_MAX_ATTEMPTS,
     _TF_INIT_RETRY_BACKOFF_SECONDS,
     _TF_PLUGIN_CACHE_DIR,
+    tf_init_lock,
 )
 
 
@@ -313,14 +314,15 @@ def validate_terraform(template: str) -> ValidationResult:
             init_result = None
             for init_attempt in range(1, _TF_INIT_MAX_ATTEMPTS + 1):
                 try:
-                    init_result = subprocess.run(
-                        ["terraform", "init", "-backend=false", "-input=false", "-no-color"],
-                        cwd=tmpdir,
-                        capture_output=True,
-                        text=True,
-                        timeout=1800,
-                        env=run_env,
-                    )
+                    with tf_init_lock():
+                        init_result = subprocess.run(
+                            ["terraform", "init", "-backend=false", "-input=false", "-no-color"],
+                            cwd=tmpdir,
+                            capture_output=True,
+                            text=True,
+                            timeout=1800,
+                            env=run_env,
+                        )
                 except subprocess.TimeoutExpired:
                     timeout_msg = "terraform init timed out after 1800s — provider download stalled"
                     return ValidationResult(
