@@ -129,7 +129,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
         # Three clearly labelled sections are passed to the LLM:
         #   1. Validation Errors  — live errors from current validator output,
         #                           never stale Remediator history.
-        #   2. Schema & Remediation Reference — raw retriever_context, capped
+        #   2. RETRIEVED KNOWLEDGE BASE (RAG CONTEXT) — raw retriever_context, capped
         #                           at _ABLATION_CONTEXT_LIMIT chars so the
         #                           test isolates diagnostic capability from
         #                           context-window size effects.
