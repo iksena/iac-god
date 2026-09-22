@@ -102,7 +102,12 @@ class LLMConfig:
     # provider: LLMProvider = LLMProvider.OPENAI
     model: str = "deepseek/deepseek-v4-flash"
     temperature: float = 0.0
-    max_tokens: int = 8192
+    # None means "send no max_tokens/max_completion_tokens at all" — the
+    # provider applies its own (usually much larger) default ceiling instead
+    # of any fixed number we pick. Only meaningful for OpenRouter/OpenAI
+    # direct (agents/llm_client.py); Anthropic's API requires an explicit
+    # max_tokens and errors out if this is None on that provider.
+    max_tokens: int | None = 8192
     reasoning_enabled: bool = True
 
     # Retry behavior for transient LLM call failures (connection/timeout

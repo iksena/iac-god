@@ -243,12 +243,15 @@ _OPENROUTER_REASONING_EFFORT_SHARE = {
 _MAX_TOKENS_OVERRIDE_CAP = 128_000  # matches OpenRouter's documented Anthropic reasoning-budget cap
 
 
-def _reasoning_expanded_max_tokens(base_max_tokens: int, effort: str) -> int | None:
+def _reasoning_expanded_max_tokens(base_max_tokens: int | None, effort: str) -> int | None:
     """Expand the completion-token ceiling so `base_max_tokens` of visible
     content budget survives even when the model spends `effort`'s documented
     share of the request on reasoning. Returns None (no override) for an
     unrecognized/empty effort string, since guessing a ratio for it would be
-    worse than sending no correction at all."""
+    worse than sending no correction at all — also None (already uncapped,
+    nothing to expand) when base_max_tokens itself is None."""
+    if base_max_tokens is None:
+        return None
     share = _OPENROUTER_REASONING_EFFORT_SHARE.get(effort)
     if share is None:
         return None
@@ -304,13 +307,18 @@ def _call_openai_compat(
         "messages": chat_messages,
     }
 
+    # A resolved value of None means "uncapped": omit the key entirely rather
+    # than sending it as JSON null, so the provider applies its own (usually
+    # much larger) default ceiling instead of any fixed number we pick.
     max_tokens = max_tokens_override if max_tokens_override is not None else DEFAULT_CONFIG.max_tokens
 
     if is_reasoning:
-        request_kwargs["max_completion_tokens"] = max_tokens
+        if max_tokens is not None:
+            request_kwargs["max_completion_tokens"] = max_tokens
     else:
         request_kwargs["temperature"] = DEFAULT_CONFIG.temperature
-        request_kwargs["max_tokens"] = max_tokens
+        if max_tokens is not None:
+            request_kwargs["max_tokens"] = max_tokens
 
     # session_id is an OpenRouter-specific field with no place in the openai
     # SDK's own typed create() signature (confirmed: TypeError "unexpected
@@ -395,6 +403,12 @@ def _call_llm_with_history(
     cache hits (automatic or cache_control-marked) actually land instead of
     depending on incidental routing luck.
     """
+    if DEFAULT_CONFIG.provider == LLMProvider.CLAUDE and DEFAULT_CONFIG.max_tokens is None:
+        raise ValueError(
+            "max_tokens=None (uncapped) is only supported for OpenRouter/OpenAI "
+            "direct — Anthropic's API requires an explicit max_tokens and errors "
+            "out without one. Set --max-tokens to a specific value for Claude."
+        )
     if DEFAULT_CONFIG.provider == LLMProvider.OPENROUTER:
         extra_body: dict = {}
         provider_preferences = build_openrouter_provider_preferences(DEFAULT_CONFIG)
@@ -417,8 +431,12 @@ def _call_llm_with_history(
                 # configured max_tokens instead of letting it eat into the
                 # content budget — max_tokens keeps meaning "guaranteed
                 # content budget" even when it's a fixed, research-controlled
-                # parameter that can't itself be changed.
-                max_tokens_override = DEFAULT_CONFIG.max_tokens + DEFAULT_CONFIG.openrouter_reasoning_max_tokens
+                # parameter that can't itself be changed. Base is already
+                # uncapped (None) when max_tokens is unset entirely — adding a
+                # finite reasoning allowance on top of "uncapped" is still
+                # uncapped, so there's nothing to add.
+                if DEFAULT_CONFIG.max_tokens is not None:
+                    max_tokens_override = DEFAULT_CONFIG.max_tokens + DEFAULT_CONFIG.openrouter_reasoning_max_tokens
             elif DEFAULT_CONFIG.openrouter_reasoning_effort:
                 reasoning_opts["effort"] = DEFAULT_CONFIG.openrouter_reasoning_effort
                 # Effort-only mode has no explicit token budget to add on top,

@@ -33,6 +33,7 @@ class BenchmarkConfig:
     openrouter_reasoning_max_tokens: int | None
     disable_reasoning: bool
     max_tokens: int | None
+    no_max_tokens: bool
     skip_security: bool
     iac_type: str           # "cloudformation" | "terraform"
 
@@ -275,6 +276,7 @@ def run_benchmark(config: BenchmarkConfig) -> dict[str, Any]:
                 openrouter_reasoning_max_tokens=config.openrouter_reasoning_max_tokens,
                 disable_reasoning=config.disable_reasoning,
                 max_tokens=config.max_tokens,
+                no_max_tokens=config.no_max_tokens,
                 skip_security=config.skip_security,
                 iac_type=config.iac_type,
             )
@@ -590,6 +592,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--no-max-tokens",
+        action="store_true",
+        help=(
+            "Send no max_tokens/max_completion_tokens at all, letting the "
+            "provider apply its own (usually much larger) default ceiling "
+            "instead of any fixed number we pick. Takes precedence over "
+            "--max-tokens if both are given. Only supported for OpenRouter/"
+            "OpenAI direct — Anthropic's API requires an explicit max_tokens, "
+            "so this errors out if combined with --provider claude."
+        ),
+    )
+    parser.add_argument(
         "--deploy-target",
         choices=["none", "localstack", "aws"],
         default="localstack",
@@ -614,6 +628,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--retry-errors requires --exclude-completed-csv")
     if args.skip_deploy:
         args.deploy_target = "none"
+    if args.no_max_tokens and args.provider == "claude":
+        parser.error("--no-max-tokens is not supported with --provider claude (Anthropic requires an explicit max_tokens)")
     return args
 
 
@@ -655,6 +671,7 @@ if __name__ == "__main__":
         openrouter_reasoning_max_tokens=args.openrouter_reasoning_max_tokens,
         disable_reasoning=args.disable_reasoning,
         max_tokens=args.max_tokens,
+        no_max_tokens=args.no_max_tokens,
         skip_security=args.skip_security,
         iac_type=args.iac_type,
     )

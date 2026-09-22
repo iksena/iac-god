@@ -29,6 +29,7 @@ def run_pipeline(
     openrouter_reasoning_max_tokens: int | None = None,
     disable_reasoning: bool = False,
     max_tokens: int | None = None,
+    no_max_tokens: bool = False,
     skip_security: bool = False,
     iac_type: str = "cloudformation",
 ) -> GraphState:
@@ -71,7 +72,13 @@ def run_pipeline(
     # and Anthropic direct all read DEFAULT_CONFIG.max_tokens — see
     # agents/llm_client.py), so it's set unconditionally here rather than
     # inside a provider-specific branch above.
-    if max_tokens is not None:
+    if no_max_tokens:
+        # Uncapped takes precedence over --max-tokens; agents/llm_client.py
+        # omits max_tokens/max_completion_tokens from the request entirely
+        # when this is None, letting the provider apply its own default
+        # ceiling. Not supported for Claude — llm_client.py raises there.
+        DEFAULT_CONFIG.max_tokens = None
+    elif max_tokens is not None:
         DEFAULT_CONFIG.max_tokens = max_tokens
 
     # ------------------------------------------------------------------
@@ -241,6 +248,18 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--no-max-tokens",
+        action="store_true",
+        help=(
+            "Send no max_tokens/max_completion_tokens at all, letting the "
+            "provider apply its own (usually much larger) default ceiling "
+            "instead of any fixed number we pick. Takes precedence over "
+            "--max-tokens if both are given. Only supported for OpenRouter/"
+            "OpenAI direct — Anthropic's API requires an explicit max_tokens, "
+            "so this errors out if combined with --provider claude."
+        ),
+    )
+    parser.add_argument(
         "--deploy-target",
         choices=["none", "localstack", "aws"],
         default="localstack",
@@ -275,6 +294,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.skip_deploy:
         args.deploy_target = "none"
+    if args.no_max_tokens and args.provider == "claude":
+        parser.error("--no-max-tokens is not supported with --provider claude (Anthropic requires an explicit max_tokens)")
 
     try:
         result = run_pipeline(
@@ -290,6 +311,7 @@ if __name__ == "__main__":
             openrouter_reasoning_max_tokens=args.openrouter_reasoning_max_tokens,
             disable_reasoning=args.disable_reasoning,
             max_tokens=args.max_tokens,
+            no_max_tokens=args.no_max_tokens,
             skip_security=args.skip_security,
             iac_type=args.iac_type,
         )

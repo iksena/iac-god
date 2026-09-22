@@ -149,6 +149,7 @@ class BaselineConfig:
     openrouter_reasoning_max_tokens: int | None = None
     disable_reasoning: bool = False
     max_tokens: int | None = None
+    no_max_tokens: bool = False
     skip_security: bool = False
 
     pricing: dict[str, dict[str, float]] = field(default_factory=dict)
