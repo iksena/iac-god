@@ -53,6 +53,18 @@ def run_pipeline(
                 "Add it to your .env file or set the environment variable directly."
             )
 
+    elif provider == "deepseek":
+        DEFAULT_CONFIG.provider = LLMProvider.DEEPSEEK
+        # Fallback order: explicit --model arg → DEEPSEEK_MODEL env var → deepseek-chat
+        DEFAULT_CONFIG.model = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        # api_key and base_url are already populated from .env by LLMConfig,
+        # but allow callers to override them via the existing DEFAULT_CONFIG fields.
+        if not DEFAULT_CONFIG.deepseek_api_key:
+            raise ValueError(
+                "DEEPSEEK_API_KEY is not set. "
+                "Add it to your .env file or set the environment variable directly."
+            )
+
     else:  # openrouter (default)
         DEFAULT_CONFIG.provider = LLMProvider.OPENROUTER
         DEFAULT_CONFIG.model = model or "arcee-ai/trinity-large-preview:free"
@@ -157,9 +169,13 @@ if __name__ == "__main__":
     parser.add_argument("--max-iterations", type=int, default=30)
     parser.add_argument(
         "--provider",
-        choices=["openrouter", "claude", "openai"],
+        choices=["openrouter", "claude", "openai", "deepseek"],
         default="openrouter",
-        help="LLM provider to use. 'openai' reads OPENAI_API_KEY / OPENAI_MODEL from .env",
+        help=(
+            "LLM provider to use. 'openai' reads OPENAI_API_KEY / OPENAI_MODEL "
+            "from .env. 'deepseek' reads DEEPSEEK_API_KEY / DEEPSEEK_MODEL "
+            "(default deepseek-chat; also supports deepseek-reasoner) from .env."
+        ),
     )
     parser.add_argument(
         "--model",

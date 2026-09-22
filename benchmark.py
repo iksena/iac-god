@@ -500,11 +500,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-iterations", type=int, default=30)
     parser.add_argument(
         "--provider",
-        choices=["openrouter", "claude", "openai"],
+        choices=["openrouter", "claude", "openai", "deepseek"],
         default="openrouter",
         help=(
             "LLM provider. "
             "'openai' reads OPENAI_API_KEY + OPENAI_MODEL from .env; "
+            "'deepseek' reads DEEPSEEK_API_KEY + DEEPSEEK_MODEL (default "
+            "deepseek-chat; also supports deepseek-reasoner) from .env; "
             "use --model to override the model for this run."
         ),
     )

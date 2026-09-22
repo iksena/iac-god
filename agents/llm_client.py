@@ -8,6 +8,7 @@ Supported providers
 LLMProvider.OPENROUTER  - OpenRouter proxy (any model via openai-compat API)
 LLMProvider.CLAUDE      - Anthropic direct (claude-* models)
 LLMProvider.OPENAI      - OpenAI direct (gpt-4o, o3-mini, codex, etc.)
+LLMProvider.DEEPSEEK    - DeepSeek direct (deepseek-chat, deepseek-reasoner)
 
 Configuring OpenAI
 ------------------
@@ -130,6 +131,13 @@ def _build_client():
         if DEFAULT_CONFIG.openai_base_url:
             kwargs["base_url"] = DEFAULT_CONFIG.openai_base_url
         return OpenAI(**kwargs), DEFAULT_CONFIG.model
+
+    if DEFAULT_CONFIG.provider == LLMProvider.DEEPSEEK:
+        from openai import OpenAI
+        return OpenAI(
+            api_key=DEFAULT_CONFIG.deepseek_api_key,
+            base_url=DEFAULT_CONFIG.deepseek_base_url,
+        ), DEFAULT_CONFIG.model
 
     # Default: Anthropic direct
     import anthropic
@@ -464,6 +472,16 @@ def _call_llm_with_history(
         return _call_openai_compat(
             client, model, system, messages,
             is_reasoning=is_openai_reasoning_model(model),
+        )
+
+    if DEFAULT_CONFIG.provider == LLMProvider.DEEPSEEK:
+        # deepseek-reasoner returns its reasoning as an extra response field
+        # (reasoning_content) rather than needing max_completion_tokens/no-
+        # temperature like OpenAI's o-series, so is_reasoning is always False
+        # here -- plain max_tokens + temperature both apply normally.
+        return _call_openai_compat(
+            client, model, system, messages,
+            is_reasoning=False,
         )
 
     # Anthropic direct
