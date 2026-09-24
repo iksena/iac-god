@@ -169,6 +169,69 @@ Exact pinned versions are in [`requirements.txt`](requirements.txt).
    Requires a `LOCALSTACK_AUTH_TOKEN` (LocalStack Pro is used, for CloudFormation/Terraform provider coverage).
 5. **Environment variables** (`.env`) — at minimum one LLM provider key: `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENAI_API_KEY` (+ `OPENAI_BASE_URL` if proxying, e.g. Azure OpenAI). For real AWS deployment, standard `AWS_PROFILE`/`AWS_DEFAULT_REGION` resolution applies.
 
+### Optional: evaluating Claude models via a subscription instead of API billing
+
+[claude-max-api-proxy](https://github.com/wende/claude-max-api-proxy) wraps the Claude Code CLI as a subprocess and exposes an OpenAI-compatible `/v1/chat/completions` endpoint, so evaluation runs can use a Claude Pro/Max/Team subscription's OAuth session instead of paying per-token Anthropic API rates. This repo's existing `--provider openai` + `OPENAI_BASE_URL` override (see `config.py`'s `openai_base_url`, originally added for Azure OpenAI) points straight at it — no code changes needed to use it.
+
+**Known limits** (confirmed by reading the proxy's own source, not just its README):
+- Only recognizes `claude-opus-*`, `claude-sonnet-*`, `claude-haiku-*` model IDs (and bare `opus`/`sonnet`/`haiku` aliases). **An unrecognized model ID silently falls back to Opus** — no error — so double-check `--model` spelling.
+- It drops `temperature`, `max_tokens`, and any reasoning/effort field from the request entirely; only `--model <alias>` is forwarded to the CLI. There is currently no way to control reasoning effort through this path.
+- Per-call `llm_calls.jsonl`/`token_usage.reported_model` now reflects the model the API actually reports serving (see below), which is the way to confirm a run didn't silently fall back to Opus.
+
+**macOS (quick reference):**
+```bash
+git clone https://github.com/wende/claude-max-api-proxy.git ~/claude-max-api-proxy
+cd ~/claude-max-api-proxy && npm install && npm run build
+node dist/server/standalone.js 3456 &     # or set up the repo's LaunchAgent for auto-start
+curl http://localhost:3456/health
+```
+
+**Ubuntu server:**
+```bash
+# 1. Node.js (via nvm — adjust if the box already has a Node.js source configured)
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+source ~/.nvm/nvm.sh && nvm install --lts
+
+# 2. Claude Code CLI
+npm install -g @anthropic-ai/claude-code
+
+# 3. Auth — a headless server has no browser to complete interactive OAuth, so
+# use a long-lived subscription token instead of `claude auth login`:
+claude setup-token
+# follow the prompts (opens a URL on a machine you can browse from, then you
+# paste the resulting code back into this terminal)
+
+# 4. Build the proxy
+git clone https://github.com/wende/claude-max-api-proxy.git ~/claude-max-api-proxy
+cd ~/claude-max-api-proxy && npm install && npm run build
+
+# 5. Run it as a systemd service instead of a manual background process
+sudo tee /etc/systemd/system/claude-max-api-proxy.service > /dev/null <<EOF
+[Unit]
+Description=Claude Max API Proxy
+After=network.target
+
+[Service]
+Type=simple
+User=$USER
+ExecStart=$(command -v node) $HOME/claude-max-api-proxy/dist/server/standalone.js 3456
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable --now claude-max-api-proxy
+curl http://localhost:3456/health
+```
+
+Then, from this repo, point evaluation at it without touching the shared `.env` (so a real `OPENAI_API_KEY` used elsewhere isn't overwritten):
+```bash
+OPENAI_BASE_URL=http://localhost:3456/v1 OPENAI_API_KEY=not-needed \
+python3 benchmark.py --provider openai --model claude-opus-5 --dataset data/cfn_eval_benchmark_real_aws.csv ...
+```
+
 ## Usage
 
 ### Single request (`main.py`)
@@ -191,6 +254,8 @@ python benchmark.py --iac-type cloudformation --dataset data/iac_eval_deployable
 ```
 
 Runs the full pipeline over every row of a prompt CSV (`row_number`, `prompt`[, `ground_truth_path`]), defaulting to `data/iac_basic.csv` for CloudFormation or `data/tf_basic.csv` for Terraform when `--dataset` is omitted. Supports `--start-row`/`--max-rows`/`--rows` for partial/resumable runs (`--rows` takes a comma-separated list of `row_number` values from the CSV, not positional indexes). Results are written per-run under `benchmark_runs/<iac_type>_<timestamp>/` as a CSV with a fixed schema (`CSV_RESULT_FIELDS`): run id, pass/fail status, iterations used, full LLM token accounting (input/output/prompt/completion/total), scenario policy pass rate, filtered/unfiltered compliance rate, duration, and error message/traceback on failure. `scripts/aggregate_benchmark_run_data.py` merges multiple run folders' results into a single consolidated CSV/JSONL for analysis.
+
+Each run's `runs/<run_id>/llm_calls.jsonl` records one entry per LLM call with `model` set to whatever the API response actually reported serving (falling back to the requested model string only if the response didn't echo one) — not just the model that was requested. This is what to check to confirm a provider that can silently substitute models (e.g. an unrecognized alias falling back to a different model on a proxy) actually served what a run intended.
 
 ## Benchmark data
 
