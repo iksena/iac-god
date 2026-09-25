@@ -753,7 +753,7 @@ def display_results_table(
     *,
     failed_only: bool = False,
     min_iterations: int | None = None,
-    prompt_chars: int = 20,
+    prompt_chars: int = 100,
     print_table: bool = True,
 ) -> str:
     """Render a results CSV as a markdown table for terminal display.
@@ -890,35 +890,150 @@ def display_results_table(
 
 if __name__ == "__main__":
     # filter_runtime_error_rows(
-    #     input_csv='benchmark_runs/cloudformation_20260829_102210/results.csv',
-    #     output_csv='benchmark_runs/cloudformation_20260829_102210/results_without_runtime_error.csv',
+    #     input_csv='benchmark_runs/terraform_20260922_144140/results.csv',
+    #     output_csv='benchmark_runs/terraform_20260922_144140/results_without_runtime_error.csv',
     #     status_col='status',
     # )
 
     # merge_results_from_directory(
-    #     base_dir="./benchmark_runs/cloudformation_20260826_185515_CFNEvalRealAWS",
+    #     base_dir="./benchmark_runs/cloudformation_20260922_235243_GLM53Flash",
+    #     benchmark_csv="data/cfn_eval_benchmark_real_aws.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/cloudformation_20260922_232123_DPIaCEval_O3Mini",
+    #     benchmark_csv="data/iac_with_difficulty_levels.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/terraform_20260908_171434_IaCEval",
+    #     benchmark_csv="data/iac_eval_benchmark.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/cloudformation_20260908_115729_DSV4F_Dep",
     #     benchmark_csv="data/cfn_eval_benchmark_real_aws_diff345.csv",
     #     prefer_final_validation_passed=True,
     # )
     # merge_results_from_directory(
-    #     base_dir="./benchmark_runs/terraform_20260823_213429 TFEvalV2",
-    #     benchmark_csv="data/tf_benchmark_diff_345.csv",
+    #     base_dir="./benchmark_runs/ClaudeCodeDSVF4_CFNEvalRealAWS_20260910_230629",
+    #     benchmark_csv="data/cfn_eval_benchmark_real_aws_diff345.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/baseline_opencode_cloudformation_20260917_232736_DSV4F_Full",
+    #     benchmark_csv="data/cfn_eval_benchmark_real_aws.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/cloudformation_20260915_154934_Gemini36Flash",
+    #     benchmark_csv="data/cfn_eval_benchmark_real_aws_diff345_12Sep.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/cloudformation_20260917_170146_DSV4F_Full",
+    #     benchmark_csv="data/cfn_eval_benchmark_real_aws.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/baseline_opencode_retriever_terraform_20260919_211653_Ablation_HarnessAndRetriever",
+    #     benchmark_csv="data/tf_eval_benchmark_ablation.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/terraform_20260920_044840_Ablation_DSV4F",
+    #     benchmark_csv="data/tf_eval_benchmark_ablation.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/terraform_20260920_135237_DSV4_Full",
+    #     benchmark_csv="data/tf_eval_benchmark_real_aws.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/cloudformation_20260921_132308_Ablation_DSV4F",
+    #     benchmark_csv="data/cfn_eval_benchmark_ablation.csv",
     #     prefer_final_validation_passed=True,
     # )
 
+    # display_results_table(
+    #     "benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/results_merged.csv",
+    #     dataset_csv="data/cfn_eval_benchmark_real_aws.csv",
+    #     failed_only=True,
+    #     min_iterations=10,
+    # )
+    # display_results_table(
+    #     "benchmark_runs/baseline_opencode_cloudformation_20260917_232736_DSV4F_Full/results_merged.csv",
+    #     dataset_csv="data/cfn_eval_benchmark_real_aws.csv",
+    #     failed_only=True,
+    #     min_iterations=10,
+    # )
+
+    move_run_folders_from_csv(
+        input_csv='benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/results_merged.csv',
+        runs_dir='runs',
+        target_subfolder_name='CFNEvalRealAWS_DeepseekV4Flash_sec_runs',
+        run_id_col='run_id',
+        dry_run=False,
+    )
     # move_run_folders_from_csv(
-    #     input_csv='benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/results_merged.csv',
+    #     input_csv='benchmark_runs/baseline_opencode_cloudformation_20260917_232736_DSV4F_Full/results_merged.csv',
     #     runs_dir='runs',
-    #     target_subfolder_name='CFNEvalV2_DeepseekV4Flash_security_runs',
+    #     target_subfolder_name='CFNEvalRealAWS_Opencode_DeepseekV4Flash_sec_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/terraform_20260908_171434_IaCEval/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='IaCEval_DeepseekV4Flash_lint_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/cloudformation_20260908_115729_DSV4F_Dep/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='CFNEvalRealAWS_DeepseekV4Flash_deployability_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/ClaudeCodeDSVF4_CFNEvalRealAWS_20260910_230629/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='ClaudeCodeDSVF4_CFNEvalRealAWS_20260910_230629',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/baseline_opencode_cloudformation_20260917_232736_DSV4F_Full/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='OpencodeDSV4F_CFNEvalRealAWS_Full_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/cloudformation_20260915_154934_Gemini36Flash/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='Gemini36Flash_CFNEvalRealAWS_runs',
     #     run_id_col='run_id',
     #     dry_run=False,
     # )
 
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/baseline_opencode_cloudformation_20260917_232736_DSV4F_Full/results_merged.csv", 
+    #     base_dir="runs/CFNEvalRealAWS_Opencode_DeepseekV4Flash_sec_runs", 
+    #     output_csv="benchmark_runs/baseline_opencode_cloudformation_20260917_232736_DSV4F_Full/CFNEvalRealAWS_Opencode_DeepseekV4Flash_sec_runs.csv"
+    # )
     merge_results_with_reports(
-        input_csv="benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/results_merged.csv", 
-        base_dir="runs/CFNEvalV2_DeepseekV4Flash_security_runs", 
-        output_csv="benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/CFNEvalV2_DeepseekV4Flash_security_runs.csv"
+        input_csv="benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/results_merged.csv", 
+        base_dir="runs/CFNEvalRealAWS_DeepseekV4Flash_sec_runs", 
+        output_csv="benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/CFNEvalRealAWS_DeepseekV4Flash_sec_runs.csv"
     )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/cloudformation_20260915_154934_Gemini36Flash/results_merged.csv", 
+    #     base_dir="runs/Gemini36Flash_CFNEvalRealAWS_runs", 
+    #     output_csv="benchmark_runs/cloudformation_20260915_154934_Gemini36Flash/CFNEvalRealAWS_Gemini36Flash_sec_runs.csv"
+    # )
 
     # merge_results(
     #     csv_paths=[
