@@ -274,26 +274,117 @@ def filter_runtime_error_rows(
     )
     return filtered_df
 
+
+def find_timeout_retry_candidates(
+    input_csv,
+    output_csv=None,
+    status_col="status",
+    cap_reached_col="iteration_cap_reached",
+):
+    """Find harness_timeout rows worth retrying with a bigger --scenario-timeout.
+
+    Not every harness_timeout row is the same kind of failure: one that also
+    has iteration_cap_reached=True legitimately used its whole iteration
+    budget and only incidentally also ran past the wall-clock limit around
+    the same time -- a bigger --scenario-timeout isn't obviously the fix for
+    that one. A row with iteration_cap_reached=False got killed by the
+    process-level timeout with iteration budget still unused -- that one
+    genuinely needed more TIME, not more iterations, and is exactly what
+    --scenario-timeout 7200 (or higher) is for.
+
+    Deliberately keyed on iteration_cap_reached rather than comparing
+    iterations_used against a --max-iterations value passed in separately:
+    that column is written per-row by the run that produced it, so this
+    stays correct even against a results_merged.csv stitched together from
+    runs that used different --max-iterations settings (e.g. 15 vs 30) --
+    supplying the "right" threshold by hand for a mixed file would silently
+    get some rows wrong.
+
+    Prints a --rows-ready comma-separated row_number list (paste straight
+    into the CLI flag, e.g. the resume/retry commands in baselines/README.md)
+    and, if output_csv is given, writes the matching rows there too.
+    """
+    if not os.path.exists(input_csv):
+        raise FileNotFoundError(f"Input CSV not found: {input_csv}")
+
+    df = pd.read_csv(input_csv)
+    for col in (status_col, cap_reached_col, "row_number"):
+        if col not in df.columns:
+            raise ValueError(f"Column '{col}' not found in {input_csv}")
+
+    status_values = df[status_col].fillna("").astype(str).str.strip().str.lower()
+    # Written as the literal string "True"/"False" by csv.DictWriter (the
+    # underlying value is a Python bool) -- read back as text, not a bool
+    # dtype, so compare case-insensitively rather than relying on pandas'
+    # own (inconsistent across dtypes) truthiness.
+    cap_reached = (
+        df[cap_reached_col].fillna("").astype(str).str.strip().str.lower() == "true"
+    )
+    candidates = df[(status_values == "harness_timeout") & ~cap_reached].copy()
+
+    row_numbers = sorted(int(float(x)) for x in candidates["row_number"].tolist())
+    print(
+        f"{len(row_numbers)} harness_timeout row(s) with iteration budget still "
+        f"unused (out of {int((status_values == 'harness_timeout').sum())} "
+        f"harness_timeout row(s) total) in '{input_csv}':"
+    )
+    for _, row in candidates.sort_values("row_number").iterrows():
+        extra = []
+        if "iterations_used" in candidates.columns:
+            extra.append(f"iters={row['iterations_used']}")
+        if "duration_seconds" in candidates.columns:
+            extra.append(f"duration={row['duration_seconds']}")
+        print(f"  row {int(float(row['row_number']))}: {', '.join(extra)}")
+
+    print(f"\n--rows \"{','.join(str(n) for n in row_numbers)}\"")
+
+    if output_csv:
+        candidates.to_csv(output_csv, index=False)
+        print(f"\nWrote {len(candidates)} row(s) to '{output_csv}'")
+
+    return row_numbers
+
+
 def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_csv="results_merged.csv"):
+    """
+    ``base_dir`` is searched RECURSIVELY for ``final_report.json`` files, at
+    any depth -- it can be pointed straight at the whole ``runs/`` folder,
+    not just a single flat directory of ``<run_id>/final_report.json``
+    folders. This matters because ``move_run_folders_from_csv`` (and manual
+    archiving) commonly organizes a batch's run folders into a named
+    subfolder first, e.g. ``runs/<model_batch_name>/<run_id>/final_report.json``
+    -- a non-recursive scan of ``runs/`` directly would see
+    ``<model_batch_name>`` as if it were itself a run_id, find no
+    ``final_report.json`` immediately inside it, and silently skip every
+    report nested one level deeper, with no error or warning. If the SAME
+    run_id is found more than once (e.g. a partially-completed archive move
+    left a stale copy behind), the LAST one found wins and a warning is
+    printed -- this should be rare, since a real archive move (see
+    ``move_run_folders_from_csv``) removes the original location.
+    """
     if not os.path.exists(input_csv):
         print(f"Error: The input CSV '{input_csv}' does not exist.")
         return
 
     # 1. Load the existing results
     df_results = pd.read_csv(input_csv)
-    
-    # 2. Extract additional data from the runs directory
-    aggregated_extra_data = []
-    
+
+    # 2. Extract additional data from the runs directory (recursively --
+    # see the docstring above for why this can't just check one level down).
+    # Keyed by the row's own resolved run_id (not just the folder name it was
+    # found at) so a genuine duplicate is caught by the same identity the
+    # later merge join actually uses.
+    aggregated_extra_data = {}
+    seen_report_paths = {}
+    duplicate_run_id_examples = {}
+
     if os.path.exists(base_dir):
-        for run_id in os.listdir(base_dir):
-            run_dir = os.path.join(base_dir, run_id)
-            if not os.path.isdir(run_dir):
+        for root, _dirs, files in os.walk(base_dir):
+            if "final_report.json" not in files:
                 continue
 
-            report_path = os.path.join(run_dir, "final_report.json")
-            if not os.path.exists(report_path):
-                continue
+            run_id = os.path.basename(root)
+            report_path = os.path.join(root, "final_report.json")
 
             with open(report_path, "r", encoding="utf-8") as f:
                 try:
@@ -465,14 +556,29 @@ def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_
                 stage_name = stage_res.get("stage", "unknown")
                 row_extra[f"val_stage_{stage_name}_passed"] = stage_res.get("passed", False)
 
-            aggregated_extra_data.append(row_extra)
+            resolved_run_id = row_extra["run_id"]
+            if resolved_run_id in aggregated_extra_data:
+                duplicate_run_id_examples.setdefault(
+                    resolved_run_id, (seen_report_paths[resolved_run_id], report_path)
+                )
+            aggregated_extra_data[resolved_run_id] = row_extra
+            seen_report_paths[resolved_run_id] = report_path
+
+        if duplicate_run_id_examples:
+            n = len(duplicate_run_id_examples)
+            example_id, (path_a, path_b) = next(iter(duplicate_run_id_examples.items()))
+            print(
+                f"Warning: {n} run_id(s) found at more than one path under '{base_dir}' "
+                f"(used the later one found for each); e.g. '{example_id}' at both "
+                f"'{path_a}' and '{path_b}'."
+            )
     else:
         print(f"Warning: The directory '{base_dir}' does not exist. No extra data will be merged.")
 
     # 3. Merge the dataframes
     if aggregated_extra_data:
-        df_extra = pd.DataFrame(aggregated_extra_data)
-        
+        df_extra = pd.DataFrame(list(aggregated_extra_data.values()))
+
         # Merge on 'run_id' using a left join so we keep all rows from results.csv
         df_merged = pd.merge(df_results, df_extra, on="run_id", how="left")
     else:

@@ -133,7 +133,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     llm_record = recorder.record_llm_call(
         state=state,
         agent="engineer",
-        model=model,
+        model=usage.get("reported_model") or model,
         prompt=f"SYSTEM:\n{system}\n\nUSER:\n{user_content}",
         response=content,
         token_usage=usage,

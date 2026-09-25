@@ -358,6 +358,15 @@ def _call_openai_compat(
             "cache_read_input_tokens": _to_int(getattr(prompt_details, "cached_tokens", 0)),
             "reasoning_tokens": _to_int(getattr(completion_details, "reasoning_tokens", 0)),
         }
+        # The response's own `model` field is what actually served the
+        # request, which can differ from the model string we asked for --
+        # e.g. a proxy that silently falls back to a different model on an
+        # unrecognized alias. Callers use this (falling back to the
+        # requested model when the response doesn't echo one) so
+        # LLMCallRecord.model reflects reality, not just the request.
+        reported_model = getattr(r, "model", None)
+        if reported_model:
+            usage["reported_model"] = reported_model
 
         choices = getattr(r, "choices", None) or []
         if not choices:
@@ -499,6 +508,9 @@ def _call_llm_with_history(
             "cache_creation_input_tokens": _to_int(getattr(r.usage, "cache_creation_input_tokens", 0)),
             "cache_read_input_tokens": _to_int(getattr(r.usage, "cache_read_input_tokens", 0)),
         }
+        reported_model = getattr(r, "model", None)
+        if reported_model:
+            usage["reported_model"] = reported_model
         blocks = getattr(r, "content", None) or []
         text = "".join(
             getattr(b, "text", "") for b in blocks if getattr(b, "type", None) == "text"
