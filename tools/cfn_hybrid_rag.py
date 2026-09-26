@@ -672,33 +672,38 @@ def execute_hybrid_retrieval(
     seed_resources: set[str],
     error_resources: set[str] | None = None,
 ) -> str:
-    """Execute full hybrid retrieval: ChromaDB semantic search → Neo4j schema lookup.
+    """ABLATION (no-dense-rag): Neo4j graph lookup only. ChromaDB Stage 1 is
+    permanently disabled — identified_resources comes solely from
+    seed_resources (deterministic AST/regex extraction from the template),
+    never from semantic search. retrieval_queries (HyDE) is accepted for
+    call-site compatibility with retriever_agent but is unused: Stage 2 keys
+    on resource type, not on free-text queries, so there is nothing left in
+    this pipeline for HyDE queries to feed.
 
     Args:
-        retrieval_queries: HyDE queries generated upstream by the retriever agent.
+        retrieval_queries: Unused in this ablation — see docstring above.
         seed_resources:    AWS resource type names pre-extracted from the template
                            annotation by the caller (via extract_resource_types()).
-                           Used as an allowlist for ChromaDB results — only chunks
-                           belonging to these resource types are kept, preventing
-                           unrelated resources from polluting the context.
+                           This is the sole source of identified_resources now
+                           that ChromaDB is disabled.
         error_resources:   AWS resource type names extracted from active cfn-lint
                            or deployment validation errors (e.g. {"AWS::EC2::SecurityGroup",
                            "AWS::EC2::Instance"}). When provided, Neo4j schema lookups
-                           are scoped to these resources only (plus any chroma-covered
-                           ones), avoiding full-template schema dumps when only a
-                           subset of resources have active errors.
-                           Pass None (default) for initial generation where no prior
-                           error signal exists.
+                           are scoped to these resources only, avoiding full-template
+                           schema dumps when only a subset of resources have active
+                           errors. Pass None (default) for initial generation where
+                           no prior error signal exists.
 
     Returns:
         A multi-section context string for the remediator, or a short fallback
         message when no resources could be identified.
     """
-    # Stage 1: semantic search scoped to template resources only
-    resource_chunks, chroma_resources = _semantic_search(
-        retrieval_queries,
-        resource_filter=seed_resources,
-    )
+    # Stage 1 (ChromaDB semantic search) intentionally skipped for this
+    # ablation — see module docstring. resource_chunks/chroma_resources stay
+    # empty; identified_resources is seed_resources alone.
+    print("[RAG Tool] ABLATION MODE: Skipping ChromaDB semantic search (no-dense-rag).")
+    resource_chunks: dict = {}
+    chroma_resources: set[str] = set()
 
     identified_resources = seed_resources | chroma_resources
 
@@ -711,7 +716,7 @@ def execute_hybrid_retrieval(
         chroma_covered=chroma_resources,
         error_resources=error_resources,
     )
-    if not schema_blocks and not resource_chunks:
+    if not schema_blocks:
         return "Failed to connect to Knowledge Graph."
 
     return _assemble_retrieval_context(resource_chunks, schema_blocks)
