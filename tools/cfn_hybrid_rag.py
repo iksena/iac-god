@@ -672,7 +672,10 @@ def execute_hybrid_retrieval(
     seed_resources: set[str],
     error_resources: set[str] | None = None,
 ) -> str:
-    """Execute full hybrid retrieval: ChromaDB semantic search → Neo4j schema lookup.
+    """ABLATION (no-graph-rag): ChromaDB semantic search only. Neo4j Stage 2
+    is permanently disabled — the query-generation LLM call (HyDE) upstream
+    in retriever_agent is untouched, so this isolates the Graph RAG
+    contribution from the rest of the retrieval pipeline.
 
     Args:
         retrieval_queries: HyDE queries generated upstream by the retriever agent.
@@ -681,14 +684,10 @@ def execute_hybrid_retrieval(
                            Used as an allowlist for ChromaDB results — only chunks
                            belonging to these resource types are kept, preventing
                            unrelated resources from polluting the context.
-        error_resources:   AWS resource type names extracted from active cfn-lint
-                           or deployment validation errors (e.g. {"AWS::EC2::SecurityGroup",
-                           "AWS::EC2::Instance"}). When provided, Neo4j schema lookups
-                           are scoped to these resources only (plus any chroma-covered
-                           ones), avoiding full-template schema dumps when only a
-                           subset of resources have active errors.
-                           Pass None (default) for initial generation where no prior
-                           error signal exists.
+        error_resources:   Unused in this ablation (only consumed by the Neo4j
+                           Stage 2 scoping logic, which never runs here). Kept
+                           in the signature so retriever_agent's call site
+                           needs no changes.
 
     Returns:
         A multi-section context string for the remediator, or a short fallback
@@ -705,13 +704,13 @@ def execute_hybrid_retrieval(
     if not identified_resources:
         return "No specific AWS resources identified in template or retrieval context."
 
-    # Stage 2: Neo4j lookup scoped to error resources (when provided)
-    schema_blocks = _graph_schema_lookup(
-        identified_resources,
-        chroma_covered=chroma_resources,
-        error_resources=error_resources,
-    )
-    if not schema_blocks and not resource_chunks:
-        return "Failed to connect to Knowledge Graph."
+    # Stage 2 (Neo4j graph lookup) intentionally skipped for this ablation —
+    # see module docstring. schema_blocks is always empty; only the ChromaDB
+    # dense-retrieval context reaches the remediator.
+    print("[RAG Tool] ABLATION MODE: Skipping Neo4j graph lookup (no-graph-rag).")
+    schema_blocks: list[str] = []
+
+    if not resource_chunks:
+        return "No relevant schema context found via dense (ChromaDB) retrieval."
 
     return _assemble_retrieval_context(resource_chunks, schema_blocks)
