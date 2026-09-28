@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from state import GraphState, Message, append_and_cap
-from agents.llm_client import _build_client, _call_llm_with_history
+from agents.llm_client import _build_client, _call_llm_with_history, build_session_id
 from prompts.engineer_prompt import (
     get_engineer_system_prompt,
     get_engineer_user_initial,
@@ -125,6 +125,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     content, usage = _call_llm_with_history(
         client, model, system,
         history_to_pass + [user_msg],
+        session_id=build_session_id(state, "engineer"),
     )
     template = _strip_code_fences(content)
     assistant_msg: Message = {"role": "assistant", "content": content}
@@ -132,7 +133,7 @@ def engineer_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     llm_record = recorder.record_llm_call(
         state=state,
         agent="engineer",
-        model=model,
+        model=usage.get("reported_model") or model,
         prompt=f"SYSTEM:\n{system}\n\nUSER:\n{user_content}",
         response=content,
         token_usage=usage,

@@ -88,6 +88,7 @@ class LLMProvider(Enum):
     OPENROUTER = "openrouter"
     CLAUDE = "claude"
     OPENAI = "openai"
+    DEEPSEEK = "deepseek"
 
 
 class DeployTarget(Enum):
@@ -102,7 +103,12 @@ class LLMConfig:
     # provider: LLMProvider = LLMProvider.OPENAI
     model: str = "deepseek/deepseek-v4-flash"
     temperature: float = 0.0
-    max_tokens: int = 8192
+    # None means "send no max_tokens/max_completion_tokens at all" — the
+    # provider applies its own (usually much larger) default ceiling instead
+    # of any fixed number we pick. Only meaningful for OpenRouter/OpenAI
+    # direct (agents/llm_client.py); Anthropic's API requires an explicit
+    # max_tokens and errors out if this is None on that provider.
+    max_tokens: int | None = 8192
     reasoning_enabled: bool = True
 
     # Retry behavior for transient LLM call failures (connection/timeout
@@ -173,6 +179,23 @@ class LLMConfig:
     # Leave empty to use the default api.openai.com endpoint.
     openai_base_url: str = field(
         default_factory=lambda: os.getenv("OPENAI_BASE_URL", "")
+    )
+
+    # DeepSeek direct
+    # Activate by setting LLM_PROVIDER=deepseek in .env (or building LLMConfig
+    # with provider=LLMProvider.DEEPSEEK explicitly in your entry-point).
+    #
+    # DeepSeek's API is OpenAI-compatible (same openai-python client), so it's
+    # handled by the same _call_openai_compat() path as LLMProvider.OPENAI --
+    # see agents/llm_client.py. Supported models include deepseek-chat and
+    # deepseek-reasoner; neither needs max_completion_tokens or a temperature
+    # omission (that o-series quirk is OpenAI-specific), so is_reasoning is
+    # always False for this provider.
+    deepseek_api_key: str = field(
+        default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", "")
+    )
+    deepseek_base_url: str = field(
+        default_factory=lambda: os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     )
 
 

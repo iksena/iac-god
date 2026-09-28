@@ -13,7 +13,8 @@ The `config` argument accepted by _build_summary is duck-typed: any object
 exposing dataset_path, iac_type, provider, model, deploy_target,
 openrouter_provider_only, openrouter_min_quantization,
 openrouter_reasoning_effort, openrouter_reasoning_max_tokens,
-disable_reasoning, max_tokens, skip_security and max_iterations will work.
+disable_reasoning, max_tokens, no_max_tokens, skip_security and
+max_iterations will work.
 """
 import csv
 import json
@@ -39,6 +40,7 @@ class SummaryConfig(Protocol):
     openrouter_reasoning_max_tokens: int | None
     disable_reasoning: bool
     max_tokens: int | None
+    no_max_tokens: bool
     skip_security: bool
     max_iterations: int
 
@@ -56,6 +58,9 @@ CSV_RESULT_FIELDS = [
     "token_output_tokens",
     "token_prompt_tokens",
     "token_completion_tokens",
+    "token_cache_creation_input_tokens",
+    "token_cache_read_input_tokens",
+    "token_reasoning_tokens",
     "scenario_policy_pass_rate",
     "filtered_compliance_rate",
     "unfiltered_compliance_rate",
@@ -83,11 +88,22 @@ def _token_totals(llm_call_log: list[dict[str, Any]]) -> dict[str, int]:
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "all_tokens": 0,
+        # Cache/reasoning token counts are observability metrics, not part of
+        # all_tokens: cache tokens are billed at different rates than normal
+        # input/output tokens (Anthropic's input_tokens already excludes
+        # them; OpenRouter reports them separately too), so folding them in
+        # would conflate a token-volume metric with a cost metric.
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "reasoning_tokens": 0,
     }
 
     for call in llm_call_log:
         usage = call.get("token_usage") or {}
-        for key in ("input_tokens", "output_tokens", "prompt_tokens", "completion_tokens"):
+        for key in (
+            "input_tokens", "output_tokens", "prompt_tokens", "completion_tokens",
+            "cache_creation_input_tokens", "cache_read_input_tokens", "reasoning_tokens",
+        ):
             totals[key] += _safe_int(usage.get(key), 0)
 
     totals["all_tokens"] = (
@@ -401,6 +417,7 @@ def _build_summary(
         "openrouter_reasoning_max_tokens": config.openrouter_reasoning_max_tokens,
         "disable_reasoning": config.disable_reasoning,
         "max_tokens": config.max_tokens,
+        "no_max_tokens": config.no_max_tokens,
         "skip_security": config.skip_security,
         "max_iterations": config.max_iterations,
         "rows_requested": selected_row_count,
@@ -456,6 +473,9 @@ def _row_to_csv(payload: dict[str, Any]) -> dict[str, Any]:
         "token_output_tokens": token_usage.get("output_tokens"),
         "token_prompt_tokens": token_usage.get("prompt_tokens"),
         "token_completion_tokens": token_usage.get("completion_tokens"),
+        "token_cache_creation_input_tokens": token_usage.get("cache_creation_input_tokens"),
+        "token_cache_read_input_tokens": token_usage.get("cache_read_input_tokens"),
+        "token_reasoning_tokens": token_usage.get("reasoning_tokens"),
         "scenario_policy_pass_rate": policy_metrics.get("scenario_policy_pass_rate"),
         "filtered_compliance_rate": policy_metrics.get("filtered_compliance_rate"),
         "unfiltered_compliance_rate": policy_metrics.get("unfiltered_compliance_rate"),

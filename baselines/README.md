@@ -248,6 +248,56 @@ python -m baselines.harness_baseline --harness opencode --iac-type cloudformatio
 Run the same command without `--enable-retrieval` for the matching harness-only
 arm.
 
+### Alternate backends: DeepSeek's own API
+
+Same mechanism again — `--base-url https://api.deepseek.com --api-key-env
+DEEPSEEK_API_KEY` matches exactly what `agents/llm_client.py` does for
+`LLMProvider.DEEPSEEK` in the multi-agent pipeline (`openai.OpenAI(api_key=...,
+base_url=...)` — DeepSeek's API is OpenAI-compatible, so this is the OpenCode
+path only; Claude Code has no Anthropic-Messages-shaped endpoint to reach
+here, unlike Ollama). `deepseek-v4-flash` is a real, working model name on
+DeepSeek's native API (confirmed directly against the real endpoint — it
+canonicalizes internally to `deepseek-flash` but the alias works), not just
+an OpenRouter/Ollama-specific rebrand.
+
+```bash
+export DEEPSEEK_API_KEY=<your key>
+
+python -m baselines.harness_baseline \
+  --harness opencode --iac-type terraform \
+  --dataset data/tf_eval_benchmark_real_aws.csv \
+  --model deepseek-v4-flash \
+  --base-url https://api.deepseek.com --api-key-env DEEPSEEK_API_KEY \
+  --provider-name deepseek-direct --no-retry-proxy \
+  --deploy-target aws --max-iterations 15 --scenario-timeout 7200
+```
+
+**`--provider-name` must not be `deepseek`** (or `openai`, `anthropic`,
+`google`, `groq`, or any other provider OpenCode ships built-in support
+for) — found the hard way. OpenCode has its own internal catalog for a
+provider literally named `deepseek`, with its own hardcoded model list
+(`deepseek-flash`, `deepseek-v4-pro`, ...) that does not include the
+`deepseek-v4-flash` alias. Naming our custom provider block `deepseek` too
+made OpenCode validate the model against *its* built-in list instead of the
+`models` dict we registered, failing in `SessionPrompt.getModel()` before any
+request was even attempted — confirmed via `opencode run --print-logs
+--log-level DEBUG` (the driver's own `harness_debug.log` came back empty,
+because nothing had happened yet to log): `ProviderModelNotFoundError: Model
+not found: deepseek/deepseek-v4-flash. Did you mean: deepseek-flash,
+deepseek-v4-pro?`. `--provider-name deepseek-direct` (any name that isn't a
+real provider OpenCode recognizes) avoids the collision entirely and the
+same session then runs cleanly end to end. This is not specific to DeepSeek —
+any future native-API integration should default to a `-direct`-suffixed
+name rather than the provider's own bare name.
+
+Verified end-to-end with the fix (`--deploy-target none` pilot): a full
+write → validate (pass) → deploy (disabled) → submit session, same as the
+Ollama verification above. Also burst-tested (20 raw calls, no harness, real
+`https://api.deepseek.com` endpoint): 20/20 healthy, 0 empty completions,
+latency mostly 0.7-4.6s — even snappier than Ollama's cloud tier, consistent
+with going direct rather than through an intermediary. Same caveat as
+Ollama: promising at this sample size, not swept at scale yet.
+
 ## What is held constant, and what is not
 
 **Held constant** — `run_all_validators()` is the exact function
