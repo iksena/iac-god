@@ -8,6 +8,7 @@ Supported providers
 LLMProvider.OPENROUTER  - OpenRouter proxy (any model via openai-compat API)
 LLMProvider.CLAUDE      - Anthropic direct (claude-* models)
 LLMProvider.OPENAI      - OpenAI direct (gpt-4o, o3-mini, codex, etc.)
+LLMProvider.DEEPSEEK    - DeepSeek direct (deepseek-chat, deepseek-reasoner)
 
 Configuring OpenAI
 ------------------
@@ -131,6 +132,13 @@ def _build_client():
             kwargs["base_url"] = DEFAULT_CONFIG.openai_base_url
         return OpenAI(**kwargs), DEFAULT_CONFIG.model
 
+    if DEFAULT_CONFIG.provider == LLMProvider.DEEPSEEK:
+        from openai import OpenAI
+        return OpenAI(
+            api_key=DEFAULT_CONFIG.deepseek_api_key,
+            base_url=DEFAULT_CONFIG.deepseek_base_url,
+        ), DEFAULT_CONFIG.model
+
     # Default: Anthropic direct
     import anthropic
     return anthropic.Anthropic(
@@ -243,12 +251,15 @@ _OPENROUTER_REASONING_EFFORT_SHARE = {
 _MAX_TOKENS_OVERRIDE_CAP = 128_000  # matches OpenRouter's documented Anthropic reasoning-budget cap
 
 
-def _reasoning_expanded_max_tokens(base_max_tokens: int, effort: str) -> int | None:
+def _reasoning_expanded_max_tokens(base_max_tokens: int | None, effort: str) -> int | None:
     """Expand the completion-token ceiling so `base_max_tokens` of visible
     content budget survives even when the model spends `effort`'s documented
     share of the request on reasoning. Returns None (no override) for an
     unrecognized/empty effort string, since guessing a ratio for it would be
-    worse than sending no correction at all."""
+    worse than sending no correction at all — also None (already uncapped,
+    nothing to expand) when base_max_tokens itself is None."""
+    if base_max_tokens is None:
+        return None
     share = _OPENROUTER_REASONING_EFFORT_SHARE.get(effort)
     if share is None:
         return None
@@ -304,13 +315,18 @@ def _call_openai_compat(
         "messages": chat_messages,
     }
 
+    # A resolved value of None means "uncapped": omit the key entirely rather
+    # than sending it as JSON null, so the provider applies its own (usually
+    # much larger) default ceiling instead of any fixed number we pick.
     max_tokens = max_tokens_override if max_tokens_override is not None else DEFAULT_CONFIG.max_tokens
 
     if is_reasoning:
-        request_kwargs["max_completion_tokens"] = max_tokens
+        if max_tokens is not None:
+            request_kwargs["max_completion_tokens"] = max_tokens
     else:
         request_kwargs["temperature"] = DEFAULT_CONFIG.temperature
-        request_kwargs["max_tokens"] = max_tokens
+        if max_tokens is not None:
+            request_kwargs["max_tokens"] = max_tokens
 
     # session_id is an OpenRouter-specific field with no place in the openai
     # SDK's own typed create() signature (confirmed: TypeError "unexpected
@@ -342,6 +358,15 @@ def _call_openai_compat(
             "cache_read_input_tokens": _to_int(getattr(prompt_details, "cached_tokens", 0)),
             "reasoning_tokens": _to_int(getattr(completion_details, "reasoning_tokens", 0)),
         }
+        # The response's own `model` field is what actually served the
+        # request, which can differ from the model string we asked for --
+        # e.g. a proxy that silently falls back to a different model on an
+        # unrecognized alias. Callers use this (falling back to the
+        # requested model when the response doesn't echo one) so
+        # LLMCallRecord.model reflects reality, not just the request.
+        reported_model = getattr(r, "model", None)
+        if reported_model:
+            usage["reported_model"] = reported_model
 
         choices = getattr(r, "choices", None) or []
         if not choices:
@@ -395,6 +420,12 @@ def _call_llm_with_history(
     cache hits (automatic or cache_control-marked) actually land instead of
     depending on incidental routing luck.
     """
+    if DEFAULT_CONFIG.provider == LLMProvider.CLAUDE and DEFAULT_CONFIG.max_tokens is None:
+        raise ValueError(
+            "max_tokens=None (uncapped) is only supported for OpenRouter/OpenAI "
+            "direct — Anthropic's API requires an explicit max_tokens and errors "
+            "out without one. Set --max-tokens to a specific value for Claude."
+        )
     if DEFAULT_CONFIG.provider == LLMProvider.OPENROUTER:
         extra_body: dict = {}
         provider_preferences = build_openrouter_provider_preferences(DEFAULT_CONFIG)
@@ -417,8 +448,12 @@ def _call_llm_with_history(
                 # configured max_tokens instead of letting it eat into the
                 # content budget — max_tokens keeps meaning "guaranteed
                 # content budget" even when it's a fixed, research-controlled
-                # parameter that can't itself be changed.
-                max_tokens_override = DEFAULT_CONFIG.max_tokens + DEFAULT_CONFIG.openrouter_reasoning_max_tokens
+                # parameter that can't itself be changed. Base is already
+                # uncapped (None) when max_tokens is unset entirely — adding a
+                # finite reasoning allowance on top of "uncapped" is still
+                # uncapped, so there's nothing to add.
+                if DEFAULT_CONFIG.max_tokens is not None:
+                    max_tokens_override = DEFAULT_CONFIG.max_tokens + DEFAULT_CONFIG.openrouter_reasoning_max_tokens
             elif DEFAULT_CONFIG.openrouter_reasoning_effort:
                 reasoning_opts["effort"] = DEFAULT_CONFIG.openrouter_reasoning_effort
                 # Effort-only mode has no explicit token budget to add on top,
@@ -448,6 +483,16 @@ def _call_llm_with_history(
             is_reasoning=is_openai_reasoning_model(model),
         )
 
+    if DEFAULT_CONFIG.provider == LLMProvider.DEEPSEEK:
+        # deepseek-reasoner returns its reasoning as an extra response field
+        # (reasoning_content) rather than needing max_completion_tokens/no-
+        # temperature like OpenAI's o-series, so is_reasoning is always False
+        # here -- plain max_tokens + temperature both apply normally.
+        return _call_openai_compat(
+            client, model, system, messages,
+            is_reasoning=False,
+        )
+
     # Anthropic direct
     def _do_call() -> tuple[str, dict]:
         r = client.messages.create(
@@ -463,6 +508,9 @@ def _call_llm_with_history(
             "cache_creation_input_tokens": _to_int(getattr(r.usage, "cache_creation_input_tokens", 0)),
             "cache_read_input_tokens": _to_int(getattr(r.usage, "cache_read_input_tokens", 0)),
         }
+        reported_model = getattr(r, "model", None)
+        if reported_model:
+            usage["reported_model"] = reported_model
         blocks = getattr(r, "content", None) or []
         text = "".join(
             getattr(b, "text", "") for b in blocks if getattr(b, "type", None) == "text"
