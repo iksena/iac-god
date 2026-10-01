@@ -550,11 +550,14 @@ def validate_trivy(template: str, iac_type: str = "cloudformation") -> Validatio
                     failed_policies  += int(summary.get("Failures",  0) or 0)
 
                     for m in r.get("Misconfigurations", []):
-                        if m.get("Severity", "").lower() in ("high", "critical"):
-                            filtered_failed_policies += 1
-                            errors.append(
-                                f"[{m['ID']}] {m['Severity']}: {m['Title']} \u2014 {m['Message']}"
-                            )
+                        # ABLATION (trivy-all-severities): every reported
+                        # misconfiguration blocks the stage, regardless of
+                        # severity (LOW / MEDIUM / HIGH / CRITICAL / UNKNOWN).
+                        # Baseline only counts HIGH and CRITICAL.
+                        filtered_failed_policies += 1
+                        errors.append(
+                            f"[{m['ID']}] {m.get('Severity', 'UNKNOWN')}: {m['Title']} \u2014 {m['Message']}"
+                        )
 
                 total_policies = passed_policies + failed_policies
             except (json.JSONDecodeError, KeyError):
