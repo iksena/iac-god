@@ -29,6 +29,8 @@ bypass-alias-check-accounts:
 
 accounts:
   "649872913223":
+    presets:
+      - elasticache-service-defaults
     filters:
       IAMUser:
         - "admin-user"
@@ -39,6 +41,8 @@ accounts:
       IAMVirtualMFADevice:
         - "arn:aws:iam::649872913223:mfa/admin-user"
   "386347569109":
+    presets:
+      - elasticache-service-defaults
     filters:
       IAMUser:
         - "root"
@@ -47,6 +51,8 @@ accounts:
       IAMUserAccessKey:
         - "root -> AKIAVT5A4B7KZGUUIRNH"
   "614084726772":
+    presets:
+      - elasticache-service-defaults
     filters:
       IAMUser:
         - "senatwo"
@@ -55,3 +61,14 @@ accounts:
       IAMUserAccessKey:
         - "senatwo -> AKIAY56SNJ72OXQLKPXT"
 
+presets:
+  # ElastiCache creates default.iam-user / default.iam-user-group itself in
+  # every region (no CreateUser/CreateUserGroup API call in CloudTrail), and
+  # the API then rejects their dotted IDs as invalid on delete -- so aws-nuke
+  # can only ever fail on them. They're free; filter them so runs exit clean.
+  elasticache-service-defaults:
+    filters:
+      ElasticacheUser:
+        - "default.iam-user"
+      ElasticacheUserGroup:
+        - "default.iam-user-group"

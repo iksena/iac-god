@@ -51,6 +51,8 @@ from scripts.nuke_vpc_dependencies import (
     nuke_egress_only_igw,
     nuke_one_kms_key,
     nuke_one_eks_cluster,
+    nuke_s3_access_points,
+    nuke_multi_region_access_points,
 )
 
 # Applied to every CloudFormation stack this harness creates (and, by CFN's
@@ -159,7 +161,7 @@ def _delete_surviving_eval_stacks(deploy_config: DeployConfig):
         print(f"[Deploy] Stack sweep error: {e}")
 
 
-def _empty_and_delete_bucket(s3_client, bucket_name: str) -> None:
+def _empty_and_delete_bucket(s3_client, bucket_name: str, session=None, region: str | None = None) -> None:
     """Empty every object version + delete marker, then delete the bucket
     itself.
 
@@ -182,6 +184,11 @@ def _empty_and_delete_bucket(s3_client, bucket_name: str) -> None:
       2. Object Lock legal holds / GOVERNANCE-mode retention likewise block
          DeleteObject regardless of IAM permissions; COMPLIANCE-mode has no
          bypass by design and is left alone until it expires.
+
+    A bucket with S3 access points attached (regional, or a Multi-Region
+    Access Point spanning it) refuses delete_bucket with
+    BucketHasAccessPointsAttached; when *session*/*region* are given, those
+    access points are deleted and the bucket delete is retried once.
     """
     try:
         s3_client.delete_bucket_policy(Bucket=bucket_name)
@@ -228,7 +235,15 @@ def _empty_and_delete_bucket(s3_client, bucket_name: str) -> None:
                 BypassGovernanceRetention=lock_enabled,
             )
 
-    s3_client.delete_bucket(Bucket=bucket_name)
+    try:
+        s3_client.delete_bucket(Bucket=bucket_name)
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "BucketHasAccessPointsAttached" or session is None:
+            raise
+        access_point_actions = _NukeActions(dry_run=False)
+        nuke_s3_access_points(session, region, access_point_actions, bucket=bucket_name)
+        nuke_multi_region_access_points(session, access_point_actions, bucket=bucket_name, force=True)
+        s3_client.delete_bucket(Bucket=bucket_name)
 
 
 def _delete_orphaned_ecs_cluster(ecs_client, cluster_arn: str) -> None:
@@ -358,7 +373,7 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
         s3_client = session.client("s3", region_name=deploy_config.aws_region)
         for bucket_name in s3_buckets:
             try:
-                _empty_and_delete_bucket(s3_client, bucket_name)
+                _empty_and_delete_bucket(s3_client, bucket_name, session=session, region=deploy_config.aws_region)
                 print(f"  [Deploy] Deleted orphaned bucket '{bucket_name}' ✓")
             except Exception as e:
                 print(f"  [Deploy] Warning: could not delete orphaned bucket '{bucket_name}': {e}")

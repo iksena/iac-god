@@ -60,6 +60,23 @@ aws-nuke failure logs against these accounts:
     Formation permission(s)") -- the caller is added as a Lake Formation
     Data Lake Administrator so aws-nuke's own GlueDatabase pass can succeed.
 
+  - S3 buckets with access points attached -- regional, Object Lambda and
+    Multi-Region Access Points are deleted first (MRAP deletion is async and
+    is waited on), since delete_bucket fails with
+    BucketHasAccessPointsAttached otherwise and aws-nuke never touches MRAPs.
+  - AWS Batch job queues / compute environments, including environments left
+    INVALID because their service role was already deleted: the role is
+    recreated temporarily so Batch can finish the delete, then removed.
+
+  - CloudTrail multi-region trails -- deleted from their home region, which
+    also clears the shadow copies aws-nuke otherwise fails on in every other
+    region with TrailNotFoundException.
+
+Not handled: ElastiCache `default.iam-user` / `default.iam-user-group`
+(Valkey IAM-auth defaults AWS creates itself) -- both the API and aws-nuke
+reject their dotted IDs as invalid, so they can't be deleted; they're free
+and harmless to leave.
+
 Not handled: aws-nuke's own `LakeFormationPermission` revoke calls that fail
 with `InvalidInputException: Table name and table wildcard cannot both be
 present` are a bug in aws-nuke's own request construction, not a
@@ -97,8 +114,10 @@ Typical order of operations with aws-nuke:
 
 import argparse
 import json
+import re
 import sys
 import time
+import uuid
 from pathlib import Path
 
 import boto3
@@ -510,6 +529,230 @@ def nuke_egress_only_igw(session, region, actions):
 
 
 # ---------------------------------------------------------------------------
+# S3 access points -- an S3 bucket with any (regional or Multi-Region) access
+# point attached refuses delete_bucket with BucketHasAccessPointsAttached, and
+# aws-nuke has no handling for Multi-Region Access Points at all.
+# ---------------------------------------------------------------------------
+
+# Multi-Region Access Point control-plane calls must go to one of a fixed set
+# of regions regardless of where the buckets live.
+_MRAP_HOME_REGION = "us-west-2"
+_mrap_sweep_done = False  # account-wide, so a multi-region run only needs it once
+
+
+def _account_id(session) -> str:
+    return session.client("sts").get_caller_identity()["Account"]
+
+
+def nuke_s3_access_points(session, region, actions, bucket: str | None = None):
+    """Delete regional S3 access points in *region* (only those attached to
+    *bucket* if given; otherwise all, plus Object Lambda access points)."""
+    acct = _account_id(session)
+    s3control = session.client("s3control", region_name=region)
+    kwargs = {"AccountId": acct}
+    if bucket:
+        kwargs["Bucket"] = bucket
+    for ap in paginate(s3control, "list_access_points", "AccessPointList", **kwargs):
+        name = ap["Name"]
+        actions.do(f"delete S3 access point {name}",
+                   lambda n=name: s3control.delete_access_point(AccountId=acct, Name=n))
+    if bucket:
+        return
+    for ap in paginate(s3control, "list_access_points_for_object_lambda",
+                       "ObjectLambdaAccessPointList", AccountId=acct):
+        name = ap["Name"]
+        actions.do(f"delete S3 Object Lambda access point {name}",
+                   lambda n=name: s3control.delete_access_point_for_object_lambda(AccountId=acct, Name=n))
+
+
+def nuke_multi_region_access_points(session, actions, bucket: str | None = None, force: bool = False):
+    """Delete Multi-Region Access Points (only those spanning *bucket* if
+    given) and wait for the asynchronous deletes to finish -- the buckets
+    stay undeletable until they actually disappear."""
+    global _mrap_sweep_done
+    if bucket is None and not force:
+        if _mrap_sweep_done:
+            return
+        _mrap_sweep_done = True
+
+    acct = _account_id(session)
+    s3control = session.client("s3control", region_name=_MRAP_HOME_REGION)
+    try:
+        aps = s3control.list_multi_region_access_points(AccountId=acct).get("AccessPoints", [])
+    except botocore.exceptions.ClientError as e:
+        log(f"  (list Multi-Region Access Points failed: {e.response.get('Error', {}).get('Code', e)})")
+        return
+
+    tokens = {}
+    for ap in aps:
+        name = ap["Name"]
+        if bucket and bucket not in {r.get("Bucket") for r in ap.get("Regions", [])}:
+            continue
+        result = actions.do(
+            f"delete Multi-Region Access Point {name}",
+            lambda n=name: s3control.delete_multi_region_access_point(
+                AccountId=acct, ClientToken=uuid.uuid4().hex, Details={"Name": n}),
+        )
+        if result:
+            tokens[name] = result["RequestTokenARN"]
+
+    if not tokens or actions.dry_run:
+        return
+
+    def all_done():
+        done = True
+        for name, token in list(tokens.items()):
+            op = s3control.describe_multi_region_access_point_operation(
+                AccountId=acct, RequestTokenARN=token)["AsyncOperation"]
+            status = op.get("RequestStatus")
+            if status == "FAILED":
+                log(f"  Multi-Region Access Point {name} delete FAILED: "
+                    f"{op.get('ResponseDetails', {}).get('ErrorDetails')}")
+                tokens.pop(name)
+            elif status != "SUCCEEDED":
+                done = False
+        return done
+
+    wait_until(all_done, "waiting for Multi-Region Access Point deletion", timeout=600, interval=10)
+
+
+# ---------------------------------------------------------------------------
+# CloudTrail -- a multi-region trail exists as a "shadow" trail in every other
+# region, where aws-nuke lists it but can only fail with TrailNotFoundException
+# (it has to be deleted from its home region, once). describe_trails() without
+# shadow trails returns exactly the trails homed in *region*.
+# ---------------------------------------------------------------------------
+
+def nuke_cloudtrail(session, region, actions):
+    ct = session.client("cloudtrail", region_name=region)
+    for trail in ct.describe_trails(includeShadowTrails=False).get("trailList", []):
+        if trail.get("HomeRegion") != region:
+            continue
+        arn, name = trail["TrailARN"], trail["Name"]
+        actions.do(f"stop logging on CloudTrail trail {name}", lambda a=arn: ct.stop_logging(Name=a))
+        actions.do(f"delete CloudTrail trail {name}"
+                   + (" (multi-region: also removes its shadow trails in every other region)"
+                      if trail.get("IsMultiRegionTrail") else ""),
+                   lambda a=arn: ct.delete_trail(Name=a))
+
+
+# ---------------------------------------------------------------------------
+# AWS Batch -- job queues, then compute environments. A compute environment
+# whose service role was already deleted (e.g. by an earlier aws-nuke pass that
+# removed IAM roles first) goes INVALID ("Batch is not authorized to
+# sts:AssumeRole ...") and its delete silently never completes, since Batch
+# can't assume the role to tear down its ECS cluster/launch template.
+# ---------------------------------------------------------------------------
+
+_BATCH_SERVICE_ROLE_POLICY = "arn:aws:iam::aws:policy/service-role/AWSBatchServiceRole"
+
+
+def _batch_env_gone(batch, name: str) -> bool:
+    return not batch.describe_compute_environments(computeEnvironments=[name]).get("computeEnvironments")
+
+
+def _delete_batch_env_with_temp_role(session, batch, env, actions):
+    """Recreate an INVALID environment's missing service role just long enough
+    for Batch to finish deleting the environment, then remove the role again."""
+    name = env["computeEnvironmentName"]
+    role_arn = env.get("serviceRole")
+    if not role_arn:
+        m = re.search(r"role/([\w+=,.@/-]+?)\s*\(", env.get("statusReason", ""))
+        role_arn = f"role/{m.group(1)}" if m else None
+    if not role_arn:
+        log(f"  cannot determine {name}'s service role -- skipping orphaned-role recovery")
+        return
+
+    path_and_name = role_arn.split("role/", 1)[1]
+    role_name = path_and_name.rsplit("/", 1)[-1]
+    role_path = "/" + path_and_name.rsplit("/", 1)[0] + "/" if "/" in path_and_name else "/"
+    iam = session.client("iam")
+    try:
+        iam.get_role(RoleName=role_name)
+        return  # role exists -- the environment is stuck for some other reason
+    except botocore.exceptions.ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "NoSuchEntity":
+            return
+
+    trust = json.dumps({"Version": "2012-10-17", "Statement": [{
+        "Effect": "Allow", "Principal": {"Service": "batch.amazonaws.com"}, "Action": "sts:AssumeRole"}]})
+    created = actions.do(
+        f"recreate missing Batch service role {role_name} (temporary, so {name} can finish deleting)",
+        lambda: iam.create_role(RoleName=role_name, Path=role_path, AssumeRolePolicyDocument=trust))
+    if actions.dry_run or not created:
+        return
+    try:
+        actions.do(f"attach AWSBatchServiceRole to {role_name}",
+                   lambda: iam.attach_role_policy(RoleName=role_name, PolicyArn=_BATCH_SERVICE_ROLE_POLICY))
+        time.sleep(20)  # IAM propagation before Batch tries to assume it
+        actions.do(f"delete Batch compute environment {name}",
+                   lambda: batch.delete_compute_environment(computeEnvironment=name))
+        wait_until(lambda: _batch_env_gone(batch, name),
+                   f"waiting for Batch compute environment {name} to finish deleting",
+                   timeout=300, interval=10)
+    finally:
+        actions.do(f"detach AWSBatchServiceRole from {role_name}",
+                   lambda: iam.detach_role_policy(RoleName=role_name, PolicyArn=_BATCH_SERVICE_ROLE_POLICY))
+        actions.do(f"delete temporary Batch service role {role_name}",
+                   lambda: iam.delete_role(RoleName=role_name))
+
+
+def nuke_batch(session, region, actions):
+    batch = session.client("batch", region_name=region)
+
+    queues = paginate(batch, "describe_job_queues", "jobQueues")
+    for q in queues:
+        name = q["jobQueueName"]
+        actions.do(f"disable Batch job queue {name}",
+                   lambda n=name: batch.update_job_queue(jobQueue=n, state="DISABLED"))
+    if queues and not actions.dry_run:
+        wait_until(lambda: all(
+            j["state"] == "DISABLED" for j in batch.describe_job_queues().get("jobQueues", [])),
+            "waiting for Batch job queues to disable", timeout=120, interval=5)
+    for q in queues:
+        name = q["jobQueueName"]
+        actions.do(f"delete Batch job queue {name}", lambda n=name: batch.delete_job_queue(jobQueue=n))
+    if queues and not actions.dry_run:
+        wait_until(lambda: not batch.describe_job_queues().get("jobQueues"),
+                   "waiting for Batch job queues to finish deleting", timeout=300, interval=10)
+
+    envs = paginate(batch, "describe_compute_environments", "computeEnvironments")
+    for e in envs:
+        if e.get("state") != "DISABLED":
+            actions.do(f"disable Batch compute environment {e['computeEnvironmentName']}",
+                       lambda n=e["computeEnvironmentName"]: batch.update_compute_environment(
+                           computeEnvironment=n, state="DISABLED"))
+    if envs and not actions.dry_run:
+        wait_until(lambda: all(
+            c["state"] == "DISABLED" for c in batch.describe_compute_environments().get("computeEnvironments", [])),
+            "waiting for Batch compute environments to disable", timeout=120, interval=5)
+    for e in envs:
+        name = e["computeEnvironmentName"]
+        actions.do(f"delete Batch compute environment {name}",
+                   lambda n=name: batch.delete_compute_environment(computeEnvironment=n))
+    if envs and not actions.dry_run:
+        # An environment whose service role is gone shows status DELETING right
+        # after delete_compute_environment and only flips to INVALID once Batch
+        # fails to assume the role -- so a single look right after the delete
+        # misses it. Re-poll until nothing is left mid-delete, recovering each
+        # INVALID one as it appears.
+        recovered: set[str] = set()
+        deadline = time.time() + 240
+        while time.time() < deadline:
+            remaining = batch.describe_compute_environments().get("computeEnvironments", [])
+            if not remaining:
+                break
+            for e in remaining:
+                if e.get("status") == "INVALID" and e["computeEnvironmentName"] not in recovered:
+                    recovered.add(e["computeEnvironmentName"])
+                    _delete_batch_env_with_temp_role(session, batch, e, actions)
+            if all(e["computeEnvironmentName"] in recovered for e in remaining if e.get("status") == "INVALID") \
+                    and not any(e.get("status") == "DELETING" for e in remaining):
+                break
+            time.sleep(10)
+
+
+# ---------------------------------------------------------------------------
 # "Unlock" helpers -- resources that are technically deletable but denied by
 # a lock/policy of their own (KMS key policy, S3 Object Lock, Lake Formation)
 # rather than by an attachment. aws-nuke has no notion of fixing these itself.
@@ -908,6 +1151,7 @@ def nuke_region(session, region: str, actions: Actions, args) -> None:
     elbv2 = session.client("elbv2", region_name=region)
     rds = session.client("rds", region_name=region)
 
+    _safe(lambda: nuke_batch(session, region, actions), "AWS Batch")
     _safe(lambda: nuke_ecs(session, region, actions), "ECS")
     _safe(lambda: nuke_eks(session, region, actions), "EKS")
     _safe(lambda: nuke_lambda(session, region, actions), "Lambda")
@@ -940,6 +1184,9 @@ def nuke_region(session, region: str, actions: Actions, args) -> None:
     _safe(lambda: nuke_vpn(session, region, actions), "VPN gateways/connections")
     _safe(lambda: nuke_egress_only_igw(session, region, actions), "Egress-only internet gateways")
     _safe(lambda: nuke_kms_keys(session, region, actions), "KMS keys")
+    _safe(lambda: nuke_cloudtrail(session, region, actions), "CloudTrail")
+    _safe(lambda: nuke_s3_access_points(session, region, actions), "S3 access points")
+    _safe(lambda: nuke_multi_region_access_points(session, actions), "S3 Multi-Region Access Points")
     _safe(lambda: unlock_locked_s3_buckets(session, region, actions), "S3 Object Lock buckets")
     _safe(lambda: unlock_lake_formation(session, region, actions), "Lake Formation admin grant")
 
