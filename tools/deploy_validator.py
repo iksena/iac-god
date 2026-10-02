@@ -266,9 +266,16 @@ def _validate_terraform_deployment(
         in main.tf via Terraform's override merge semantics).
 
     Real AWS path (target == AWS):
-      - Uses plain 'terraform'. No env overrides injected by this harness.
-        Credentials come from the environment, ~/.aws/credentials, or an
-        instance profile as usual.
+      - Uses plain 'terraform'. Credentials come from the environment,
+        ~/.aws/credentials, or an instance profile as usual — not injected
+        by this harness.
+      - Injects AWS_REGION/AWS_DEFAULT_REGION from deploy_config.aws_region
+        so the provider always resolves a region even though the engineer
+        prompt forbids the LLM from writing a `provider "aws"` block (see
+        prompts/engineer_prompt.py). Without this, a compliant template has
+        no region source at all whenever the ambient environment doesn't
+        happen to supply one, and `terraform apply` fails with "Invalid
+        provider configuration" / "invalid AWS Region:" — not an LLM bug.
 
     Both paths:
       - Run: <bin> init -backend=false && <bin> apply -auto-approve
@@ -292,6 +299,13 @@ def _validate_terraform_deployment(
             "AWS_SECRET_ACCESS_KEY": "test",
             "AWS_DEFAULT_REGION":    "us-east-1",
         })
+    elif deploy_config.target == DeployTarget.AWS:
+        # The engineer prompt forbids the LLM from writing a `provider "aws"`
+        # block, so this is the only region source on the real-AWS path.
+        # Credentials are intentionally left alone — they still come from
+        # the environment, ~/.aws/credentials, or an instance profile.
+        run_env.setdefault("AWS_REGION", deploy_config.aws_region)
+        run_env.setdefault("AWS_DEFAULT_REGION", deploy_config.aws_region)
 
     # Point Terraform at the persistent cache so the provider binary is
     # downloaded once per process rather than once per TemporaryDirectory.
