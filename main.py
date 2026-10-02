@@ -29,6 +29,7 @@ def run_pipeline(
     openrouter_reasoning_max_tokens: int | None = None,
     disable_reasoning: bool = False,
     max_tokens: int | None = None,
+    no_max_tokens: bool = False,
     skip_security: bool = False,
     iac_type: str = "cloudformation",
 ) -> GraphState:
@@ -52,6 +53,18 @@ def run_pipeline(
                 "Add it to your .env file or set the environment variable directly."
             )
 
+    elif provider == "deepseek":
+        DEFAULT_CONFIG.provider = LLMProvider.DEEPSEEK
+        # Fallback order: explicit --model arg → DEEPSEEK_MODEL env var → deepseek-chat
+        DEFAULT_CONFIG.model = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        # api_key and base_url are already populated from .env by LLMConfig,
+        # but allow callers to override them via the existing DEFAULT_CONFIG fields.
+        if not DEFAULT_CONFIG.deepseek_api_key:
+            raise ValueError(
+                "DEEPSEEK_API_KEY is not set. "
+                "Add it to your .env file or set the environment variable directly."
+            )
+
     else:  # openrouter (default)
         DEFAULT_CONFIG.provider = LLMProvider.OPENROUTER
         DEFAULT_CONFIG.model = model or "arcee-ai/trinity-large-preview:free"
@@ -71,7 +84,13 @@ def run_pipeline(
     # and Anthropic direct all read DEFAULT_CONFIG.max_tokens — see
     # agents/llm_client.py), so it's set unconditionally here rather than
     # inside a provider-specific branch above.
-    if max_tokens is not None:
+    if no_max_tokens:
+        # Uncapped takes precedence over --max-tokens; agents/llm_client.py
+        # omits max_tokens/max_completion_tokens from the request entirely
+        # when this is None, letting the provider apply its own default
+        # ceiling. Not supported for Claude — llm_client.py raises there.
+        DEFAULT_CONFIG.max_tokens = None
+    elif max_tokens is not None:
         DEFAULT_CONFIG.max_tokens = max_tokens
 
     # ------------------------------------------------------------------
@@ -150,9 +169,13 @@ if __name__ == "__main__":
     parser.add_argument("--max-iterations", type=int, default=30)
     parser.add_argument(
         "--provider",
-        choices=["openrouter", "claude", "openai"],
+        choices=["openrouter", "claude", "openai", "deepseek"],
         default="openrouter",
-        help="LLM provider to use. 'openai' reads OPENAI_API_KEY / OPENAI_MODEL from .env",
+        help=(
+            "LLM provider to use. 'openai' reads OPENAI_API_KEY / OPENAI_MODEL "
+            "from .env. 'deepseek' reads DEEPSEEK_API_KEY / DEEPSEEK_MODEL "
+            "(default deepseek-chat; also supports deepseek-reasoner) from .env."
+        ),
     )
     parser.add_argument(
         "--model",
@@ -241,6 +264,18 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--no-max-tokens",
+        action="store_true",
+        help=(
+            "Send no max_tokens/max_completion_tokens at all, letting the "
+            "provider apply its own (usually much larger) default ceiling "
+            "instead of any fixed number we pick. Takes precedence over "
+            "--max-tokens if both are given. Only supported for OpenRouter/"
+            "OpenAI direct — Anthropic's API requires an explicit max_tokens, "
+            "so this errors out if combined with --provider claude."
+        ),
+    )
+    parser.add_argument(
         "--deploy-target",
         choices=["none", "localstack", "aws"],
         default="localstack",
@@ -275,6 +310,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.skip_deploy:
         args.deploy_target = "none"
+    if args.no_max_tokens and args.provider == "claude":
+        parser.error("--no-max-tokens is not supported with --provider claude (Anthropic requires an explicit max_tokens)")
 
     try:
         result = run_pipeline(
@@ -290,6 +327,7 @@ if __name__ == "__main__":
             openrouter_reasoning_max_tokens=args.openrouter_reasoning_max_tokens,
             disable_reasoning=args.disable_reasoning,
             max_tokens=args.max_tokens,
+            no_max_tokens=args.no_max_tokens,
             skip_security=args.skip_security,
             iac_type=args.iac_type,
         )
