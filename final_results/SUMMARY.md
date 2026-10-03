@@ -3,7 +3,7 @@
 | CFN_RealAWS_DSV4F                 |        250 |     247 |          239 |            8 |         3 |         0 | False       |                    0.956  |
 | CFN_RealAWS_GLM53F                |        250 |     247 |          228 |           19 |         3 |         0 | False       |                    0.912  |
 | CFN_RealAWS_Gemini38F             |        250 |     250 |          248 |            2 |         0 |         0 | True        |                    0.992  |
-| CFN_RealAWS_OpenCode_DSV4F        |        250 |     233 |          213 |           20 |        17 |         0 | False       |                    0.852  |
+| CFN_RealAWS_OpenCode_DSV4F        |        250 |     248 |          228 |           20 |         2 |         0 | False       |                    0.912  |
 | CFN_RealAWS_Opus55                |        250 |      74 |           74 |            0 |         0 |       176 | False       |                    0.296  |
 | CFN_RealAWS_Gemini36F_L345        |        150 |     137 |          136 |            1 |         0 |        13 | False       |                    0.9067 |
 | CFN_RealAWS_DSV4F_DeployOnly_L345 |        150 |     132 |          124 |            8 |         2 |        16 | False       |                    0.8267 |

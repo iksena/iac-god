@@ -10,6 +10,54 @@ vendor's agent or one model family.
 The experimental variable is the **orchestration**. Everything downstream of
 generation is shared code, not a reimplementation.
 
+## One-shot baseline
+
+`baselines/oneshot_baseline.py` is the weakest control: **one LLM call per
+scenario, no repair loop**, using the original IaCGen first-generation prompt
+(`baselines/oneshot_prompts.py`, copied verbatim from
+`IaCGen/Code/generation/prompts/prompt_for_cloud.py`: `FORMATE_SYSTEM_PROMPT`
+as system, `TOP_PROMPT + <business need> + BOTTOM_PROMPT` as the single user
+turn, with the `<template_planning>` chain-of-thought and `<iac_template>`
+output tags). Terraform uses the IaC-Eval prompt pair IaCGen carries in the
+same file. The template is extracted the way IaCGen's own
+`generate_template_with_history` does it, then scored once by
+`run_all_validators()` — the exact call `agents/validator.py` makes (static
+stages, then the live deploy if static passed).
+
+```bash
+python -m baselines.oneshot_baseline \
+  --iac-type cloudformation --dataset data/cfn_eval_benchmark_real_aws.csv \
+  --provider deepseek --model deepseek-v4-flash \
+  --deploy-target aws
+```
+
+- LLM setup is the multi-agent path's, not a new one: `--provider`
+  (`openrouter|claude|openai|deepseek`), `--model` and the `--openrouter-*` /
+  `--max-tokens` flags go through `config.configure_llm` (extracted from
+  `main.run_pipeline`, which now calls it too) and `agents/llm_client.py`, so
+  empty-completion/transient-error retries behave as in `benchmark.py`. No
+  harness, MCP server or retry proxy is involved.
+- One generate->validate cycle is one iteration: `iterations_used` is 1 for
+  every scored row, so `pass_at_1 == pass_rate`. A row where nothing
+  extractable came back has `extraction_method=no_template_produced`,
+  `iterations_used=0` and is not validated.
+- `extraction_method` (extra CSV column after the usual 18) records how the
+  template was recovered: `iac_template_tags` (followed the format),
+  `aws_version_fallback` / `code_fence` / `raw` (did not). Check it before
+  comparing numbers: a run full of fallbacks is partly measuring format
+  compliance. IaCGen's fallback for CFN is kept deliberately, so this is the
+  same lenient extraction its own results had.
+- Output shape matches `benchmark.py`/`harness_baseline.py` (results.csv/jsonl,
+  summary.json, `runs/<run_id>/` via `ResearchRecorder`, plus a
+  `deployment_log_001.txt` when a deploy ran), so
+  `merge_results_with_reports` and the other aggregation scripts read it as is.
+  Row selection, `--exclude-completed-csv` and `--retry-errors` work as in the
+  other runners; an LLM failure after `llm_client`'s own retries is recorded as
+  `runtime_error` and picked up by `--retry-errors`. `--output-dir`'s results
+  are truncated at the start of every invocation, so resume into a new dir.
+- The same per-scenario `cleanup_scenario_resources()` sweep runs after every
+  row as in the other two runners.
+
 ## Architecture
 
 Control is inverted relative to `benchmark.py`. Python does not run the repair

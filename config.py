@@ -240,3 +240,77 @@ def build_openrouter_provider_preferences(config: LLMConfig) -> dict:
 
 DEFAULT_CONFIG = LLMConfig()
 DEFAULT_DEPLOY_CONFIG = DeployConfig()
+
+
+def configure_llm(
+    provider: str = "openrouter",
+    model: str | None = None,
+    *,
+    openrouter_provider_only: str | None = None,
+    openrouter_min_quantization: str | None = None,
+    openrouter_reasoning_effort: str | None = None,
+    openrouter_reasoning_max_tokens: int | None = None,
+    disable_reasoning: bool = False,
+    max_tokens: int | None = None,
+    no_max_tokens: bool = False,
+) -> None:
+    """Apply CLI-level provider/model/token overrides to DEFAULT_CONFIG.
+
+    Lives here (not in main.py) so entry points that must not import the
+    LangGraph stack — baselines/oneshot_baseline.py — configure the LLM
+    exactly the way run_pipeline does, instead of re-deriving provider
+    defaults and API-key checks and drifting from them.
+    """
+    if provider == "claude":
+        DEFAULT_CONFIG.provider = LLMProvider.CLAUDE
+        DEFAULT_CONFIG.model = model or "claude-3-5-sonnet-20241022"
+
+    elif provider == "openai":
+        DEFAULT_CONFIG.provider = LLMProvider.OPENAI
+        # Fallback order: explicit --model arg → OPENAI_MODEL env var → o3-mini
+        DEFAULT_CONFIG.model = model or os.getenv("OPENAI_MODEL", "o3-mini")
+        # api_key and base_url are already populated from .env by LLMConfig,
+        # but allow callers to override them via the existing DEFAULT_CONFIG fields.
+        if not DEFAULT_CONFIG.openai_api_key:
+            raise ValueError(
+                "OPENAI_API_KEY is not set. "
+                "Add it to your .env file or set the environment variable directly."
+            )
+
+    elif provider == "deepseek":
+        DEFAULT_CONFIG.provider = LLMProvider.DEEPSEEK
+        # Fallback order: explicit --model arg → DEEPSEEK_MODEL env var → deepseek-chat
+        DEFAULT_CONFIG.model = model or os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
+        if not DEFAULT_CONFIG.deepseek_api_key:
+            raise ValueError(
+                "DEEPSEEK_API_KEY is not set. "
+                "Add it to your .env file or set the environment variable directly."
+            )
+
+    else:  # openrouter (default)
+        DEFAULT_CONFIG.provider = LLMProvider.OPENROUTER
+        DEFAULT_CONFIG.model = model or "arcee-ai/trinity-large-preview:free"
+
+        if openrouter_provider_only is not None:
+            DEFAULT_CONFIG.openrouter_provider_only = _parse_csv_env(openrouter_provider_only)
+        if openrouter_min_quantization is not None:
+            DEFAULT_CONFIG.openrouter_min_quantization = openrouter_min_quantization.strip().lower()
+        if openrouter_reasoning_effort is not None:
+            DEFAULT_CONFIG.openrouter_reasoning_effort = openrouter_reasoning_effort.strip().lower()
+        if openrouter_reasoning_max_tokens is not None:
+            DEFAULT_CONFIG.openrouter_reasoning_max_tokens = openrouter_reasoning_max_tokens
+        if disable_reasoning:
+            DEFAULT_CONFIG.reasoning_enabled = False
+
+    # max_tokens is shared across all providers (OpenRouter, OpenAI direct,
+    # and Anthropic direct all read DEFAULT_CONFIG.max_tokens — see
+    # agents/llm_client.py), so it's set unconditionally rather than inside a
+    # provider-specific branch above.
+    if no_max_tokens:
+        # Uncapped takes precedence over --max-tokens; agents/llm_client.py
+        # omits max_tokens/max_completion_tokens from the request entirely
+        # when this is None, letting the provider apply its own default
+        # ceiling. Not supported for Claude — llm_client.py raises there.
+        DEFAULT_CONFIG.max_tokens = None
+    elif max_tokens is not None:
+        DEFAULT_CONFIG.max_tokens = max_tokens

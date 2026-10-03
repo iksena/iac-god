@@ -2,7 +2,7 @@ experiment,dataset,expected,rows_with_attempt,valid,valid_pass,valid_fail,invali
 CFN_RealAWS_DSV4F,cfn_eval_benchmark_real_aws.csv,250,250,247,239,8,3,0,False,0.9676,0.956,252,0,CFNEvalRealAWS_DeepseekV4Flash_sec_runs
 CFN_RealAWS_GLM53F,cfn_eval_benchmark_real_aws.csv,250,250,247,228,19,3,0,False,0.9231,0.912,250,0,CFNEvalRealAWS_GLM53Flash_sec_runs
 CFN_RealAWS_Gemini38F,cfn_eval_benchmark_real_aws.csv,250,250,250,248,2,0,0,True,0.992,0.992,250,0,CFNEvalRealAWS_Gemini38Flash_runs
-CFN_RealAWS_OpenCode_DSV4F,cfn_eval_benchmark_real_aws.csv,250,250,233,213,20,17,0,False,0.9142,0.852,265,0,OpencodeDSV4F_CFNEvalRealAWS_Full_runs
+CFN_RealAWS_OpenCode_DSV4F,cfn_eval_benchmark_real_aws.csv,250,250,248,228,20,2,0,False,0.9194,0.912,281,0,OpencodeDSV4F_CFNEvalRealAWS_Full_runs
 CFN_RealAWS_Opus55,cfn_eval_benchmark_real_aws.csv,250,74,74,74,0,0,176,False,1.0,0.296,74,0,CFNEvalRealAWS_Opus55_runs
 CFN_RealAWS_Gemini36F_L345,cfn_eval_benchmark_real_aws_diff345.csv,150,137,137,136,1,0,13,False,0.9927,0.9067,150,13,Gemini36Flash_CFNEvalRealAWS_runs
 CFN_RealAWS_DSV4F_DeployOnly_L345,cfn_eval_benchmark_real_aws_diff345.csv,150,134,132,124,8,2,16,False,0.9394,0.8267,147,13,CFNEvalRealAWS_DeepseekV4Flash_deployability_runs
