@@ -286,6 +286,9 @@ def configure_llm(
                 "DEEPSEEK_API_KEY is not set. "
                 "Add it to your .env file or set the environment variable directly."
             )
+        if disable_reasoning:
+            # Sent to DeepSeek as thinking={"type": "disabled"} (agents/llm_client.py).
+            DEFAULT_CONFIG.reasoning_enabled = False
 
     else:  # openrouter (default)
         DEFAULT_CONFIG.provider = LLMProvider.OPENROUTER

@@ -458,7 +458,11 @@ def parse_args() -> argparse.Namespace:
                    choices=["int4", "int8", "fp4", "fp6", "fp8", "fp16", "bf16", "fp32", "unknown"])
     p.add_argument("--openrouter-reasoning-effort", type=str, default=None)
     p.add_argument("--openrouter-reasoning-max-tokens", type=int, default=None)
-    p.add_argument("--disable-reasoning", action="store_true")
+    p.add_argument("--disable-reasoning", action="store_true",
+                   help="OpenRouter: omit the reasoning field. DeepSeek direct: send "
+                        "thinking={'type':'disabled'}. Avoids reasoning eating the whole "
+                        "token budget, but costs accuracy (tested: a row that passes with "
+                        "thinking failed cfn-lint without it) — prefer a larger --max-tokens.")
     p.add_argument("--max-tokens", type=int, default=None)
     p.add_argument("--no-max-tokens", action="store_true")
     p.add_argument("--skip-security", action="store_true")

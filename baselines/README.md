@@ -37,6 +37,17 @@ python -m baselines.oneshot_baseline \
   `main.run_pipeline`, which now calls it too) and `agents/llm_client.py`, so
   empty-completion/transient-error retries behave as in `benchmark.py`. No
   harness, MCP server or retry proxy is involved.
+- **DeepSeek direct and empty completions.** Thinking is on by default and its
+  tokens share `--max-tokens` (default 8192), so a long reasoning chain can use
+  the whole budget and return empty content (`finish_reason=length`). It is
+  intermittent at temperature 0 (the same row finished in 4.6k tokens on one
+  run and ran out at 8192 on another), which is why `llm_client`'s retry
+  matters — and why its `TypeError` bug (a string `reported_model` in the failed
+  attempt's usage was added to an int, replacing the real error and skipping
+  every retry on the OpenAI-compat path) was costly; fixed. For headroom use
+  `--max-tokens 32768`. `--disable-reasoning` (sends `thinking={"type":
+  "disabled"}`) also works but lowers accuracy — a row that passed with
+  thinking failed cfn-lint without it — so it changes what is measured.
 - One generate->validate cycle is one iteration: `iterations_used` is 1 for
   every scored row, so `pass_at_1 == pass_rate`. A row where nothing
   extractable came back has `extraction_method=no_template_produced`,
