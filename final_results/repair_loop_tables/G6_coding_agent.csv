@@ -1,0 +1,9 @@
+run,exp,outcome,runs,matched_pct,verdict_source,status,harness_turns
+OpenCode+Retriever,CFN_Ablation_OpenCodeRetriever,passed,47,100.0,{'recorded': 47},{'ok': 47},15.8
+OpenCode+Retriever,CFN_Ablation_OpenCodeRetriever,failed,3,0.0,"{'revalidated': 2, 'recorded': 1}",{'ok': 3},47.7
+OpenCode+DSV4F,CFN_RealAWS_OpenCode_DSV4F,passed,213,90.6,"{'recorded': 192, 'deployed_at_finalize': 20, 'revalidated': 1}","{'ok': 204, 'harness_timeout': 7, 'harness_error': 2}",12.3
+OpenCode+DSV4F,CFN_RealAWS_OpenCode_DSV4F,failed,37,21.6,"{'deployed_at_finalize': 27, 'recorded': 7, 'revalidated': 3}","{'ok': 22, 'harness_timeout': 15}",38.4
+OpenCode+Retriever,TF_Ablation_OpenCodeRetriever,passed,47,100.0,{'recorded': 47},{'ok': 47},13.7
+OpenCode+Retriever,TF_Ablation_OpenCodeRetriever,failed,3,0.0,"{'recorded': 1, 'revalidated': 1, 'deployed_at_finalize': 1}","{'ok': 2, 'harness_timeout': 1}",12.7
+OpenCode+DSV4F (partial),TF_RealAWS_OpenCode_DSV4F,passed,64,98.4,"{'recorded': 63, 'deployed_at_finalize': 1}","{'ok': 63, 'harness_timeout': 1}",7.9
+OpenCode+DSV4F (partial),TF_RealAWS_OpenCode_DSV4F,failed,0,,{},{},

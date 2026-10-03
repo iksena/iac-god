@@ -1,0 +1,24 @@
+{
+ "experiment": "TF_Ablation_OpenCodeRetriever",
+ "dataset": "tf_eval_benchmark_ablation.csv",
+ "expected": 50,
+ "rows_with_attempt": 50,
+ "valid": 49,
+ "valid_pass": 47,
+ "valid_fail": 2,
+ "invalid": 1,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 0.9592,
+ "pass_rate_over_expected": 0.94,
+ "invalid_rows": {
+  "249": "harness timeout"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  249
+ ],
+ "attempts": 50,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "Ablation_OpenCodeRetriever_TF_runs"
+}

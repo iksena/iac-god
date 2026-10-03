@@ -1,0 +1,28 @@
+{
+ "experiment": "CFN_RealAWS_GLM53F",
+ "dataset": "cfn_eval_benchmark_real_aws.csv",
+ "expected": 250,
+ "rows_with_attempt": 250,
+ "valid": 247,
+ "valid_pass": 228,
+ "valid_fail": 19,
+ "invalid": 3,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 0.9231,
+ "pass_rate_over_expected": 0.912,
+ "invalid_rows": {
+  "1": "deploy_error_message: AlreadyExists",
+  "103": "deploy_error_message: LimitExceeded",
+  "263": "deploy_error_message: stalled in CREATE_IN_PROGRESS"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  1,
+  103,
+  263
+ ],
+ "attempts": 250,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "CFNEvalRealAWS_GLM53Flash_sec_runs"
+}

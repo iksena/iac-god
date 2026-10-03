@@ -1,0 +1,29 @@
+{
+ "experiment": "TF_Ablation_NoDenseRAG",
+ "dataset": "tf_eval_benchmark_ablation.csv",
+ "expected": 50,
+ "rows_with_attempt": 49,
+ "valid": 47,
+ "valid_pass": 47,
+ "valid_fail": 0,
+ "invalid": 2,
+ "missing": 1,
+ "fulfilled": false,
+ "pass_rate_over_valid": 1.0,
+ "pass_rate_over_expected": 0.94,
+ "invalid_rows": {
+  "143": "latest_error_terraform-validate: Failed to install provider",
+  "249": "deploy_error_message: tflocal apply timed out"
+ },
+ "missing_rows": [
+  286
+ ],
+ "rerun_rows": [
+  143,
+  249,
+  286
+ ],
+ "attempts": 56,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "Ablation_NoDenseRAG_TF_runs"
+}

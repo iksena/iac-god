@@ -1002,15 +1002,20 @@ if __name__ == "__main__":
     # )
 
     # merge_results_from_directory(
-    #     base_dir="./benchmark_runs/cloudformation_20260922_235243_GLM53Flash",
+    #     base_dir="./benchmark_runs/cloudformation_20260925_001704_Opus55",
     #     benchmark_csv="data/cfn_eval_benchmark_real_aws.csv",
     #     prefer_final_validation_passed=True,
     # )
     # merge_results_from_directory(
-    #     base_dir="./benchmark_runs/cloudformation_20260922_232123_DPIaCEval_O3Mini",
-    #     benchmark_csv="data/iac_with_difficulty_levels.csv",
+    #     base_dir="./benchmark_runs/cloudformation_20260922_235243_GLM53Flash",
+    #     benchmark_csv="data/cfn_eval_benchmark_real_aws.csv",
     #     prefer_final_validation_passed=True,
     # )
+    merge_results_from_directory(
+        base_dir="./benchmark_runs/cloudformation_20260922_232123_DPIaCEval_O3Mini",
+        benchmark_csv="data/iac_with_difficulty_levels.csv",
+        prefer_final_validation_passed=True,
+    )
     # merge_results_from_directory(
     #     base_dir="./benchmark_runs/terraform_20260908_171434_IaCEval",
     #     benchmark_csv="data/iac_eval_benchmark.csv",
@@ -1075,13 +1080,13 @@ if __name__ == "__main__":
     #     min_iterations=10,
     # )
 
-    move_run_folders_from_csv(
-        input_csv='benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/results_merged.csv',
-        runs_dir='runs',
-        target_subfolder_name='CFNEvalRealAWS_DeepseekV4Flash_sec_runs',
-        run_id_col='run_id',
-        dry_run=False,
-    )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='CFNEvalRealAWS_DeepseekV4Flash_sec_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
     # move_run_folders_from_csv(
     #     input_csv='benchmark_runs/baseline_opencode_cloudformation_20260917_232736_DSV4F_Full/results_merged.csv',
     #     runs_dir='runs',
@@ -1130,11 +1135,11 @@ if __name__ == "__main__":
     #     base_dir="runs/CFNEvalRealAWS_Opencode_DeepseekV4Flash_sec_runs", 
     #     output_csv="benchmark_runs/baseline_opencode_cloudformation_20260917_232736_DSV4F_Full/CFNEvalRealAWS_Opencode_DeepseekV4Flash_sec_runs.csv"
     # )
-    merge_results_with_reports(
-        input_csv="benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/results_merged.csv", 
-        base_dir="runs/CFNEvalRealAWS_DeepseekV4Flash_sec_runs", 
-        output_csv="benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/CFNEvalRealAWS_DeepseekV4Flash_sec_runs.csv"
-    )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/results_merged.csv", 
+    #     base_dir="runs/CFNEvalRealAWS_DeepseekV4Flash_sec_runs", 
+    #     output_csv="benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/CFNEvalRealAWS_DeepseekV4Flash_sec_runs.csv"
+    # )
     # merge_results_with_reports(
     #     input_csv="benchmark_runs/cloudformation_20260915_154934_Gemini36Flash/results_merged.csv", 
     #     base_dir="runs/Gemini36Flash_CFNEvalRealAWS_runs", 

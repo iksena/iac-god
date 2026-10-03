@@ -1,0 +1,26 @@
+{
+ "experiment": "CFN_DPIaCEval_o3mini_DeployOnly",
+ "dataset": "iac_with_difficulty_levels.csv",
+ "expected": 153,
+ "rows_with_attempt": 153,
+ "valid": 151,
+ "valid_pass": 138,
+ "valid_fail": 13,
+ "invalid": 2,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 0.9139,
+ "pass_rate_over_expected": 0.902,
+ "invalid_rows": {
+  "114": "deploy_error_message: Stalled in CREATE_IN_PROGRESS",
+  "147": "deploy_error_message: Stalled in CREATE_IN_PROGRESS"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  114,
+  147
+ ],
+ "attempts": 160,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "DPIaCEval_O3Mini_deployability_runs"
+}
