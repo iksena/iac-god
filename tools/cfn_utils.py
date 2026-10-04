@@ -61,15 +61,49 @@ def format_failed_resources(failed_resources: list[dict]) -> str:
 # Stack deletion waiter
 # ---------------------------------------------------------------------------
 
+def _failed_resource_ids(cfn_client, stack_id: str) -> list[str]:
+    ids: list[str] = []
+    try:
+        for page in cfn_client.get_paginator("list_stack_resources").paginate(StackName=stack_id):
+            ids += [r["LogicalResourceId"] for r in page["StackResourceSummaries"]
+                    if r["ResourceStatus"] == "DELETE_FAILED"]
+    except ClientError:
+        pass
+    return ids
+
+
 def wait_for_stack_deletion(cfn_client, stack_id: str, stack_name: str, timeout: int):
+    """Block until the stack is gone or *timeout* elapses.
+
+    A stack that lands in DELETE_FAILED (typically a custom resource whose
+    delete handler itself fails, or a non-empty bucket) will fail again
+    identically if simply re-deleted, so each such failure is retried with the
+    failed resources *retained* (RetainResources) -- the stack then actually
+    disappears instead of looping DELETE_IN_PROGRESS -> DELETE_FAILED until the
+    timeout. Anything retained that was real is tagged and picked up by the
+    tag-scoped orphan sweep in deploy_cleanup.py. delete_stack is issued at
+    most once per failure, not on every poll.
+    """
     start = time.time()
+    retain_attempts = 0
+    reissued_plain_delete = False
     while time.time() - start < timeout:
         try:
             stack = cfn_client.describe_stacks(StackName=stack_id)["Stacks"][0]
             status = stack["StackStatus"]
             if status == "DELETE_COMPLETE":
                 return
-            if status in ("ROLLBACK_COMPLETE", "CREATE_FAILED", "DELETE_FAILED"):
+            if status == "DELETE_FAILED" and retain_attempts < 3:
+                retain_attempts += 1
+                failed = _failed_resource_ids(cfn_client, stack_id)
+                print(f"[Deploy] Stack '{stack_name}' DELETE_FAILED on {failed or 'unknown resource(s)'} "
+                      f"-- retrying with those retained")
+                try:
+                    cfn_client.delete_stack(StackName=stack_id, RetainResources=failed)
+                except ClientError as e:
+                    print(f"[Deploy] Retain-delete of '{stack_name}' failed: {e}")
+            elif status in ("ROLLBACK_COMPLETE", "CREATE_FAILED") and not reissued_plain_delete:
+                reissued_plain_delete = True
                 try:
                     cfn_client.delete_stack(StackName=stack_name)
                 except Exception:
@@ -85,7 +119,7 @@ def wait_for_stack_deletion(cfn_client, stack_id: str, stack_name: str, timeout:
         current_status = cfn_client.describe_stacks(StackName=stack_id)["Stacks"][0]["StackStatus"]
         print(f"[Deploy] Stack '{stack_name}' left in status: {current_status}")
         if current_status == "DELETE_FAILED":
-            cfn_client.delete_stack(StackName=stack_id, RetainResources=[])
+            cfn_client.delete_stack(StackName=stack_id, RetainResources=_failed_resource_ids(cfn_client, stack_id))
             print(f"[Deploy] Issued force-delete for '{stack_name}'")
     except ClientError as e:
         if "does not exist" in str(e):

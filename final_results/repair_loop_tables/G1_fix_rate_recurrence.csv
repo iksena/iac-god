@@ -1,0 +1,27 @@
+exp,deploy,schema,security,syntax,findings (security),runs_ge2_iterations,recurrence_pct,persistent_static_pct,persistent_deploy_pct
+CFN_Ablation_IaCGOD,62.5,88.1,76.3,100.0,38.0,37,8.1,0.0,0.0
+CFN_Ablation_NoDenseRAG,59.4,98.1,69.7,66.7,33.0,32,6.2,0.0,0.0
+CFN_Ablation_NoGraphRAG,63.6,95.7,100.0,66.7,22.0,31,3.2,0.0,0.0
+CFN_Ablation_NoPlanner,36.0,97.4,86.7,,30.0,27,7.4,0.0,3.7
+CFN_Ablation_OpenCodeRetriever,46.7,86.7,56.7,80.0,30.0,36,2.8,0.0,0.0
+CFN_Ablation_TrivyAllSeverities,53.6,94.3,94.4,100.0,89.0,39,2.6,0.0,0.0
+CFN_DPIaCEval_o3mini_DeployOnly,54.1,79.1,100.0,57.9,1.0,116,7.8,1.7,2.6
+CFN_RealAWS_DSV4F,46.5,92.0,94.2,78.8,154.0,203,5.9,0.0,0.5
+CFN_RealAWS_DSV4F_DeployOnly_L345,50.5,88.3,,66.0,,104,10.6,0.0,4.8
+CFN_RealAWS_GLM53F,44.6,83.0,94.9,93.6,98.0,204,7.4,1.0,1.5
+CFN_RealAWS_Gemini36F_L345,65.8,98.4,98.4,100.0,63.0,94,0.0,0.0,0.0
+CFN_RealAWS_Gemini38F,63.6,88.5,100.0,100.0,87.0,127,2.4,0.0,0.8
+CFN_RealAWS_OpenCode_DSV4F,59.0,77.3,90.1,80.6,111.0,169,4.1,1.2,1.2
+CFN_RealAWS_Opus55,75.2,100.0,91.7,100.0,12.0,38,0.0,0.0,0.0
+TF_Ablation_IaCGOD,64.7,,100.0,80.2,18.0,35,5.7,0.0,0.0
+TF_Ablation_NoDenseRAG,73.9,,95.7,55.3,23.0,36,19.4,0.0,0.0
+TF_Ablation_NoGraphRAG,44.7,,94.4,87.5,18.0,30,3.3,0.0,3.3
+TF_Ablation_NoPlanner,81.2,,100.0,100.0,16.0,23,4.3,0.0,0.0
+TF_Ablation_OpenCodeRetriever,86.7,,100.0,84.2,17.0,30,3.3,0.0,0.0
+TF_Ablation_TrivyAllSeverities,65.0,,89.3,86.4,121.0,46,8.7,0.0,2.2
+TF_IaCEval_DSV4F_LintOnly,,,,52.6,,257,8.9,0.0,0.0
+TF_RealAWS_DSV4F,75.7,,70.2,84.3,151.0,150,4.0,0.0,0.0
+TF_RealAWS_GLM53F,80.6,,83.5,43.3,91.0,203,7.9,7.4,0.0
+TF_RealAWS_Gemini38F,98.0,,100.0,67.5,77.0,246,5.7,0.0,0.0
+TF_RealAWS_OpenCode_DSV4F,82.1,,100.0,81.8,6.0,24,0.0,0.0,0.0
+TF_RealAWS_Opus55,80.0,,100.0,25.8,13.0,25,4.0,0.0,0.0

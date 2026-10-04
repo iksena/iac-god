@@ -1,0 +1,27 @@
+exp,run,failed runs,iters passed,iters failed,ktokens passed,ktokens failed,% of tokens on failed runs,ktokens per passing scenario,min passed,min failed
+CFN_RealAWS_DSV4F,DeepSeek-V4-Flash,11,3.55,15.0,128,1007.0,26.6,174,20.0,126.3
+CFN_RealAWS_GLM53F,GLM-5.3-Flash,22,3.5,15.0,122,946.0,42.7,214,19.3,71.0
+CFN_RealAWS_Gemini38F,Gemini-3.8-Flash,2,2.0,15.0,55,1387.0,16.8,66,12.0,83.2
+CFN_RealAWS_Opus55,Claude-Opus-5.5 (partial),0,2.51,,26,,0.0,26,19.9,
+CFN_RealAWS_OpenCode_DSV4F,OpenCode+DSV4F,22,2.75,7.32,38,175.0,30.8,55,14.2,37.9
+CFN_RealAWS_Gemini36F_L345,Gemini-3.6-Flash (L3-5),1,2.48,15.0,44,642.0,9.7,49,9.9,42.4
+CFN_RealAWS_DSV4F_DeployOnly_L345,DSV4F deploy-only (L3-5),10,3.49,15.0,150,1549.0,45.5,275,29.7,186.7
+CFN_DPIaCEval_o3mini_DeployOnly,o3-mini DPIaC-Eval,15,3.05,15.0,58,736.0,58.1,138,18.7,145.5
+TF_RealAWS_DSV4F,DeepSeek-V4-Flash,4,2.91,15.0,115,1768.0,20.0,144,15.8,74.0
+TF_RealAWS_GLM53F,GLM-5.3-Flash,24,3.74,15.0,169,1163.0,42.2,292,13.0,33.2
+TF_RealAWS_Gemini38F,Gemini-3.8-Flash,1,3.18,15.0,101,3543.0,12.3,115,11.3,180.4
+TF_RealAWS_Opus55,Claude-Opus-5.5 (partial),0,1.86,,11,,0.0,11,4.1,
+TF_RealAWS_OpenCode_DSV4F,OpenCode+DSV4F (partial),0,1.69,,11,,0.0,11,14.9,
+TF_IaCEval_DSV4F_LintOnly,DSV4F IaC-Eval (lint-only),5,3.45,15.0,90,1021.0,13.3,104,7.0,21.5
+CFN_Ablation_IaCGOD,IaCGOD,1,3.04,15.0,130,2612.0,29.1,183,8.9,29.2
+CFN_Ablation_NoDenseRAG,no dense RAG,1,2.55,15.0,120,2792.0,32.1,177,3.5,27.0
+CFN_Ablation_OpenCodeRetriever,OpenCode+Retriever,3,2.83,10.33,60,128.0,11.9,68,4.7,9.6
+CFN_Ablation_NoGraphRAG,no GraphRAG,0,2.18,,102,,0.0,102,2.5,
+CFN_Ablation_NoPlanner,no Planner,2,1.83,15.0,57,1828.0,57.2,133,2.0,18.8
+CFN_Ablation_TrivyAllSeverities,Trivy all severities,1,2.96,15.0,152,2955.0,28.4,212,3.4,27.3
+TF_Ablation_IaCGOD,IaCGOD,0,2.92,,108,,0.0,108,10.1,
+TF_Ablation_NoDenseRAG,no dense RAG,2,3.83,15.0,219,1844.0,26.4,298,4.4,42.5
+TF_Ablation_OpenCodeRetriever,OpenCode+Retriever,3,2.02,3.0,71,113.0,9.2,78,5.7,57.0
+TF_Ablation_NoGraphRAG,no GraphRAG,2,2.23,15.0,74,2436.0,58.0,175,3.3,342.0
+TF_Ablation_NoPlanner,no Planner,1,1.65,15.0,36,2057.0,54.1,78,2.2,227.5
+TF_Ablation_TrivyAllSeverities,Trivy all severities,1,3.78,15.0,166,2048.0,20.1,207,4.2,79.3

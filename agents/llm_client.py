@@ -70,6 +70,11 @@ _CONNECTION_ERRORS = (openai.APIConnectionError, anthropic.APIConnectionError)
 # rate-limit errors are NOT in this tuple and propagate immediately, unretried.
 
 
+def _is_count(value: object) -> bool:
+    # bool is an int subclass but never a token count.
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _merge_usage(usage: dict, wasted: dict) -> dict:
     merged = dict(usage)
     for key, value in wasted.items():
@@ -95,8 +100,13 @@ def _call_with_retry(fn, *, label: str, max_attempts: int, backoff_seconds: floa
             return content, usage
         except EmptyCompletionError as exc:
             last_exc = exc
+            # Only token counts accumulate. exc.usage also carries non-numeric
+            # metadata (reported_model is a string), and adding that to an int
+            # raised TypeError here — which replaced the real EmptyCompletionError
+            # and skipped every retry on the OpenAI-compat path.
             for key, value in exc.usage.items():
-                wasted_usage[key] = wasted_usage.get(key, 0) + value
+                if _is_count(value):
+                    wasted_usage[key] = wasted_usage.get(key, 0) + value
             reason = "empty completion"
         except _CONNECTION_ERRORS as exc:
             last_exc = exc
@@ -488,9 +498,19 @@ def _call_llm_with_history(
         # (reasoning_content) rather than needing max_completion_tokens/no-
         # temperature like OpenAI's o-series, so is_reasoning is always False
         # here -- plain max_tokens + temperature both apply normally.
+        #
+        # Thinking is on by default on DeepSeek's native API and its tokens
+        # share the max_tokens budget, so a long reasoning chain can use the
+        # whole budget and return empty content (finish_reason=length).
+        # reasoning_effort does not bound it (tested: no effect), but
+        # thinking={"type": "disabled"} does — reasoning_tokens drops to 0 and
+        # content comes back. Sent only when --disable-reasoning is set, so
+        # the default request is unchanged.
+        extra_body = None if DEFAULT_CONFIG.reasoning_enabled else {"thinking": {"type": "disabled"}}
         return _call_openai_compat(
             client, model, system, messages,
             is_reasoning=False,
+            extra_body=extra_body,
         )
 
     # Anthropic direct

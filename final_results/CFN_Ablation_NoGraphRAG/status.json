@@ -1,0 +1,20 @@
+{
+ "experiment": "CFN_Ablation_NoGraphRAG",
+ "dataset": "cfn_eval_benchmark_ablation.csv",
+ "expected": 50,
+ "rows_with_attempt": 50,
+ "valid": 50,
+ "valid_pass": 50,
+ "valid_fail": 0,
+ "invalid": 0,
+ "missing": 0,
+ "fulfilled": true,
+ "pass_rate_over_valid": 1.0,
+ "pass_rate_over_expected": 1.0,
+ "invalid_rows": {},
+ "missing_rows": [],
+ "rerun_rows": [],
+ "attempts": 50,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "Ablation_NoGraphRAG_CFN_runs"
+}

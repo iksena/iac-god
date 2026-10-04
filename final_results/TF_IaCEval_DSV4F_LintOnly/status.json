@@ -1,0 +1,32 @@
+{
+ "experiment": "TF_IaCEval_DSV4F_LintOnly",
+ "dataset": "iac_eval_benchmark.csv",
+ "expected": 372,
+ "rows_with_attempt": 372,
+ "valid": 367,
+ "valid_pass": 367,
+ "valid_fail": 0,
+ "invalid": 5,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 1.0,
+ "pass_rate_over_expected": 0.9866,
+ "invalid_rows": {
+  "60": "latest_error_terraform-validate: Failed to install provider",
+  "71": "latest_error_terraform-validate: Failed to install provider",
+  "87": "latest_error_terraform-validate: Failed to install provider",
+  "133": "latest_error_terraform-validate: Failed to install provider",
+  "139": "latest_error_terraform-validate: Failed to install provider"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  60,
+  71,
+  87,
+  133,
+  139
+ ],
+ "attempts": 373,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "IaCEval_DeepseekV4Flash_lint_runs"
+}
