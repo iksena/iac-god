@@ -21,8 +21,12 @@ matching the two different risks it addresses:
     ../nuke-config.yml), same assumption the rest of this project makes.
 """
 
+import json
+import tempfile
 import boto3
 from botocore.exceptions import ClientError
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from config import DeployConfig, DeployTarget
 import requests
 import time
@@ -144,18 +148,24 @@ def _delete_surviving_eval_stacks(deploy_config: DeployConfig):
             print("[Deploy] No surviving evaluation stacks found — clean slate confirmed")
             return
 
-        print(f"[Deploy] Deleting {len(targets)} surviving evaluation stack(s)...")
+        print(f"[Deploy] Deleting {len(targets)} surviving evaluation stack(s) (in parallel)...")
         for stack_id, stack_name in targets:
-            print(f"  [Deploy] Deleting '{stack_name}'...")
             try:
                 cfn_client.delete_stack(StackName=stack_id)
-                wait_for_stack_deletion(
-                    cfn_client, stack_id, stack_name,
-                    deploy_config.stack_deletion_timeout,
-                )
+            except Exception as e:
+                print(f"  [Deploy] Warning: could not start delete of '{stack_name}': {e}")
+
+        # One shared wait: total time is the slowest stack, not the sum of all.
+        def wait_one(target):
+            stack_id, stack_name = target
+            try:
+                wait_for_stack_deletion(cfn_client, stack_id, stack_name, deploy_config.stack_deletion_timeout)
                 print(f"  [Deploy] '{stack_name}' deleted ✓")
             except Exception as e:
                 print(f"  [Deploy] Warning: could not delete '{stack_name}': {e}")
+
+        with ThreadPoolExecutor(max_workers=min(len(targets), 16)) as ex:
+            list(ex.map(wait_one, targets))
 
     except Exception as e:
         print(f"[Deploy] Stack sweep error: {e}")
@@ -263,6 +273,69 @@ def _delete_orphaned_ecs_cluster(ecs_client, cluster_arn: str) -> None:
         ecs_client.stop_task(cluster=cluster_arn, task=task_arn)
 
     ecs_client.delete_cluster(cluster=cluster_arn)
+
+
+# Tagged KMS keys stay visible to the tagging API for the whole 7-30 day
+# pending-deletion window, so a naive sweep re-describes every one of them on
+# every reset (hundreds of serial DescribeKey calls, ~80s observed). Keys that
+# are PendingDeletion never revert, so remember them -- across processes too,
+# via a file next to the Terraform plugin cache -- and only look at new ones.
+_KMS_PENDING_CACHE = Path(tempfile.gettempdir()) / "iac-god-kms-pending-keys.json"
+
+
+def _load_kms_pending_cache() -> set[str]:
+    try:
+        return set(json.loads(_KMS_PENDING_CACHE.read_text()))
+    except Exception:
+        return set()
+
+
+def _save_kms_pending_cache(entries: set[str]) -> None:
+    try:
+        _KMS_PENDING_CACHE.write_text(json.dumps(sorted(entries)))
+    except Exception:
+        pass
+
+
+def _schedule_orphaned_kms_keys(session, region: str, key_ids: list[str]) -> None:
+    kms_client = session.client("kms", region_name=region)
+    cache = _load_kms_pending_cache()
+    todo = [k for k in key_ids if f"{region}:{k}" not in cache]
+    skipped = len(key_ids) - len(todo)
+    if not todo:
+        print(f"[Deploy] {len(key_ids)} tagged KMS key(s), all already pending deletion (cached) — nothing to do")
+        return
+
+    def describe(key_id):
+        try:
+            m = kms_client.describe_key(KeyId=key_id)["KeyMetadata"]
+            return key_id, m["KeyState"], m["KeyManager"]
+        except ClientError as e:
+            gone = e.response.get("Error", {}).get("Code") == "NotFoundException"
+            return key_id, "Gone" if gone else None, None
+
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        described = list(ex.map(describe, todo))
+
+    settled, active = set(), []
+    for key_id, state, manager in described:
+        if state in ("PendingDeletion", "PendingReplicaDeletion", "Gone") or manager == "AWS":
+            settled.add(f"{region}:{key_id}")
+        elif state:
+            active.append(key_id)
+    print(f"[Deploy] {len(key_ids)} tagged KMS key(s): {skipped + len(settled)} already pending deletion/gone, "
+          f"{len(active)} to schedule...")
+
+    if active:
+        try:
+            caller_arn = session.client("sts", region_name=region).get_caller_identity()["Arn"]
+        except Exception:
+            caller_arn = None
+        nuke_actions = _NukeActions(dry_run=False)
+        for key_id in active:
+            nuke_one_kms_key(kms_client, key_id, nuke_actions, caller_arn)
+    _save_kms_pending_cache(cache | settled)
+
 
 
 def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
@@ -381,7 +454,8 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
     if cognito_pool_ids:
         print(f"[Deploy] {len(cognito_pool_ids)} orphaned eval Cognito user pool(s) found — deleting...")
         cognito_client = session.client("cognito-idp", region_name=deploy_config.aws_region)
-        for pool_id in cognito_pool_ids:
+
+        def delete_pool(pool_id):
             try:
                 # DeletionProtection ('ACTIVE'/'INACTIVE') blocks delete_user_pool
                 # outright, same as ALB deletion protection -- clear it first.
@@ -392,11 +466,16 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 except ClientError:
                     pass  # couldn't check/clear -- still attempt the delete below
                 cognito_client.delete_user_pool(UserPoolId=pool_id)
-                print(f"  [Deploy] Deleted orphaned user pool '{pool_id}' ✓")
+                return f"  [Deploy] Deleted orphaned user pool '{pool_id}' ✓"
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
-                    continue
-                print(f"  [Deploy] Warning: could not delete orphaned user pool '{pool_id}': {e}")
+                    return None
+                return f"  [Deploy] Warning: could not delete orphaned user pool '{pool_id}': {e}"
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for line in ex.map(delete_pool, cognito_pool_ids):
+                if line:
+                    print(line)
 
     if ecs_cluster_arns:
         print(f"[Deploy] {len(ecs_cluster_arns)} orphaned eval ECS cluster(s) found — draining and deleting...")
@@ -505,15 +584,7 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 print(f"  [Deploy] Warning: could not delete orphaned WAF web ACL '{webacl_arn}': {e}")
 
     if kms_key_ids:
-        print(f"[Deploy] {len(kms_key_ids)} orphaned eval KMS key(s) found — scheduling deletion...")
-        kms_client = session.client("kms", region_name=deploy_config.aws_region)
-        try:
-            caller_arn = session.client("sts", region_name=deploy_config.aws_region).get_caller_identity()["Arn"]
-        except Exception:
-            caller_arn = None
-        nuke_actions = _NukeActions(dry_run=False)
-        for key_id in kms_key_ids:
-            nuke_one_kms_key(kms_client, key_id, nuke_actions, caller_arn)
+        _schedule_orphaned_kms_keys(session, deploy_config.aws_region, kms_key_ids)
 
     if eks_cluster_names:
         # An EKS cluster's control-plane ENI blocks its VPC's subnet/security
