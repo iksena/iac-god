@@ -584,7 +584,8 @@ def retriever_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState
          iac_type is forwarded so Neo4j queries the correct framework nodes
          (frameworks=['terraform','tf'] vs ['cfn','cloudformation']).
       7. Persist prompt, response, queries, and full context to
-         retriever_history.txt via the recorder.
+         retriever_retrievals.jsonl via the recorder (the conversation turns
+         go to retriever_history.txt on the next snapshot).
       8. Return retriever_context, retriever_queries, and updated
          retriever_history into state.
     """

@@ -1,0 +1,71 @@
+row_number,run_id,status,final_validation_passed,iterations_used,validity,invalid_reason,_batch
+0,20260925_104635_961bd988,harness_error,False,0,invalid_harness,harness error,baseline_opencode_terraform_20260925_104635/results.csv
+0,20260925_110527_d9efca57,harness_error,False,0,invalid_harness,harness error,baseline_opencode_terraform_20260925_110527/results.csv
+0,20260925_112038_a87d9913,harness_error,False,0,invalid_harness,harness error,baseline_opencode_terraform_20260925_112038/results.csv
+0,20260925_120023_3bae6e95,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+1,20260925_105353_fde0e75a,harness_error,False,0,invalid_harness,harness error,baseline_opencode_terraform_20260925_104635/results.csv
+1,20260925_112805_ab74ea06,harness_error,False,0,invalid_harness,harness error,baseline_opencode_terraform_20260925_112038/results.csv
+1,20260925_121805_eba28759,ok,True,4,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+2,20260925_113524_cb3ebb98,harness_error,False,0,invalid_harness,harness error,baseline_opencode_terraform_20260925_112038/results.csv
+2,20260925_123028_c5c90afe,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+3,20260925_123546_fed30b28,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+4,20260925_124135_47430251,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+5,20260925_124721_2ab44d2a,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+6,20260925_125307_df476cfa,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+7,20260925_130925_61fe2342,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+8,20260925_132509_02b331b3,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+10,20260925_134116_14c19e63,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+11,20260925_135654_8d4baad1,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+12,20260925_141547_1c9ef4cb,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+13,20260925_143111_0bcf5ab6,ok,True,4,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+14,20260925_151324_85bec7d6,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+15,20260925_153835_31a8d146,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+16,20260925_160351_59b09a88,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+17,20260925_162931_7e4e7923,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+18,20260925_165508_1531ad39,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+19,20260925_172028_b3717dad,ok,True,6,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+20,20260925_185151_d051244d,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+21,20260925_191659_ee17aac4,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+22,20260925_194240_705e375a,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+23,20260925_200816_7ad1a488,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+24,20260925_202346_6d58e971,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+25,20260925_203851_60e0bdf1,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+26,20260925_205634_1850bf50,ok,True,3,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+28,20260925_213025_073fc3a9,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+30,20260925_215552_87d9d2e5,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+31,20260925_223152_4d979ef9,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+33,20260925_231305_dddb5176,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+34,20260926_000046_b4640033,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+35,20260926_004621_7f8114c9,harness_timeout,True,5,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+36,20260926_035330_f3f748e8,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+37,20260926_050002_7a51c5a0,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+38,20260926_060659_696558e9,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+39,20260926_071218_510b57a1,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+40,20260926_081712_76fd4175,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+41,20260926_082223_7949fd8a,ok,True,3,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+43,20260926_084053_7c9a1685,ok,True,3,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+45,20260926_085849_2dba1ab0,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+46,20260926_090830_1db6372c,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+47,20260926_091320_cca798b0,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+48,20260926_091817_4513a48e,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+49,20260926_092337_7330ed4e,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+50,20260926_092924_e88bbb54,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+51,20260926_094224_6dbac08d,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+52,20260926_094909_bc739aca,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+53,20260926_100200_f2a21728,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+54,20260926_100907_b4909e08,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+56,20260926_101616_a81b93f1,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+60,20260926_102542_9ed7f9c8,ok,True,3,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+61,20260926_104058_335cfbbb,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+62,20260926_104720_963e4cd6,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+63,20260926_105259_fa741c16,ok,True,5,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+66,20260926_114213_e8cd4a12,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+67,20260926_114802_3a076b1c,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+72,20260926_115442_c4bfa73f,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+74,20260926_120243_e8370d4f,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+75,20260926_121155_cb846536,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+76,20260926_122331_aaedd01b,ok,True,3,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+77,20260926_124139_9da13440,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+79,20260926_125011_e7d6551c,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+80,20260926_130206_3798030a,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+81,20260926_131232_19547177,ok,True,3,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv

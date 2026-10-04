@@ -217,7 +217,7 @@ def remediator_agent(state: GraphState, recorder: ResearchRecorder) -> GraphStat
     llm_record = recorder.record_llm_call(
         state=state,
         agent="remediator",
-        model=model,
+        model=usage.get("reported_model") or model,
         prompt=f"SYSTEM:\n{system}\n\nUSER:\n{user_content}",
         response=content,
         token_usage=usage,

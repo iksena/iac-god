@@ -1,0 +1,22 @@
+exp,failed_runs,stuck_pct,deploy,none visible,schema,security,syntax,syntax+schema
+CFN_Ablation_IaCGOD,1,0.0,0.0,0.0,0.0,100.0,0.0,0.0
+CFN_Ablation_NoDenseRAG,1,100.0,0.0,0.0,0.0,100.0,0.0,0.0
+CFN_Ablation_NoPlanner,2,50.0,50.0,0.0,0.0,50.0,0.0,0.0
+CFN_Ablation_OpenCodeRetriever,3,0.0,33.3,0.0,33.3,33.3,0.0,0.0
+CFN_Ablation_TrivyAllSeverities,1,0.0,0.0,0.0,0.0,100.0,0.0,0.0
+CFN_DPIaCEval_o3mini_DeployOnly,15,26.7,73.3,0.0,6.7,0.0,6.7,13.3
+CFN_RealAWS_DSV4F,11,18.2,72.7,0.0,0.0,18.2,0.0,9.1
+CFN_RealAWS_DSV4F_DeployOnly_L345,10,60.0,90.0,0.0,10.0,0.0,0.0,0.0
+CFN_RealAWS_GLM53F,22,59.1,68.2,0.0,9.1,9.1,0.0,13.6
+CFN_RealAWS_Gemini36F_L345,1,0.0,100.0,0.0,0.0,0.0,0.0,0.0
+CFN_RealAWS_Gemini38F,2,100.0,100.0,0.0,0.0,0.0,0.0,0.0
+CFN_RealAWS_OpenCode_DSV4F,22,18.2,22.7,63.6,9.1,4.5,0.0,0.0
+TF_Ablation_NoDenseRAG,2,50.0,50.0,0.0,0.0,0.0,50.0,0.0
+TF_Ablation_NoGraphRAG,2,0.0,100.0,0.0,0.0,0.0,0.0,0.0
+TF_Ablation_NoPlanner,1,0.0,100.0,0.0,0.0,0.0,0.0,0.0
+TF_Ablation_OpenCodeRetriever,2,0.0,0.0,50.0,0.0,0.0,50.0,0.0
+TF_Ablation_TrivyAllSeverities,1,0.0,100.0,0.0,0.0,0.0,0.0,0.0
+TF_IaCEval_DSV4F_LintOnly,5,60.0,0.0,0.0,0.0,0.0,100.0,0.0
+TF_RealAWS_DSV4F,4,25.0,50.0,0.0,0.0,25.0,25.0,0.0
+TF_RealAWS_GLM53F,24,87.5,8.3,0.0,0.0,0.0,91.7,0.0
+TF_RealAWS_Gemini38F,1,0.0,100.0,0.0,0.0,0.0,0.0,0.0

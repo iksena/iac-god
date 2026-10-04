@@ -3,6 +3,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from state import LLMCallRecord, GraphState
 
+# Append-only, one JSON record per Retriever invocation. Kept separate from
+# retriever_history.txt, which save_iteration_snapshot() overwrites.
+RETRIEVER_RETRIEVALS_FILENAME = "retriever_retrievals.jsonl"
+
 
 def _safe_int(value: object) -> int:
     try:
@@ -196,14 +200,15 @@ class ResearchRecorder:
         context_chars: int,
         retrieved_context: str = "",
     ) -> None:
-        """Append one retriever invocation to retriever_history.txt.
+        """Append one retriever invocation to retriever_retrievals.jsonl.
 
-        Unlike conversation-history agents (planner, engineer, remediator)
-        whose history files are rewritten wholesale on every snapshot, the
-        retriever's history file is append-only. Each call to this method
-        writes a single dated block so no prior invocation is lost.
+        Deliberately NOT retriever_history.txt: that file holds the rolling
+        conversation and is rewritten wholesale by save_iteration_snapshot(),
+        which would wipe anything appended here. This file is append-only,
+        one JSON object per Retriever invocation, so no prior invocation is
+        lost.
 
-        Each block contains:
+        Each record contains:
           - Run metadata (iteration, timestamp, run ID)
           - Retrieval queries used
           - Full assembled schema context returned by the hybrid RAG tool
@@ -218,34 +223,18 @@ class ResearchRecorder:
             retrieved_context: Full schema context string returned by the
                                hybrid RAG tool (ChromaDB + Neo4j output).
         """
-        history_path = self.output_dir / "retriever_history.txt"
-        timestamp = datetime.now(timezone.utc).isoformat()
-
-        queries_str = (
-            "\n".join(f"  {i+1}. {q}" for i, q in enumerate(retrieval_queries))
-            if retrieval_queries
-            else "  (none — fell back to raw error strings)"
-        )
-
-        context_section = retrieved_context.strip() if retrieved_context else "(empty)"
-
-        block = (
-            f"{'=' * 72}\n"
-            f"Iteration : {iteration}\n"
-            f"Timestamp : {timestamp}\n"
-            f"Run ID    : {self.run_id}\n"
-            f"Context   : {context_chars} chars assembled\n"
-            f"Queries   :\n{queries_str}\n"
-            f"{'- ' * 36}\n"
-            f"[prompt]\n{prompt}\n"
-            f"{'- ' * 36}\n"
-            f"[response]\n{response}\n"
-            f"{'- ' * 36}\n"
-            f"[retrieved schema context]\n{context_section}\n"
-        )
-
-        with open(history_path, "a", encoding="utf-8") as fh:
-            fh.write(block)
+        record = {
+            "iteration": iteration,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "run_id": self.run_id,
+            "retrieval_queries": list(retrieval_queries),
+            "context_chars": context_chars,
+            "prompt": prompt,
+            "response": response,
+            "context": retrieved_context,
+        }
+        with open(self.output_dir / RETRIEVER_RETRIEVALS_FILENAME, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record) + "\n")
 
     def save_final_report(self, state: GraphState):
         """Save complete research report at end of run."""
@@ -274,7 +263,9 @@ class ResearchRecorder:
 
         Used for agents with a rolling conversation list (planner, engineer,
         remediator, retriever). The list itself accumulates all turns via
-        append_and_cap(), so overwriting on each snapshot is correct.
+        append_and_cap(), so overwriting on each snapshot is correct. Never
+        append other records to these files; the Retriever's per-invocation
+        retrieval records go to retriever_retrievals.jsonl instead.
         """
         history_path = self.output_dir / f"{agent}_history.txt"
         history_path.write_text(

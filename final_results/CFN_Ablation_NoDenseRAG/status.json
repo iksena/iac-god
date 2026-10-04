@@ -1,0 +1,20 @@
+{
+ "experiment": "CFN_Ablation_NoDenseRAG",
+ "dataset": "cfn_eval_benchmark_ablation.csv",
+ "expected": 50,
+ "rows_with_attempt": 50,
+ "valid": 50,
+ "valid_pass": 49,
+ "valid_fail": 1,
+ "invalid": 0,
+ "missing": 0,
+ "fulfilled": true,
+ "pass_rate_over_valid": 0.98,
+ "pass_rate_over_expected": 0.98,
+ "invalid_rows": {},
+ "missing_rows": [],
+ "rerun_rows": [],
+ "attempts": 50,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "Ablation_NoDenseRAG_CFN_runs"
+}
