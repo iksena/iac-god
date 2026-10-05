@@ -3,6 +3,8 @@ CFN_Ablation_IaCGOD,37,16.68,17.95,1.27,37.84,5.41,0.39,2.11
 CFN_Ablation_NoDenseRAG,32,20.0,21.06,1.06,37.5,9.38,0.4,1.65
 CFN_Ablation_NoGraphRAG,31,17.77,19.23,1.45,38.71,3.23,-0.18,3.43
 CFN_Ablation_NoPlanner,27,18.96,19.96,1.0,25.93,0.0,0.07,2.17
+CFN_Ablation_NoQueryRewrite,35,19.57,21.03,1.46,40.0,5.71,0.24,2.61
+CFN_Ablation_NoRemediator,34,16.65,17.71,1.06,32.35,2.94,0.3,2.14
 CFN_Ablation_OpenCodeRetriever,35,15.31,15.37,0.06,20.0,2.86,1.3,-2.33
 CFN_Ablation_TrivyAllSeverities,39,17.41,20.31,2.9,71.79,5.13,-0.2,3.35
 CFN_DPIaCEval_o3mini_DeployOnly,116,8.96,9.4,0.44,26.72,4.31,0.43,1.0
@@ -14,10 +16,12 @@ CFN_RealAWS_Gemini38F,125,13.08,14.14,1.06,29.6,2.4,0.88,1.27
 CFN_RealAWS_OpenCode_DSV4F,166,12.64,13.2,0.56,24.1,5.42,0.1,1.46
 CFN_RealAWS_Opus55,35,7.94,8.43,0.49,37.14,14.29,-0.11,2.5
 TF_Ablation_IaCGOD,34,16.15,17.12,0.97,29.41,5.88,1.86,-0.46
-TF_Ablation_NoDenseRAG,36,19.58,20.42,0.83,16.67,5.56,-0.05,1.82
+TF_Ablation_NoDenseRAG,35,19.83,20.69,0.86,17.14,5.71,-0.06,1.82
 TF_Ablation_NoGraphRAG,30,16.53,17.1,0.57,13.33,3.33,0.0,1.55
 TF_Ablation_NoPlanner,23,13.35,14.0,0.65,17.39,4.35,0.15,1.3
-TF_Ablation_OpenCodeRetriever,29,16.45,18.0,1.55,17.24,10.34,0.06,4.0
+TF_Ablation_NoQueryRewrite,30,18.07,18.87,0.8,33.33,3.33,0.47,1.13
+TF_Ablation_NoRemediator,33,18.12,18.55,0.42,15.15,3.03,0.19,0.83
+TF_Ablation_OpenCodeRetriever,30,16.13,17.63,1.5,16.67,10.0,0.05,4.0
 TF_Ablation_TrivyAllSeverities,46,19.3,25.67,6.37,82.61,0.0,0.4,7.1
 TF_IaCEval_DSV4F_LintOnly,257,9.57,9.64,0.07,5.45,5.45,0.07,
 TF_RealAWS_DSV4F,149,14.83,15.64,0.81,28.19,10.07,0.33,1.44

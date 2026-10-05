@@ -14,6 +14,14 @@ CFN_Ablation_NoGraphRAG,syntax,2,100.0,1.5,1.5,50.0,1.5,4.0
 CFN_Ablation_NoPlanner,deploy,5,80.0,2.25,1.5,40.0,4.4,10.0
 CFN_Ablation_NoPlanner,schema,19,100.0,1.11,1.0,89.47,1.42,38.0
 CFN_Ablation_NoPlanner,security,12,100.0,1.0,1.0,100.0,1.75,24.0
+CFN_Ablation_NoQueryRewrite,deploy,10,100.0,3.1,3.0,40.0,3.0,20.0
+CFN_Ablation_NoQueryRewrite,schema,27,100.0,1.19,1.0,81.48,1.41,54.0
+CFN_Ablation_NoQueryRewrite,security,18,100.0,1.0,1.0,100.0,1.44,36.0
+CFN_Ablation_NoQueryRewrite,syntax,6,100.0,1.0,1.0,100.0,1.0,12.0
+CFN_Ablation_NoRemediator,deploy,10,90.0,1.89,2.0,30.0,2.3,20.0
+CFN_Ablation_NoRemediator,schema,27,100.0,1.11,1.0,88.89,1.48,54.0
+CFN_Ablation_NoRemediator,security,14,100.0,1.0,1.0,100.0,1.64,28.0
+CFN_Ablation_NoRemediator,syntax,4,100.0,1.0,1.0,100.0,1.25,8.0
 CFN_Ablation_OpenCodeRetriever,deploy,19,100.0,2.37,2.0,36.84,2.47,38.0
 CFN_Ablation_OpenCodeRetriever,schema,24,95.83,1.48,1.0,70.83,1.54,48.0
 CFN_Ablation_OpenCodeRetriever,security,12,100.0,1.83,1.0,83.33,2.17,24.0
@@ -65,6 +73,12 @@ TF_Ablation_NoGraphRAG,syntax,21,100.0,1.24,1.0,76.19,1.29,42.0
 TF_Ablation_NoPlanner,deploy,10,90.0,1.33,1.0,80.0,2.1,20.0
 TF_Ablation_NoPlanner,security,10,100.0,1.0,1.0,100.0,1.1,20.0
 TF_Ablation_NoPlanner,syntax,11,100.0,1.09,1.0,90.91,1.36,22.0
+TF_Ablation_NoQueryRewrite,deploy,13,92.31,1.08,1.0,84.62,2.0,26.0
+TF_Ablation_NoQueryRewrite,security,15,100.0,1.0,1.0,100.0,1.0,30.0
+TF_Ablation_NoQueryRewrite,syntax,18,100.0,1.33,1.0,72.22,1.33,36.0
+TF_Ablation_NoRemediator,deploy,15,93.33,2.0,1.0,60.0,2.0,30.0
+TF_Ablation_NoRemediator,security,12,100.0,1.0,1.0,100.0,1.25,24.0
+TF_Ablation_NoRemediator,syntax,22,100.0,1.41,1.0,81.82,1.41,44.0
 TF_Ablation_OpenCodeRetriever,deploy,11,90.91,1.2,1.0,81.82,1.45,22.4
 TF_Ablation_OpenCodeRetriever,security,11,100.0,1.0,1.0,100.0,1.09,22.4
 TF_Ablation_OpenCodeRetriever,syntax,20,95.0,1.42,1.0,65.0,1.4,40.8

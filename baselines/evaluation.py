@@ -195,6 +195,16 @@ class ScenarioLedger:
         path = Path(file_path)
         if not path.is_absolute():
             path = self.config.workdir / path
+        # The model picks this path. Validating or submitting a file outside
+        # the workspace would let it read arbitrary files through validator
+        # error text, or score a template it did not write here.
+        try:
+            path.resolve().relative_to(self.config.workdir.resolve())
+        except ValueError:
+            return None, (
+                f"{file_path} is outside the workspace. Only files inside "
+                f"{self.config.workdir} can be validated, deployed or submitted."
+            )
         if not path.exists():
             return None, (
                 f"No file at {path}. Write the "

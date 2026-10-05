@@ -1,0 +1,17 @@
+lang,exp,condition,role,n,first_try,rate,ci_lo,ci_hi
+CFN,CFN_Ablation_IaCGOD,IaCGOD,same first generation,50,13,0.26,0.15871379651367384,0.3955342198899992
+CFN,CFN_Ablation_NoDenseRAG,no dense RAG,same first generation,50,18,0.36,0.24138562967182875,0.49859237989698046
+CFN,CFN_Ablation_OpenCodeRetriever,OpenCode+Retriever,different harness,50,13,0.26,0.15871379651367384,0.3955342198899992
+CFN,CFN_Ablation_NoGraphRAG,no GraphRAG,same first generation,50,19,0.38,0.2586259584257722,0.5184980497760643
+CFN,CFN_Ablation_NoPlanner,no Planner,changes generation (Planner),50,23,0.46,0.3296943460178263,0.5960136567161192
+CFN,CFN_Ablation_TrivyAllSeverities,Trivy all severities,changes the gate,50,11,0.22,0.12753786224302288,0.35241815689459555
+CFN,CFN_Ablation_NoRemediator,no Remediator,same first generation,50,15,0.3,0.1910338908960936,0.4375061227736339
+CFN,CFN_Ablation_NoQueryRewrite,no query rewrite,same first generation,50,14,0.28,0.17474014357680362,0.4166538714598967
+TF,TF_Ablation_IaCGOD,IaCGOD,same first generation,50,15,0.3,0.1910338908960936,0.4375061227736339
+TF,TF_Ablation_NoDenseRAG,no dense RAG,same first generation,49,13,0.2653061224489796,0.1621113124514944,0.4026255615265835
+TF,TF_Ablation_OpenCodeRetriever,OpenCode+Retriever,different harness,50,18,0.36,0.24138562967182875,0.49859237989698046
+TF,TF_Ablation_NoGraphRAG,no GraphRAG,same first generation,50,20,0.4,0.2760818978624575,0.5381881089724063
+TF,TF_Ablation_NoPlanner,no Planner,changes generation (Planner),50,27,0.54,0.40398634328388083,0.6703056539821737
+TF,TF_Ablation_TrivyAllSeverities,Trivy all severities,changes the gate,50,4,0.08,0.031549003255790686,0.18838502545063704
+TF,TF_Ablation_NoRemediator,no Remediator,same first generation,50,17,0.34,0.2243676963506106,0.47846431458517147
+TF,TF_Ablation_NoQueryRewrite,no query rewrite,same first generation,50,20,0.4,0.2760818978624575,0.5381881089724063

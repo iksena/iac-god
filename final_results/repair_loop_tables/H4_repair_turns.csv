@@ -1,0 +1,17 @@
+exp,repair turns,errors fixed/turn,errors introduced/turn,net progress/turn,stuck turns %,turns with a class regression %,k tokens / repair turn
+CFN_Ablation_IaCGOD,109,1.04,0.39,0.64,16.51,20.18,69.08
+CFN_Ablation_NoDenseRAG,86,1.03,0.3,0.73,20.93,19.77,79.92
+CFN_Ablation_OpenCodeRetriever,108,0.93,0.26,0.67,30.56,7.41,
+CFN_Ablation_NoGraphRAG,57,1.3,0.49,0.81,7.02,21.05,63.16
+CFN_Ablation_NoPlanner,67,1.01,0.39,0.63,28.36,23.88,79.53
+CFN_Ablation_TrivyAllSeverities,107,1.38,0.71,0.67,10.28,28.97,81.75
+CFN_Ablation_NoRemediator,80,1.18,0.38,0.8,18.75,20.0,53.23
+CFN_Ablation_NoQueryRewrite,93,1.13,0.43,0.7,21.51,24.73,76.21
+TF_Ablation_IaCGOD,93,1.01,0.33,0.68,18.28,7.53,48.4
+TF_Ablation_NoDenseRAG,153,0.69,0.26,0.42,38.56,10.46,79.49
+TF_Ablation_OpenCodeRetriever,53,1.15,0.34,0.81,11.32,11.32,
+TF_Ablation_NoGraphRAG,80,0.76,0.18,0.59,30.0,7.5,82.27
+TF_Ablation_NoPlanner,42,1.17,0.17,1.0,7.14,4.76,65.81
+TF_Ablation_TrivyAllSeverities,147,1.16,0.54,0.62,13.61,21.77,59.92
+TF_Ablation_NoRemediator,70,1.06,0.23,0.83,15.71,4.29,36.24
+TF_Ablation_NoQueryRewrite,63,1.06,0.21,0.86,14.29,7.94,59.31

@@ -11,9 +11,11 @@
 | TF_RealAWS_DSV4F                  |        250 |     250 |          246 |            4 |         0 |         0 | True        |                    0.984  |
 | TF_RealAWS_GLM53F                 |        250 |     228 |          226 |            2 |        22 |         0 | False       |                    0.904  |
 | TF_RealAWS_Gemini38F              |        250 |     249 |          249 |            0 |         1 |         0 | False       |                    0.996  |
-| TF_RealAWS_OpenCode_DSV4F         |        250 |      64 |           64 |            0 |         0 |       186 | False       |                    0.256  |
-| TF_RealAWS_Opus55                 |        250 |      92 |           92 |            0 |         0 |       158 | False       |                    0.368  |
+| TF_RealAWS_OpenCode_DSV4F         |        250 |     247 |          246 |            1 |         3 |         0 | False       |                    0.984  |
+| TF_RealAWS_Opus55                 |        250 |     172 |          171 |            1 |         2 |        76 | False       |                    0.684  |
 | TF_IaCEval_DSV4F_LintOnly         |        372 |     367 |          367 |            0 |         5 |         0 | False       |                    0.9866 |
+| CFN_RealAWS_OneShot_DSV4F         |        250 |     244 |           97 |          147 |         6 |         0 | False       |                    0.388  |
+| TF_RealAWS_OneShot_DSV4F          |        250 |     100 |           53 |           47 |         2 |       148 | False       |                    0.212  |
 | CFN_Ablation_IaCGOD               |         50 |      50 |           49 |            1 |         0 |         0 | True        |                    0.98   |
 | CFN_Ablation_NoDenseRAG           |         50 |      50 |           49 |            1 |         0 |         0 | True        |                    0.98   |
 | CFN_Ablation_OpenCodeRetriever    |         50 |      49 |           47 |            2 |         1 |         0 | False       |                    0.94   |
@@ -26,3 +28,7 @@
 | TF_Ablation_NoGraphRAG            |         50 |      48 |           48 |            0 |         2 |         0 | False       |                    0.96   |
 | TF_Ablation_NoPlanner             |         50 |      50 |           49 |            1 |         0 |         0 | True        |                    0.98   |
 | TF_Ablation_TrivyAllSeverities    |         50 |      50 |           49 |            1 |         0 |         0 | True        |                    0.98   |
+| CFN_Ablation_NoRemediator         |         50 |      50 |           48 |            2 |         0 |         0 | True        |                    0.96   |
+| CFN_Ablation_NoQueryRewrite       |         50 |      50 |           49 |            1 |         0 |         0 | True        |                    0.98   |
+| TF_Ablation_NoRemediator          |         50 |      49 |           49 |            0 |         1 |         0 | False       |                    0.98   |
+| TF_Ablation_NoQueryRewrite        |         50 |      49 |           49 |            0 |         1 |         0 | False       |                    0.98   |

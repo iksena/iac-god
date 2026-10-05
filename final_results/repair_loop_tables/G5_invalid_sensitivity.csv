@@ -1,27 +1,9 @@
-exp,rows,invalid,pass_% (all rows),pass_% (invalid excluded)
-CFN_Ablation_IaCGOD,50.0,0.0,98.0,98.0
-CFN_Ablation_NoDenseRAG,50.0,0.0,98.0,98.0
-CFN_Ablation_NoGraphRAG,50.0,0.0,100.0,100.0
-CFN_Ablation_NoPlanner,50.0,1.0,96.0,98.0
-CFN_Ablation_OpenCodeRetriever,50.0,1.0,94.0,95.9
-CFN_Ablation_TrivyAllSeverities,50.0,0.0,98.0,98.0
-CFN_DPIaCEval_o3mini_DeployOnly,153.0,2.0,90.2,91.4
-CFN_RealAWS_DSV4F,250.0,3.0,95.6,96.8
-CFN_RealAWS_DSV4F_DeployOnly_L345,134.0,2.0,92.5,93.9
-CFN_RealAWS_GLM53F,250.0,3.0,91.2,92.3
-CFN_RealAWS_Gemini36F_L345,137.0,0.0,99.3,99.3
-CFN_RealAWS_Gemini38F,250.0,0.0,99.2,99.2
-CFN_RealAWS_OpenCode_DSV4F,250.0,2.0,91.2,91.9
-CFN_RealAWS_Opus55,74.0,0.0,100.0,100.0
-TF_Ablation_IaCGOD,50.0,0.0,100.0,100.0
-TF_Ablation_NoDenseRAG,49.0,2.0,95.9,100.0
-TF_Ablation_NoGraphRAG,50.0,2.0,96.0,100.0
-TF_Ablation_NoPlanner,50.0,0.0,98.0,98.0
-TF_Ablation_OpenCodeRetriever,50.0,1.0,94.0,95.9
-TF_Ablation_TrivyAllSeverities,50.0,0.0,98.0,98.0
-TF_IaCEval_DSV4F_LintOnly,372.0,5.0,98.7,100.0
-TF_RealAWS_DSV4F,250.0,0.0,98.4,98.4
-TF_RealAWS_GLM53F,250.0,22.0,90.4,99.1
-TF_RealAWS_Gemini38F,250.0,1.0,99.6,100.0
-TF_RealAWS_OpenCode_DSV4F,64.0,0.0,100.0,100.0
-TF_RealAWS_Opus55,92.0,0.0,100.0,100.0
+condition,L1-2,L3,L4-5
+IaCGOD,1.9,3.0,3.2333333333333334
+OpenCode+Retriever,1.9,1.6,2.3
+Trivy all severities,3.2,3.2,4.533333333333333
+no GraphRAG,2.2,2.7,2.933333333333333
+no Planner,1.9,1.7,2.0
+no Remediator,1.9,2.9,2.566666666666667
+no dense RAG,5.0,2.888888888888889,4.466666666666667
+no query rewrite,1.7,1.8,2.6333333333333333

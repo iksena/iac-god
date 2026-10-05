@@ -11,9 +11,8 @@ tf_knowledge_graph.json
 tf_registry_docs.json
 *.sqlite*
 **/volume/**
-
 .ipynb_checkpoints
-
+.cleanup_plan
 **/.DS_Store
 *.DS_Store
 .sync*

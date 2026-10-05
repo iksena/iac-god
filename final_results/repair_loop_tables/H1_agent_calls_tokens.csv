@@ -1,0 +1,16 @@
+exp,calls/scen,calls/scen,calls/scen,calls/scen,ktokens/scen,ktokens/scen,ktokens/scen,ktokens/scen
+,engineer,planner,remediator,retriever,engineer,planner,remediator,retriever
+CFN_Ablation_IaCGOD,3.28,1.0,2.28,1.64,81.37,7.08,76.05,15.15
+CFN_Ablation_NoDenseRAG,2.8,1.0,1.8,1.22,87.25,5.66,69.03,11.85
+CFN_Ablation_NoGraphRAG,2.18,1.0,1.18,0.9,55.91,5.33,32.05,8.99
+CFN_Ablation_NoPlanner,2.36,0.0,1.36,0.96,66.25,0.0,53.11,8.38
+CFN_Ablation_TrivyAllSeverities,3.2,1.0,2.2,1.22,100.99,5.37,86.8,14.62
+CFN_Ablation_NoRemediator,2.68,1.0,0.0,1.24,96.47,5.62,0.0,10.93
+CFN_Ablation_NoQueryRewrite,2.88,1.0,1.88,0.0,91.79,5.44,75.18,0.0
+TF_Ablation_IaCGOD,2.92,1.0,1.92,1.66,45.18,5.11,47.21,10.19
+TF_Ablation_NoDenseRAG,4.29,1.0,3.29,2.88,117.03,5.29,143.72,19.46
+TF_Ablation_NoGraphRAG,2.74,1.0,1.74,1.42,82.57,6.22,68.38,10.9
+TF_Ablation_NoPlanner,1.92,0.0,0.92,0.7,37.6,0.0,33.25,5.13
+TF_Ablation_TrivyAllSeverities,4.0,1.0,3.0,1.48,95.88,5.85,91.78,9.83
+TF_Ablation_NoRemediator,2.5,1.0,0.0,1.2,64.63,5.14,0.0,7.86
+TF_Ablation_NoQueryRewrite,2.28,1.0,1.28,0.0,50.32,5.91,43.39,0.0

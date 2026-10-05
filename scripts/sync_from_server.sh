@@ -29,7 +29,7 @@ find "$LOCAL_ROOT/runs" -name final_report.json -print0 \
 echo "[sync] $(wc -l < "$EXCLUDES") complete local run folders excluded from the runs/ transfer"
 # runs that exist locally WITHOUT final_report.json (interrupted at the last sync) are not excluded, so they get completed.
 
-COMMON=(-avzP --itemize-changes --update --backup "--backup-dir=$BACKUP_DIR" -e "ssh")
+COMMON=(-avzP --itemize-changes --update --backup "--backup-dir=$BACKUP_DIR" -e "ssh -o ControlMaster=auto -o ControlPath=/tmp/ssh_cleanup_%r@%h:%p -o ControlPersist=20m")
 
 echo "[sync] benchmark_runs/  (checksum compare; newer local files are kept, older ones are backed up then replaced)"
 rsync "${COMMON[@]}" -c ${DRY[@]+"${DRY[@]}"} \

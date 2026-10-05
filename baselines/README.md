@@ -69,6 +69,74 @@ python -m baselines.oneshot_baseline \
 - The same per-scenario `cleanup_scenario_resources()` sweep runs after every
   row as in the other two runners.
 
+## Workspace confinement
+
+The model must only ever see and touch the file it is writing. It was not
+confined, and a session could reach the whole checkout: found when an OpenCode
+Terraform session located its own row in `data/tf_eval_benchmark_real_aws.csv`,
+then read the earlier multi-agent run's final template out of
+`final_results/.../results_final.csv` and used it as a "reference
+implementation" (it also read the validators and `deploy_validator.py`). Any
+row where that happens is not a measurement of the model.
+
+**Why it happened.** The workspace is `runs/<id>/workspace`, inside the git
+checkout. *OpenCode* treats the enclosing git repository as "the project" and
+only gates paths outside it, so the entire checkout was in scope: reads of
+`data/`, `final_results/`, other runs' artifacts and `.env` (its default
+`read *.env: ask` is turned into allow by `--auto`) all succeeded, and so did
+writes. Its path rules are matched relative to the project root, never as
+absolute paths, so an absolute-path allowlist cannot fix this. *Claude Code*
+was fully open: a bare `Read`/`Write`/`Edit` in `--allowedTools` approves the
+tool for every path, so even reads and writes outside the checkout succeeded
+(it rarely tried: 2 of 376 audited runs). Measured with the real drivers, the
+writes are not hypothetical: one run wrote `hcl2.py`, `_hcl2_real.py` and
+`sitecustomize.py` into the checkout root (the MCP server runs with
+`PYTHONPATH` set to it) while working around a LocalStack error, and another
+edited `cfn_resource_spec.json`.
+
+**What confines it now.**
+- OpenCode: the workspace is `git init`-ed so it *is* the project root; the
+  driver refuses to run if it is not its own git root. Everything above it is
+  `external_directory`, denied explicitly (as are glob/grep/list). `opencode.json`,
+  the system prompt and the harness state moved to the run directory and load
+  via `OPENCODE_CONFIG`, so the workspace contains only the model's own files.
+- Claude Code: only the three MCP tools are pre-approved; `Read`/`Write`/`Edit`
+  are left to the default, which allows the working directory and refuses the
+  rest (nobody is there to approve a headless prompt).
+- The MCP tools (`validate_iac`/`deploy_iac`/`submit_template`) refuse a
+  `file_path` outside the workspace.
+- `run_harness` closes stdin (opencode hung on an inherited non-TTY stdin).
+
+**Check it holds, on the machine that runs the sweep.** The OpenCode half rests
+on observed project-root behaviour (verified on 1.18.30), not a documented
+guarantee, so re-verify after upgrading it. This runs the real driver against a
+seeded sandbox and fails on any leaked canary or outside write:
+
+```bash
+python -m scripts.verify_sandbox --harness opencode --model deepseek-v4-flash \
+  --base-url https://api.deepseek.com --api-key-env DEEPSEEK_API_KEY --provider-name deepseek-direct
+python -m scripts.verify_sandbox --harness claude_code --model deepseek/deepseek-v4-flash
+```
+
+It was checked to fail when the confinement is switched off (every canary read
+and write detected), so a pass means something.
+
+**Tripwire.** After every session `run_harness` inspects what actually
+succeeded; a row whose session touched a path outside the workspace gets
+`status=workspace_escape`, `final_validation_passed=False` and the paths in the
+`workspace_escapes` column, so it is neither counted as a pass nor skipped by
+`--retry-errors`.
+
+**Sweeps that ran before this.** `audit_workspace_escapes()` in
+`scripts/aggregate_benchmark_run_data.py` scans a runs directory and lists the
+sessions that read or wrote outside their workspace (what they reached,
+whether they wrote), with a `--rows` list for re-running when given the results
+CSV. On the local OpenCode CFN sweep it flags 28 of 506 runs; the Terraform
+sweep that prompted this needs the same audit on the server. Results from
+flagged rows should not be reported, and files such as `sitecustomize.py` or
+`hcl2.py` left in the checkout by earlier sessions must be removed (`git
+status`), since they affect every later run.
+
 ## Architecture
 
 Control is inverted relative to `benchmark.py`. Python does not run the repair

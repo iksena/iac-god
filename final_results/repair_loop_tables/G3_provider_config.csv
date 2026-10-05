@@ -11,3 +11,5 @@ TF_Ablation_OpenCodeRetriever,OpenCode+Retriever,49,0,0,0,0
 TF_Ablation_NoGraphRAG,no GraphRAG,50,0,0,0,0
 TF_Ablation_NoPlanner,no Planner,50,0,0,0,0
 TF_Ablation_TrivyAllSeverities,Trivy all severities,50,0,0,0,0
+TF_Ablation_NoRemediator,no Remediator,50,0,0,0,0
+TF_Ablation_NoQueryRewrite,no query rewrite,50,0,0,0,0

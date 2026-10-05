@@ -71,6 +71,7 @@ from tracking.recorder import ResearchRecorder
 
 from baselines.drivers import DRIVERS, get_driver
 from baselines.drivers.base import HarnessDriver
+from baselines.sandbox_audit import describe, tool_calls, workspace_escapes
 from baselines.evaluation import (
     STATE_FILENAME,
     ScenarioConfig,
@@ -96,6 +97,7 @@ BASELINE_CSV_EXTRA = [
     "harness_stall_retries_used",
     "harness_stalled_attempt_run_ids",
     "thinking_tokens_total",
+    "workspace_escapes",
 ]
 BASELINE_CSV_FIELDS = CSV_RESULT_FIELDS + BASELINE_CSV_EXTRA
 
@@ -317,7 +319,12 @@ def run_harness(
     # scenario state, which lives under ScenarioConfig.workdir separately).
     # What specifically gets redirected here, and why, is documented in
     # each driver's build_env.
-    state_dir = workdir / f".{driver.name}_state"
+    #
+    # Lives beside the workspace (in the run directory), not inside it: the
+    # workspace is the only place the model may read or write, and this
+    # directory holds the harness's session database, its config, and (for
+    # opencode) the generated opencode.json that names repo paths.
+    state_dir = workdir.parent / f".{driver.name}_state"
     state_dir.mkdir(parents=True, exist_ok=True)
     debug_log_path = stream_path.with_name("harness_debug.log")
 
@@ -363,6 +370,9 @@ def run_harness(
             cmd,
             cwd=resolved_workdir,
             env=env,
+            # Not inherited: opencode blocks reading an open non-TTY stdin
+            # (hung indefinitely under a pipe), and nothing here feeds it input.
+            stdin=subprocess.DEVNULL,
             stdout=out,
             stderr=err,
             text=True,
@@ -406,12 +416,22 @@ def run_harness(
     # directory (large binary/db files silently dropped mid-copy).
     shutil.rmtree(state_dir, ignore_errors=True)
 
-    return driver.parse_stream(
+    telemetry = driver.parse_stream(
         stdout,
         returncode=returncode,
         timed_out=timed_out,
         duration=round(time.time() - started, 3),
     )
+    # Tripwire behind the confinement (see the drivers): a session that
+    # reached outside its workspace could have seen datasets, earlier runs'
+    # templates or credentials, so its result cannot be trusted as a measure
+    # of the model. Checked from what actually succeeded, not from what the
+    # permissions were meant to allow.
+    telemetry["workspace_escapes"] = describe(
+        workspace_escapes(tool_calls(stdout, driver.name), str(workdir.resolve())),
+        str(workdir.resolve()),
+    )
+    return telemetry
 
 
 # ---------------------------------------------------------------------------
@@ -663,7 +683,17 @@ def run_scenario(
 
     status = "ok"
     error_message = None
-    if telemetry["timed_out"]:
+    workspace_escapes_found = telemetry.get("workspace_escapes") or []
+    if workspace_escapes_found:
+        # Takes precedence over every other status: whatever else happened,
+        # the outcome is contaminated. Not "ok", so --retry-errors reruns it.
+        status = "workspace_escape"
+        error_message = (
+            "Harness session accessed paths outside its workspace, so the result is "
+            "not a clean measurement and is scored as a failure: "
+            + "; ".join(workspace_escapes_found[:5])
+        )
+    elif telemetry["timed_out"]:
         status, error_message = "harness_timeout", "Harness exceeded --scenario-timeout"
     elif telemetry["stalled"] and not final["passed"]:
         # A stall on an attempt whose artifact already passed is NOT this
@@ -692,7 +722,8 @@ def run_scenario(
         "status": status,
         "error_message": error_message,
         "error_traceback": None,
-        "final_validation_passed": final["passed"],
+        # A contaminated pass must not count towards pass_rate.
+        "final_validation_passed": bool(final["passed"]) and not workspace_escapes_found,
         "iterations_used": iterations_used,
         "llm_calls_total": len(telemetry["llm_call_log"]),
         "token_usage": tokens,
@@ -718,6 +749,7 @@ def run_scenario(
         "harness_stall_retries_used": len(stalled_run_ids),
         "harness_stalled_attempt_run_ids": ",".join(stalled_run_ids) or None,
         "thinking_tokens_total": telemetry["thinking_tokens_total"],
+        "workspace_escapes": "; ".join(workspace_escapes_found) or None,
     }
 
 

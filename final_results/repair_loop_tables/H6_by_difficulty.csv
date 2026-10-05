@@ -1,0 +1,49 @@
+lang,band,exp,n,first_try_pct,iters_mean,pass_pct,condition
+CFN,L1-2,CFN_Ablation_IaCGOD,10,30.0,2.3,100.0,IaCGOD
+CFN,L1-2,CFN_Ablation_NoDenseRAG,10,70.0,1.5,100.0,no dense RAG
+CFN,L1-2,CFN_Ablation_NoGraphRAG,10,60.0,1.8,100.0,no GraphRAG
+CFN,L1-2,CFN_Ablation_NoPlanner,10,60.0,1.6,100.0,no Planner
+CFN,L1-2,CFN_Ablation_NoQueryRewrite,10,60.0,1.8,100.0,no query rewrite
+CFN,L1-2,CFN_Ablation_NoRemediator,10,50.0,1.8,100.0,no Remediator
+CFN,L1-2,CFN_Ablation_OpenCodeRetriever,10,50.0,2.1,100.0,OpenCode+Retriever
+CFN,L1-2,CFN_Ablation_TrivyAllSeverities,10,30.0,2.6,100.0,Trivy all severities
+CFN,L3,CFN_Ablation_IaCGOD,10,20.0,3.3,100.0,IaCGOD
+CFN,L3,CFN_Ablation_NoDenseRAG,10,40.0,2.7,100.0,no dense RAG
+CFN,L3,CFN_Ablation_NoGraphRAG,10,30.0,2.1,100.0,no GraphRAG
+CFN,L3,CFN_Ablation_NoPlanner,10,50.0,3.0,90.0,no Planner
+CFN,L3,CFN_Ablation_NoQueryRewrite,10,10.0,2.8,100.0,no query rewrite
+CFN,L3,CFN_Ablation_NoRemediator,10,40.0,2.1,100.0,no Remediator
+CFN,L3,CFN_Ablation_OpenCodeRetriever,10,20.0,4.1,90.0,OpenCode+Retriever
+CFN,L3,CFN_Ablation_TrivyAllSeverities,10,10.0,2.6,100.0,Trivy all severities
+CFN,L4-5,CFN_Ablation_IaCGOD,30,26.666666666666668,3.6,96.66666666666667,IaCGOD
+CFN,L4-5,CFN_Ablation_NoDenseRAG,30,23.333333333333332,3.2666666666666666,96.66666666666667,no dense RAG
+CFN,L4-5,CFN_Ablation_NoGraphRAG,30,33.33333333333333,2.3333333333333335,100.0,no GraphRAG
+CFN,L4-5,CFN_Ablation_NoPlanner,30,40.0,2.4,96.66666666666667,no Planner
+CFN,L4-5,CFN_Ablation_NoQueryRewrite,30,23.333333333333332,3.2666666666666666,96.66666666666667,no query rewrite
+CFN,L4-5,CFN_Ablation_NoRemediator,30,20.0,3.1666666666666665,93.33333333333333,no Remediator
+CFN,L4-5,CFN_Ablation_OpenCodeRetriever,30,20.0,3.4,93.33333333333333,OpenCode+Retriever
+CFN,L4-5,CFN_Ablation_TrivyAllSeverities,30,23.333333333333332,3.6,96.66666666666667,Trivy all severities
+TF,L1-2,TF_Ablation_IaCGOD,10,50.0,1.9,100.0,IaCGOD
+TF,L1-2,TF_Ablation_NoDenseRAG,10,20.0,5.0,100.0,no dense RAG
+TF,L1-2,TF_Ablation_NoGraphRAG,10,40.0,2.2,100.0,no GraphRAG
+TF,L1-2,TF_Ablation_NoPlanner,10,50.0,1.9,100.0,no Planner
+TF,L1-2,TF_Ablation_NoQueryRewrite,10,50.0,1.7,100.0,no query rewrite
+TF,L1-2,TF_Ablation_NoRemediator,10,50.0,1.9,100.0,no Remediator
+TF,L1-2,TF_Ablation_OpenCodeRetriever,10,40.0,1.9,100.0,OpenCode+Retriever
+TF,L1-2,TF_Ablation_TrivyAllSeverities,10,20.0,3.2,100.0,Trivy all severities
+TF,L3,TF_Ablation_IaCGOD,10,50.0,3.0,100.0,IaCGOD
+TF,L3,TF_Ablation_NoDenseRAG,9,55.55555555555556,2.888888888888889,100.0,no dense RAG
+TF,L3,TF_Ablation_NoGraphRAG,10,60.0,2.7,100.0,no GraphRAG
+TF,L3,TF_Ablation_NoPlanner,10,60.0,1.7,100.0,no Planner
+TF,L3,TF_Ablation_NoQueryRewrite,10,50.0,1.8,100.0,no query rewrite
+TF,L3,TF_Ablation_NoRemediator,10,40.0,2.9,100.0,no Remediator
+TF,L3,TF_Ablation_OpenCodeRetriever,10,60.0,1.6,100.0,OpenCode+Retriever
+TF,L3,TF_Ablation_TrivyAllSeverities,10,10.0,3.2,100.0,Trivy all severities
+TF,L4-5,TF_Ablation_IaCGOD,30,16.666666666666664,3.2333333333333334,100.0,IaCGOD
+TF,L4-5,TF_Ablation_NoDenseRAG,30,20.0,4.466666666666667,93.33333333333333,no dense RAG
+TF,L4-5,TF_Ablation_NoGraphRAG,30,33.33333333333333,2.933333333333333,93.33333333333333,no GraphRAG
+TF,L4-5,TF_Ablation_NoPlanner,30,53.333333333333336,2.0,96.66666666666667,no Planner
+TF,L4-5,TF_Ablation_NoQueryRewrite,30,33.33333333333333,2.6333333333333333,96.66666666666667,no query rewrite
+TF,L4-5,TF_Ablation_NoRemediator,30,26.666666666666668,2.566666666666667,96.66666666666667,no Remediator
+TF,L4-5,TF_Ablation_OpenCodeRetriever,30,26.666666666666668,2.3,90.0,OpenCode+Retriever
+TF,L4-5,TF_Ablation_TrivyAllSeverities,30,3.3333333333333335,4.533333333333333,96.66666666666667,Trivy all severities

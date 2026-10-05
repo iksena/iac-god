@@ -29,6 +29,9 @@ class HarnessTelemetry(TypedDict):
     session_id: str | None
     model_usage: dict[str, Any]
     thinking_tokens_total: int
+    # Set by run_harness, not by drivers: successful tool calls that touched a
+    # path outside the workspace (see baselines/sandbox_audit.py).
+    workspace_escapes: list[str]
     is_error: bool
     stalled: bool
     stop_reason: str | None

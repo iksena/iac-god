@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import json
 import shutil
 import time
@@ -343,6 +344,94 @@ def find_timeout_retry_candidates(
         print(f"\nWrote {len(candidates)} row(s) to '{output_csv}'")
 
     return row_numbers
+
+
+def audit_workspace_escapes(runs_dir, results_csv=None, output_csv=None):
+    """List harness sessions that read or wrote outside their own workspace.
+
+    Scans every runs_dir/**/harness_stream.jsonl (OpenCode and Claude Code)
+    and reports runs where a tool call SUCCEEDED on a path outside
+    runs/<run_id>/workspace -- denied attempts returned nothing and are
+    ignored. Such a session may have seen the benchmark dataset, an earlier
+    run's template, prior results or credentials, so its result is not a clean
+    measurement of the model. Written for sweeps that ran before the harness
+    drivers confined the workspace; sessions from after that are checked
+    live (status ``workspace_escape``).
+
+    With results_csv, run_id is joined to row_number/status so the affected
+    rows can be re-run. Prints a --rows-ready list. Returns a DataFrame.
+    """
+    import re
+    from baselines.sandbox_audit import is_inside, tool_calls
+
+    def category(path, repo_root, run_id):
+        rel = path[len(repo_root):].lstrip("/") if repo_root and path.startswith(repo_root) else None
+        if rel is None:
+            return "outside the repository"
+        if rel == "":
+            return "repository root"
+        top = rel.split("/")[0]
+        if top == "runs":
+            parts = rel.split("/")
+            if len(parts) > 1 and parts[1] and parts[1] != run_id:
+                return "another run's artifacts"
+            return "runs listing / own run directory"
+        if rel.endswith(".env") or top == ".env":
+            return ".env (credentials)"
+        if top in ("final_results", "benchmark_runs"):
+            return "prior results"
+        if top == "data" or top.startswith(("cfn_templates", "iac_benchmark")):
+            return "dataset / ground truth"
+        if top in ("tools", "baselines", "agents", "scripts", "prompts", "graph.py", "config.py",
+                   "main.py", "benchmark.py", "benchmark_common.py", "state.py"):
+            return "harness / validator source"
+        return "other repository file"
+
+    rows = []
+    for stream_path in sorted(Path(runs_dir).rglob("harness_stream.jsonl")):
+        run_id = stream_path.parent.name
+        try:
+            text = stream_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        harness = "claude_code" if '"claude_code_version"' in text[:4000] else "opencode"
+        calls = tool_calls(text, harness)
+        marker_re = re.compile(r"^(.*/" + re.escape(run_id) + r"/workspace)(?:/|$)")
+        workspace = next(
+            (m.group(1) for c in calls for p in c.paths if (m := marker_re.match(p))),
+            f"/__no_workspace_seen__/{run_id}/workspace",
+        )
+        repo_root = workspace.split("/runs/")[0] if "/runs/" in workspace else ""
+        hits = [(c, p) for c in calls if c.ok for p in c.paths if not is_inside(p, workspace)]
+        if not hits:
+            continue
+        rows.append({
+            "run_id": run_id,
+            "harness": harness,
+            "escaped_calls": len(hits),
+            "wrote_outside": any(c.tool.lower() in ("write", "edit") for c, _ in hits),
+            "reached": " | ".join(sorted({category(p, repo_root, run_id) for _, p in hits})),
+            "example_paths": " | ".join(sorted({p for _, p in hits})[:4]),
+        })
+
+    df = pd.DataFrame(rows, columns=["run_id", "harness", "escaped_calls", "wrote_outside", "reached", "example_paths"])
+    if results_csv and len(df):
+        res = pd.read_csv(results_csv)
+        keep = [c for c in ("run_id", "row_number", "status", "final_validation_passed") if c in res.columns]
+        df = df.merge(res[keep], on="run_id", how="left")
+
+    print(f"{len(df)} run(s) with at least one successful out-of-workspace call (scanned '{runs_dir}')")
+    if len(df):
+        for reached, n in df["reached"].str.split(" \\| ").explode().value_counts().items():
+            print(f"  {n:4d}  {reached}")
+        print(f"  {int(df['wrote_outside'].sum()):4d}  run(s) also WROTE outside the workspace")
+        if "row_number" in df.columns and df["row_number"].notna().any():
+            rows_list = sorted(int(float(x)) for x in df["row_number"].dropna().unique())
+            print(f"\n--rows \"{','.join(str(r) for r in rows_list)}\"")
+    if output_csv:
+        df.to_csv(output_csv, index=False)
+        print(f"Wrote {output_csv}")
+    return df
 
 
 def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_csv="results_merged.csv"):

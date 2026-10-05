@@ -10,9 +10,11 @@ CFN_DPIaCEval_o3mini_DeployOnly,iac_with_difficulty_levels.csv,153,153,151,138,1
 TF_RealAWS_DSV4F,tf_eval_benchmark_real_aws.csv,250,250,250,246,4,0,0,True,0.984,0.984,251,0,TFEvalRealAWS_DeepseekV4Flash_sec_runs
 TF_RealAWS_GLM53F,tf_eval_benchmark_real_aws.csv,250,250,228,226,2,22,0,False,0.9912,0.904,272,0,TFEvalRealAWS_GLM53Flash_sec_runs
 TF_RealAWS_Gemini38F,tf_eval_benchmark_real_aws.csv,250,250,249,249,0,1,0,False,1.0,0.996,250,0,TFEvalRealAWS_Gemini38Flash_runs
-TF_RealAWS_OpenCode_DSV4F,tf_eval_benchmark_real_aws.csv,250,64,64,64,0,0,186,False,1.0,0.256,70,0,TFEvalRealAWS_OpencodeDSV4F_runs
-TF_RealAWS_Opus55,tf_eval_benchmark_real_aws.csv,250,92,92,92,0,0,158,False,1.0,0.368,92,0,TFEvalRealAWS_Opus55_runs
+TF_RealAWS_OpenCode_DSV4F,tf_eval_benchmark_real_aws.csv,250,250,247,246,1,3,0,False,0.996,0.984,320,0,TFEvalRealAWS_OpencodeDSV4F_runs
+TF_RealAWS_Opus55,tf_eval_benchmark_real_aws.csv,250,174,172,171,1,2,76,False,0.9942,0.684,174,0,TFEvalRealAWS_Opus55_runs
 TF_IaCEval_DSV4F_LintOnly,iac_eval_benchmark.csv,372,372,367,367,0,5,0,False,1.0,0.9866,373,0,IaCEval_DeepseekV4Flash_lint_runs
+CFN_RealAWS_OneShot_DSV4F,cfn_eval_benchmark_real_aws.csv,250,250,244,97,147,6,0,False,0.3975,0.388,250,0,OneShot_DSV4F_CFNEvalRealAWS_runs
+TF_RealAWS_OneShot_DSV4F,tf_eval_benchmark_real_aws.csv,250,102,100,53,47,2,148,False,0.53,0.212,102,0,OneShot_DSV4F_TFEvalRealAWS_runs
 CFN_Ablation_IaCGOD,cfn_eval_benchmark_ablation.csv,50,50,50,49,1,0,0,True,0.98,0.98,50,0,Ablation_IaCGOD_CFN_runs
 CFN_Ablation_NoDenseRAG,cfn_eval_benchmark_ablation.csv,50,50,50,49,1,0,0,True,0.98,0.98,50,0,Ablation_NoDenseRAG_CFN_runs
 CFN_Ablation_OpenCodeRetriever,cfn_eval_benchmark_ablation.csv,50,50,49,47,2,1,0,False,0.9592,0.94,50,0,Ablation_OpenCodeRetriever_CFN_runs
@@ -25,3 +27,7 @@ TF_Ablation_OpenCodeRetriever,tf_eval_benchmark_ablation.csv,50,50,49,47,2,1,0,F
 TF_Ablation_NoGraphRAG,tf_eval_benchmark_ablation.csv,50,50,48,48,0,2,0,False,1.0,0.96,50,0,Ablation_NoGraphRAG_TF_runs
 TF_Ablation_NoPlanner,tf_eval_benchmark_ablation.csv,50,50,50,49,1,0,0,True,0.98,0.98,50,0,Ablation_NoPlanner_TF_runs
 TF_Ablation_TrivyAllSeverities,tf_eval_benchmark_ablation.csv,50,50,50,49,1,0,0,True,0.98,0.98,50,0,Ablation_TrivyAllSeverities_TF_runs
+CFN_Ablation_NoRemediator,cfn_eval_benchmark_ablation.csv,50,50,50,48,2,0,0,True,0.96,0.96,50,0,Ablation_NoRemediator_CFN_runs
+CFN_Ablation_NoQueryRewrite,cfn_eval_benchmark_ablation.csv,50,50,50,49,1,0,0,True,0.98,0.98,50,0,Ablation_NoQueryRewrite_CFN_runs
+TF_Ablation_NoRemediator,tf_eval_benchmark_ablation.csv,50,50,49,49,0,1,0,False,1.0,0.98,50,0,Ablation_NoRemediator_TF_runs
+TF_Ablation_NoQueryRewrite,tf_eval_benchmark_ablation.csv,50,50,49,49,0,1,0,False,1.0,0.98,50,0,Ablation_NoQueryRewrite_TF_runs

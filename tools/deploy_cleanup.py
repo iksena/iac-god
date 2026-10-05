@@ -22,7 +22,9 @@ matching the two different risks it addresses:
 """
 
 import json
+import os
 import tempfile
+from contextlib import contextmanager
 import boto3
 from botocore.exceptions import ClientError
 from concurrent.futures import ThreadPoolExecutor
@@ -30,6 +32,11 @@ from pathlib import Path
 from config import DeployConfig, DeployTarget
 import requests
 import time
+
+try:
+    import fcntl  # POSIX advisory file locks; absent on Windows (cache then runs unlocked)
+except ImportError:  # pragma: no cover
+    fcntl = None
 
 from tools.cfn_utils import build_cfn_client, wait_for_stack_deletion
 from scripts.nuke_vpc_dependencies import (
@@ -275,36 +282,103 @@ def _delete_orphaned_ecs_cluster(ecs_client, cluster_arn: str) -> None:
     ecs_client.delete_cluster(cluster=cluster_arn)
 
 
-# Tagged KMS keys stay visible to the tagging API for the whole 7-30 day
-# pending-deletion window, so a naive sweep re-describes every one of them on
-# every reset (hundreds of serial DescribeKey calls, ~80s observed). Keys that
-# are PendingDeletion never revert, so remember them -- across processes too,
-# via a file next to the Terraform plugin cache -- and only look at new ones.
-_KMS_PENDING_CACHE = Path(tempfile.gettempdir()) / "iac-god-kms-pending-keys.json"
+# The tagging API keeps listing resources long after they are gone: Cognito
+# pools and deleted-then-recreated names linger in its index, ECS keeps
+# INACTIVE clusters discoverable (and delete_cluster "succeeds" on them every
+# time), and a KMS key stays tagged for its whole 7-30 day pending-deletion
+# window. Without memory, every sweep re-finds, re-describes and re-"deletes"
+# the same things (hundreds of calls, ~80-110s observed). So: remember what
+# has been confirmed gone -- across processes too, via a file in the temp dir
+# next to the Terraform plugin cache.
+#
+# Only for resources whose IDs are unique and never reused (KMS key IDs,
+# Cognito pool IDs, ELB/secret/WAF ARNs with random suffixes, flow-log IDs).
+# Name-keyed resources (ECS clusters, S3 buckets, ...) are deliberately NOT
+# cached: a later scenario can legitimately recreate the same name, and
+# skipping it would leak it. An ID is recorded only after a confirmed delete
+# or NotFound, never after a failure, so failures are retried next sweep.
+_HANDLED_CACHE = Path(tempfile.gettempdir()) / "iac-god-handled-resources.json"
+_HANDLED_LOCK = _HANDLED_CACHE.with_suffix(".lock")
+_HANDLED_TTL_SECONDS = 35 * 24 * 3600  # past KMS's max 30-day pending window
+
+# Safe for several benchmark processes (e.g. a CFN run and a Terraform run)
+# sharing this file: readers never need a lock because writers replace the
+# file atomically; writers take an exclusive lock, MERGE with whatever other
+# processes saved since this one loaded (so nobody's entries are lost), and
+# write through a per-process temp file (a shared temp name lets two
+# simultaneous saves clobber each other).
 
 
-def _load_kms_pending_cache() -> set[str]:
+@contextmanager
+def _handled_cache_lock():
+    lock_file = None
     try:
-        return set(json.loads(_KMS_PENDING_CACHE.read_text()))
+        lock_file = open(_HANDLED_LOCK, "a")
+        if fcntl:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
     except Exception:
-        return set()
-
-
-def _save_kms_pending_cache(entries: set[str]) -> None:
+        pass  # can't lock (read-only tmp, Windows) -- still better to save than to skip
     try:
-        _KMS_PENDING_CACHE.write_text(json.dumps(sorted(entries)))
+        yield
+    finally:
+        if lock_file:
+            try:
+                if fcntl:
+                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+                lock_file.close()
+            except Exception:
+                pass
+
+
+def _read_handled_file() -> dict[str, float]:
+    try:
+        raw = json.loads(_HANDLED_CACHE.read_text())
+        cutoff = time.time() - _HANDLED_TTL_SECONDS
+        return {k: v for k, v in raw.items() if v >= cutoff}
+    except Exception:
+        return {}  # missing or half-written by an older version -- treat as empty
+
+
+def _load_handled() -> dict[str, float]:
+    return _read_handled_file()
+
+
+def _save_handled(handled: dict[str, float]) -> None:
+    try:
+        with _handled_cache_lock():
+            merged = _read_handled_file()
+            for k, ts in handled.items():
+                merged[k] = max(ts, merged.get(k, 0.0))
+            tmp = _HANDLED_CACHE.with_name(f"{_HANDLED_CACHE.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(merged))
+            tmp.replace(_HANDLED_CACHE)
+            handled.update(merged)
     except Exception:
         pass
 
 
-def _schedule_orphaned_kms_keys(session, region: str, key_ids: list[str]) -> None:
+def _is_not_found(e: ClientError) -> bool:
+    """A parallel sweep may have deleted the resource between our listing and
+    our delete -- that's success, not a failure to warn about."""
+    code = e.response.get("Error", {}).get("Code", "")
+    return any(t in code for t in ("NotFound", "NoSuch", "DoesNotExist"))
+
+
+def _unhandled(handled: dict[str, float], kind: str, region: str, ids: list[str]) -> list[str]:
+    return [i for i in ids if f"{kind}:{region}:{i}" not in handled]
+
+
+def _mark_handled(handled: dict[str, float], kind: str, region: str, ids) -> None:
+    now = time.time()
+    for i in ids:
+        handled[f"{kind}:{region}:{i}"] = now
+
+
+def _schedule_orphaned_kms_keys(session, region: str, key_ids: list[str], handled: dict[str, float]) -> None:
+    """key_ids are already filtered against the handled cache. Describe the
+    rest in parallel; keys already pending deletion / gone are recorded as
+    handled, the rest get deletion scheduled."""
     kms_client = session.client("kms", region_name=region)
-    cache = _load_kms_pending_cache()
-    todo = [k for k in key_ids if f"{region}:{k}" not in cache]
-    skipped = len(key_ids) - len(todo)
-    if not todo:
-        print(f"[Deploy] {len(key_ids)} tagged KMS key(s), all already pending deletion (cached) — nothing to do")
-        return
 
     def describe(key_id):
         try:
@@ -315,15 +389,16 @@ def _schedule_orphaned_kms_keys(session, region: str, key_ids: list[str]) -> Non
             return key_id, "Gone" if gone else None, None
 
     with ThreadPoolExecutor(max_workers=16) as ex:
-        described = list(ex.map(describe, todo))
+        described = list(ex.map(describe, key_ids))
 
-    settled, active = set(), []
+    settled, active = [], []
     for key_id, state, manager in described:
         if state in ("PendingDeletion", "PendingReplicaDeletion", "Gone") or manager == "AWS":
-            settled.add(f"{region}:{key_id}")
+            settled.append(key_id)
         elif state:
             active.append(key_id)
-    print(f"[Deploy] {len(key_ids)} tagged KMS key(s): {skipped + len(settled)} already pending deletion/gone, "
+    _mark_handled(handled, "kms", region, settled)
+    print(f"[Deploy] {len(key_ids)} new tagged KMS key(s): {len(settled)} already pending deletion/gone, "
           f"{len(active)} to schedule...")
 
     if active:
@@ -334,8 +409,18 @@ def _schedule_orphaned_kms_keys(session, region: str, key_ids: list[str]) -> Non
         nuke_actions = _NukeActions(dry_run=False)
         for key_id in active:
             nuke_one_kms_key(kms_client, key_id, nuke_actions, caller_arn)
-    _save_kms_pending_cache(cache | settled)
 
+
+# Only the resource types the sweep below knows how to delete -- asking the
+# tagging API for everything also returned ~40 Batch job definitions, Config
+# conformance packs, DataZone domains etc. every time, none of which we act on.
+_SWEEP_RESOURCE_TYPE_FILTERS = [
+    "s3", "cognito-idp:userpool", "ecs:cluster", "logs:log-group", "kms:key",
+    "elasticache:cluster", "elasticache:replicationgroup",
+    "elasticloadbalancing:loadbalancer", "secretsmanager:secret", "wafv2",
+    "codebuild:project", "eks:cluster", "codecommit", "sns",
+    "ec2:vpc-flow-log", "cognito-identity:identitypool",
+]
 
 
 def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
@@ -364,6 +449,7 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
         mappings = []
         for page in paginator.paginate(
             TagFilters=[{"Key": EVAL_TAG_KEY, "Values": [EVAL_TAG_VALUE]}],
+            ResourceTypeFilters=_SWEEP_RESOURCE_TYPE_FILTERS,
         ):
             mappings.extend(page.get("ResourceTagMappingList", []))
     except Exception as e:
@@ -434,12 +520,30 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
         else:
             other.append(arn)
 
-    if other:
-        preview = ", ".join(other[:10]) + (" ..." if len(other) > 10 else "")
-        print(
-            f"[Deploy] ⚠️  {len(other)} other tagged resource(s) found with no "
-            f"owning stack (not auto-cleaned, needs a type-specific delete): {preview}"
-        )
+    region = deploy_config.aws_region
+    handled = _load_handled()
+    cognito_pool_ids = _unhandled(handled, "cognito-pool", region, cognito_pool_ids)
+    kms_key_ids = _unhandled(handled, "kms", region, kms_key_ids)
+    elbv2_arns = _unhandled(handled, "elbv2", region, elbv2_arns)
+    secret_arns = _unhandled(handled, "secret", region, secret_arns)
+    webacl_arns = _unhandled(handled, "webacl", region, webacl_arns)
+    vpc_flow_log_ids = _unhandled(handled, "flowlog", region, vpc_flow_log_ids)
+    cognito_identity_pool_ids = _unhandled(handled, "idpool", region, cognito_identity_pool_ids)
+
+    if ecs_cluster_arns:
+        # ECS keeps INACTIVE (already deleted) clusters discoverable, and
+        # delete_cluster on one "succeeds" every time -- one batched
+        # describe_clusters lets us touch only the ACTIVE ones.
+        ecs_probe = session.client("ecs", region_name=region)
+        active_ecs: list[str] = []
+        for i in range(0, len(ecs_cluster_arns), 100):
+            try:
+                resp = ecs_probe.describe_clusters(clusters=ecs_cluster_arns[i:i + 100])
+                active_ecs += [c["clusterArn"] for c in resp.get("clusters", []) if c.get("status") != "INACTIVE"]
+            except ClientError:
+                active_ecs += ecs_cluster_arns[i:i + 100]  # can't tell -- fall back to trying them
+        ecs_cluster_arns = active_ecs
+
 
     if s3_buckets:
         print(f"[Deploy] {len(s3_buckets)} orphaned eval S3 bucket(s) found — emptying and deleting...")
@@ -449,6 +553,8 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 _empty_and_delete_bucket(s3_client, bucket_name, session=session, region=deploy_config.aws_region)
                 print(f"  [Deploy] Deleted orphaned bucket '{bucket_name}' ✓")
             except Exception as e:
+                if isinstance(e, ClientError) and _is_not_found(e):
+                    continue
                 print(f"  [Deploy] Warning: could not delete orphaned bucket '{bucket_name}': {e}")
 
     if cognito_pool_ids:
@@ -466,14 +572,16 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 except ClientError:
                     pass  # couldn't check/clear -- still attempt the delete below
                 cognito_client.delete_user_pool(UserPoolId=pool_id)
-                return f"  [Deploy] Deleted orphaned user pool '{pool_id}' ✓"
+                return pool_id, True, f"  [Deploy] Deleted orphaned user pool '{pool_id}' ✓"
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
-                    return None
-                return f"  [Deploy] Warning: could not delete orphaned user pool '{pool_id}': {e}"
+                    return pool_id, True, None  # already gone -- just a stale tag-index entry
+                return pool_id, False, f"  [Deploy] Warning: could not delete orphaned user pool '{pool_id}': {e}"
 
         with ThreadPoolExecutor(max_workers=8) as ex:
-            for line in ex.map(delete_pool, cognito_pool_ids):
+            for pool_id, done, line in ex.map(delete_pool, cognito_pool_ids):
+                if done:
+                    _mark_handled(handled, "cognito-pool", region, [pool_id])
                 if line:
                     print(line)
 
@@ -485,6 +593,8 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 _delete_orphaned_ecs_cluster(ecs_client, cluster_arn)
                 print(f"  [Deploy] Deleted orphaned ECS cluster '{cluster_arn}' ✓")
             except ClientError as e:
+                if _is_not_found(e):
+                    continue
                 print(f"  [Deploy] Warning: could not delete orphaned ECS cluster '{cluster_arn}': {e}")
 
     if log_group_names:
@@ -512,9 +622,11 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                         Attributes=[{"Key": "deletion_protection.enabled", "Value": "false"}],
                     )
                 elbv2_client.delete_load_balancer(LoadBalancerArn=lb_arn)
+                _mark_handled(handled, "elbv2", region, [lb_arn])
                 print(f"  [Deploy] Deleted orphaned load balancer '{lb_arn}' ✓")
             except ClientError as e:
-                if e.response.get("Error", {}).get("Code") == "LoadBalancerNotFoundException":
+                if e.response.get("Error", {}).get("Code", "").startswith("LoadBalancerNotFound"):
+                    _mark_handled(handled, "elbv2", region, [lb_arn])
                     continue
                 print(f"  [Deploy] Warning: could not delete orphaned load balancer '{lb_arn}': {e}")
 
@@ -535,7 +647,7 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 ec_client.delete_cache_cluster(CacheClusterId=cluster_id)
                 print(f"  [Deploy] Deleted orphaned ElastiCache cluster '{cluster_id}' ✓")
             except ClientError as e:
-                if e.response.get("Error", {}).get("Code") == "CacheClusterNotFoundFault":
+                if e.response.get("Error", {}).get("Code", "").startswith("CacheClusterNotFound"):
                     continue
                 print(f"  [Deploy] Warning: could not delete orphaned cache cluster '{cluster_id}': {e}")
 
@@ -545,9 +657,11 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
         for secret_arn in secret_arns:
             try:
                 sm_client.delete_secret(SecretId=secret_arn, ForceDeleteWithoutRecovery=True)
+                _mark_handled(handled, "secret", region, [secret_arn])
                 print(f"  [Deploy] Deleted orphaned secret '{secret_arn}' ✓")
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+                    _mark_handled(handled, "secret", region, [secret_arn])
                     continue
                 print(f"  [Deploy] Warning: could not delete orphaned secret '{secret_arn}': {e}")
 
@@ -559,6 +673,8 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 cb_client.delete_project(name=name)
                 print(f"  [Deploy] Deleted orphaned CodeBuild project '{name}' ✓")
             except ClientError as e:
+                if _is_not_found(e):
+                    continue
                 print(f"  [Deploy] Warning: could not delete orphaned CodeBuild project '{name}': {e}")
 
     if webacl_arns:
@@ -577,14 +693,16 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                     waf_client.disassociate_web_acl(ResourceArn=resource_arn)
                 lock_token = waf_client.get_web_acl(Name=name, Scope=scope, Id=webacl_id)["LockToken"]
                 waf_client.delete_web_acl(Name=name, Scope=scope, Id=webacl_id, LockToken=lock_token)
+                _mark_handled(handled, "webacl", region, [webacl_arn])
                 print(f"  [Deploy] Deleted orphaned WAF web ACL '{name}' ✓")
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") == "WAFNonexistentItemException":
+                    _mark_handled(handled, "webacl", region, [webacl_arn])
                     continue
                 print(f"  [Deploy] Warning: could not delete orphaned WAF web ACL '{webacl_arn}': {e}")
 
     if kms_key_ids:
-        _schedule_orphaned_kms_keys(session, deploy_config.aws_region, kms_key_ids)
+        _schedule_orphaned_kms_keys(session, region, kms_key_ids, handled)
 
     if eks_cluster_names:
         # An EKS cluster's control-plane ENI blocks its VPC's subnet/security
@@ -609,6 +727,8 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 cc_client.delete_repository(repositoryName=repo_name)
                 print(f"  [Deploy] Deleted orphaned CodeCommit repo '{repo_name}' ✓")
             except ClientError as e:
+                if _is_not_found(e):
+                    continue
                 print(f"  [Deploy] Warning: could not delete orphaned CodeCommit repo '{repo_name}': {e}")
 
     if sns_topic_arns:
@@ -628,6 +748,7 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
         ec2_client = session.client("ec2", region_name=deploy_config.aws_region)
         try:
             ec2_client.delete_flow_logs(FlowLogIds=vpc_flow_log_ids)
+            _mark_handled(handled, "flowlog", region, vpc_flow_log_ids)
             print(f"  [Deploy] Deleted {len(vpc_flow_log_ids)} orphaned VPC flow log(s) ✓")
         except ClientError as e:
             print(f"  [Deploy] Warning: could not delete orphaned VPC flow log(s): {e}")
@@ -639,11 +760,15 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
         for pool_id in cognito_identity_pool_ids:
             try:
                 ci_client.delete_identity_pool(IdentityPoolId=pool_id)
+                _mark_handled(handled, "idpool", region, [pool_id])
                 print(f"  [Deploy] Deleted orphaned identity pool '{pool_id}' ✓")
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+                    _mark_handled(handled, "idpool", region, [pool_id])
                     continue
                 print(f"  [Deploy] Warning: could not delete orphaned identity pool '{pool_id}': {e}")
+
+    _save_handled(handled)
 
 
 # ---------------------------------------------------------------------------

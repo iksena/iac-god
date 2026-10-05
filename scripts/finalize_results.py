@@ -88,11 +88,17 @@ EXPERIMENTS = [
          dataset=TF_REAL, organizer="TFEvalRealAWS_GLM53Flash_sec_runs"),
     dict(name="TF_RealAWS_Gemini38F", dirs=["terraform_20260929_151853_Gemini38F"], dataset=TF_REAL,
          organizer="TFEvalRealAWS_Gemini38Flash_runs"),
-    dict(name="TF_RealAWS_OpenCode_DSV4F", dirs=sorted(os.path.basename(p) for p in glob.glob(os.path.join(BENCH, "baseline_opencode_terraform_202609*"))),
+    dict(name="TF_RealAWS_OpenCode_DSV4F", dirs=sorted(os.path.basename(p) for p in glob.glob(os.path.join(BENCH, "baseline_opencode_terraform_2026*"))
+                    if not p.endswith("_20261003_201836")),      # 201836 = empty stub of the 201904 run
          dataset=TF_REAL, organizer="TFEvalRealAWS_OpencodeDSV4F_runs"),
-    dict(name="TF_RealAWS_Opus55", dirs=["terraform_20261002_115801"], dataset=TF_REAL, organizer="TFEvalRealAWS_Opus55_runs"),
+    dict(name="TF_RealAWS_Opus55", dirs=["terraform_20261002_115801", "terraform_20261002_115801_Opus55"], dataset=TF_REAL, organizer="TFEvalRealAWS_Opus55_runs"),
     dict(name="TF_IaCEval_DSV4F_LintOnly", dirs=["terraform_20260908_171434_IaCEval"], dataset="iac_eval_benchmark.csv",
          organizer="IaCEval_DeepseekV4Flash_lint_runs", expected_n=372),
+    # --- One-shot baseline (max_iterations=1, no repair loop), live AWS, real-AWS benchmark; run in batches of rows
+    dict(name="CFN_RealAWS_OneShot_DSV4F", dirs=["oneshot_cloudformation_20261003_220413_DeepseekV4Flash"], dataset=CFN_REAL,
+         organizer="OneShot_DSV4F_CFNEvalRealAWS_runs"),
+    dict(name="TF_RealAWS_OneShot_DSV4F", dirs=["oneshot_terraform_20261005_112650", "oneshot_terraform_20261005_122639"], dataset=TF_REAL,
+         organizer="OneShot_DSV4F_TFEvalRealAWS_runs"),
     # --- Ablations (LocalStack, 50 scenarios per language) ------------------------------------
     dict(name="CFN_Ablation_IaCGOD", dirs=["cloudformation_20260921_132308_Ablation_DSV4F", "cloudformation_20260928_223453_Ablation_Normal"],
          dataset=CFN_ABL, organizer="Ablation_IaCGOD_CFN_runs"),
@@ -121,7 +127,16 @@ EXPERIMENTS = [
          organizer="Ablation_NoPlanner_TF_runs"),
     dict(name="TF_Ablation_TrivyAllSeverities", dirs=["terraform_20261002_103230_Ablation_TrivyAllSeverities"], dataset=TF_ABL,
          organizer="Ablation_TrivyAllSeverities_TF_runs"),
-    # Deliberately NOT listed: terraform_20260929_220511_Invalid_Ablation_NoGraphRAG (marked invalid), runs before 2026-09.
+    dict(name="CFN_Ablation_NoRemediator", dirs=["cloudformation_20261003_005907_Ablation_NoRemediator"], dataset=CFN_ABL,
+         organizer="Ablation_NoRemediator_CFN_runs"),
+    dict(name="CFN_Ablation_NoQueryRewrite", dirs=["cloudformation_20261004_160128_Ablation_NoQueryRewrite"], dataset=CFN_ABL,
+         organizer="Ablation_NoQueryRewrite_CFN_runs"),
+    dict(name="TF_Ablation_NoRemediator", dirs=["terraform_20261003_124228_Ablation_NoRemediator"], dataset=TF_ABL,
+         organizer="Ablation_NoRemediator_TF_runs"),
+    dict(name="TF_Ablation_NoQueryRewrite", dirs=["terraform_20261004_192046_Ablation_NoQueryRewrite"], dataset=TF_ABL,
+         organizer="Ablation_NoQueryRewrite_TF_runs"),
+    # Deliberately NOT listed: terraform_20260929_220511_Invalid_Ablation_NoGraphRAG and terraform_20261003_161009_InvalidOpus55
+    # (marked invalid), runs before 2026-09.
 ]
 
 # ----------------------------------------------------------------------------------------------
@@ -180,6 +195,10 @@ def load_attempts(exp) -> pd.DataFrame:
         cands += [q for q in glob.glob(os.path.join(base, "*.csv"))
                   if os.path.basename(q) not in ("results.csv", "results_merged.csv")
                   and not re.search(r"diff345|without_runtime|retry_error|\.bak", os.path.basename(q))]
+        # a run whose results.csv is missing (every row of the first pass hit a runtime error / the csv was not written) only has
+        # its evaluated rows in results_without_runtime_error.csv: use it as the batch table in that case
+        if not os.path.exists(os.path.join(base, "results.csv")):
+            cands += glob.glob(os.path.join(base, "results_without_runtime_error.csv"))
         for p in cands:
             if p in seen_files:
                 continue

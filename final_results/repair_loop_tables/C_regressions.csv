@@ -3,6 +3,8 @@ CFN_Ablation_IaCGOD,109,1.04,0.39,31.19,20.18,16.28,16.51,43.2
 CFN_Ablation_NoDenseRAG,86,1.03,0.3,25.58,19.77,11.54,20.93,43.8
 CFN_Ablation_NoGraphRAG,57,1.3,0.49,31.58,21.05,0.0,7.02,35.5
 CFN_Ablation_NoPlanner,67,1.01,0.39,26.87,23.88,38.46,28.36,22.2
+CFN_Ablation_NoQueryRewrite,93,1.13,0.43,32.26,24.73,25.0,21.51,33.3
+CFN_Ablation_NoRemediator,80,1.18,0.38,26.25,20.0,16.67,18.75,22.9
 CFN_Ablation_OpenCodeRetriever,108,0.93,0.26,16.67,7.41,7.14,30.56,16.7
 CFN_Ablation_TrivyAllSeverities,107,1.38,0.71,43.93,28.97,13.16,10.28,53.8
 CFN_DPIaCEval_o3mini_DeployOnly,458,0.85,0.32,30.79,2.4,21.62,26.86,6.9
@@ -17,6 +19,8 @@ TF_Ablation_IaCGOD,93,1.01,0.33,30.11,7.53,3.23,18.28,20.0
 TF_Ablation_NoDenseRAG,153,0.69,0.26,25.49,10.46,7.5,38.56,38.9
 TF_Ablation_NoGraphRAG,80,0.76,0.18,15.0,7.5,7.14,30.0,16.7
 TF_Ablation_NoPlanner,42,1.17,0.17,16.67,4.76,28.57,7.14,8.7
+TF_Ablation_NoQueryRewrite,63,1.06,0.21,19.05,7.94,15.38,14.29,16.7
+TF_Ablation_NoRemediator,70,1.06,0.23,21.43,4.29,50.0,15.71,9.1
 TF_Ablation_OpenCodeRetriever,53,1.15,0.34,22.64,11.32,5.56,11.32,20.0
 TF_Ablation_TrivyAllSeverities,147,1.16,0.54,42.86,21.77,6.25,13.61,54.3
 TF_IaCEval_DSV4F_LintOnly,969,0.6,0.29,21.67,0.0,18.51,51.81,0.0
