@@ -4,8 +4,8 @@ CFN,context size: medium (tokens 314-695),1202,77.54,0.32
 CFN,context size: large (tokens 696-8590),1204,79.4,0.5
 CFN,context covers a failing resource type: False,360,81.67,0.19
 CFN,context covers a failing resource type: True,2250,75.73,0.4
-TF,context size: small (tokens 9-845),1217,71.65,0.26
-TF,context size: medium (tokens 846-2529),1219,65.79,0.27
-TF,context size: large (tokens 2541-14716),1215,59.51,0.38
-TF,context covers a failing resource type: False,403,90.32,0.15
-TF,context covers a failing resource type: True,489,79.96,0.41
+TF,context size: small (tokens 9-854),1245,71.97,0.26
+TF,context size: medium (tokens 856-2552),1247,65.04,0.27
+TF,context size: large (tokens 2557-14716),1244,58.28,0.37
+TF,context covers a failing resource type: False,417,90.65,0.14
+TF,context covers a failing resource type: True,505,80.0,0.41

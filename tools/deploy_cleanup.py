@@ -420,6 +420,7 @@ _SWEEP_RESOURCE_TYPE_FILTERS = [
     "elasticloadbalancing:loadbalancer", "secretsmanager:secret", "wafv2",
     "codebuild:project", "eks:cluster", "codecommit", "sns",
     "ec2:vpc-flow-log", "cognito-identity:identitypool",
+    "dynamodb:table", "dsql:cluster",
 ]
 
 
@@ -475,6 +476,8 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
     sns_topic_arns: list[str] = []
     vpc_flow_log_ids: list[str] = []
     cognito_identity_pool_ids: list[str] = []
+    dynamodb_table_names: list[str] = []
+    dsql_cluster_ids: list[str] = []
     other: list[str] = []
     for mapping in mappings:
         arn = mapping.get("ResourceARN", "")
@@ -515,6 +518,10 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
             vpc_flow_log_ids.append(arn.rsplit("/", 1)[1])
         elif ":cognito-identity:" in arn and "identitypool/" in arn:
             cognito_identity_pool_ids.append(arn.rsplit("/", 1)[1])
+        elif ":dynamodb:" in arn and ":table/" in arn and "/" not in arn.split(":table/", 1)[1]:
+            dynamodb_table_names.append(arn.split(":table/", 1)[1])  # skips /stream/ /index/ /backup/ ARNs
+        elif ":dsql:" in arn and ":cluster/" in arn:
+            dsql_cluster_ids.append(arn.rsplit("/", 1)[1])
         elif ":cloudformation:" in arn and ":stack/" in arn:
             pass  # the stack itself -- already handled by _delete_surviving_eval_stacks
         else:
@@ -529,6 +536,7 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
     webacl_arns = _unhandled(handled, "webacl", region, webacl_arns)
     vpc_flow_log_ids = _unhandled(handled, "flowlog", region, vpc_flow_log_ids)
     cognito_identity_pool_ids = _unhandled(handled, "idpool", region, cognito_identity_pool_ids)
+    dsql_cluster_ids = _unhandled(handled, "dsql", region, dsql_cluster_ids)
 
     if ecs_cluster_arns:
         # ECS keeps INACTIVE (already deleted) clusters discoverable, and
@@ -744,12 +752,19 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 print(f"  [Deploy] Warning: could not delete orphaned SNS topic '{topic_arn}': {e}")
 
     if vpc_flow_log_ids:
-        print(f"[Deploy] {len(vpc_flow_log_ids)} orphaned eval VPC flow log(s) found — deleting...")
-        ec2_client = session.client("ec2", region_name=deploy_config.aws_region)
+        # delete_flow_logs on a batch fails *entirely* with InvalidFlowLogId.NotFound
+        # if any one ID is already gone -- and the tag index keeps listing deleted
+        # flow logs, so a single call warned on every sweep and never made
+        # progress. Ask which still exist (the filter form tolerates missing IDs),
+        # delete just those, and record every ID as handled (flow-log IDs are unique).
+        ec2_client = session.client("ec2", region_name=region)
         try:
-            ec2_client.delete_flow_logs(FlowLogIds=vpc_flow_log_ids)
+            existing = [f["FlowLogId"] for f in ec2_client.describe_flow_logs(
+                Filters=[{"Name": "flow-log-id", "Values": vpc_flow_log_ids}]).get("FlowLogs", [])]
+            if existing:
+                ec2_client.delete_flow_logs(FlowLogIds=existing)
+                print(f"  [Deploy] Deleted {len(existing)} orphaned VPC flow log(s) ✓")
             _mark_handled(handled, "flowlog", region, vpc_flow_log_ids)
-            print(f"  [Deploy] Deleted {len(vpc_flow_log_ids)} orphaned VPC flow log(s) ✓")
         except ClientError as e:
             print(f"  [Deploy] Warning: could not delete orphaned VPC flow log(s): {e}")
 
@@ -767,6 +782,63 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                     _mark_handled(handled, "idpool", region, [pool_id])
                     continue
                 print(f"  [Deploy] Warning: could not delete orphaned identity pool '{pool_id}': {e}")
+
+    if dynamodb_table_names:
+        # DeletionProtectionEnabled blocks delete_table outright (neither
+        # CloudFormation rollback nor aws-nuke clears it). Name-keyed, so not
+        # cached; describe_table first keeps stale tag-index entries cheap and
+        # quiet, and tables already DELETING are left alone.
+        ddb_client = session.client("dynamodb", region_name=region)
+
+        def delete_table(name):
+            try:
+                table = ddb_client.describe_table(TableName=name)["Table"]
+                if table.get("TableStatus") == "DELETING":
+                    return None
+                if table.get("DeletionProtectionEnabled"):
+                    ddb_client.update_table(TableName=name, DeletionProtectionEnabled=False)
+                for attempt in range(3):  # the protection update can leave the table briefly UPDATING
+                    try:
+                        ddb_client.delete_table(TableName=name)
+                        return f"  [Deploy] Deleted orphaned DynamoDB table '{name}' ✓"
+                    except ClientError as e:
+                        if e.response.get("Error", {}).get("Code") != "ResourceInUseException" or attempt == 2:
+                            raise
+                        time.sleep(2)
+            except ClientError as e:
+                if _is_not_found(e) or e.response.get("Error", {}).get("Code") == "ResourceInUseException":
+                    return None
+                return f"  [Deploy] Warning: could not delete orphaned DynamoDB table '{name}': {e}"
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for line in ex.map(delete_table, dynamodb_table_names):
+                if line:
+                    print(line)
+
+    if dsql_cluster_ids:
+        # Aurora DSQL clusters are created with deletion protection on by
+        # default; delete_cluster fails until update_cluster turns it off.
+        # Deletion is asynchronous, so a cluster in DELETING is just skipped;
+        # IDs are unique, so one confirmed gone is cached.
+        dsql_client = session.client("dsql", region_name=region)
+        for cluster_id in dsql_cluster_ids:
+            try:
+                cluster = dsql_client.get_cluster(identifier=cluster_id)
+                status = cluster.get("status")
+                if status == "DELETED":
+                    _mark_handled(handled, "dsql", region, [cluster_id])
+                    continue
+                if status in ("DELETING", "PENDING_DELETE"):
+                    continue
+                if cluster.get("deletionProtectionEnabled"):
+                    dsql_client.update_cluster(identifier=cluster_id, deletionProtectionEnabled=False)
+                dsql_client.delete_cluster(identifier=cluster_id)
+                print(f"  [Deploy] Deleted orphaned DSQL cluster '{cluster_id}' ✓ (async)")
+            except ClientError as e:
+                if _is_not_found(e):
+                    _mark_handled(handled, "dsql", region, [cluster_id])
+                    continue
+                print(f"  [Deploy] Warning: could not delete orphaned DSQL cluster '{cluster_id}': {e}")
 
     _save_handled(handled)
 

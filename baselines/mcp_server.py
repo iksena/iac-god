@@ -98,10 +98,33 @@ def _text_result(text: str, is_error: bool = False) -> dict[str, Any]:
     return {"content": [{"type": "text", "text": text}], "isError": is_error}
 
 
+# The harness's own file tools (opencode's read/write/edit) take `filePath`, and
+# models mix the two spellings up. Observed: a session called validate_iac with
+# `filePath` about 35 times in a row, each answered with a bare "file_path is
+# required.", and never recovered. Which spelling the model uses says nothing
+# about whether it can write IaC, so the common ones are accepted; the schema
+# still advertises `file_path`.
+_PATH_ARG_NAMES = ("file_path", "filePath", "filepath", "path", "file")
+
+
+def _path_arg(args: dict[str, Any]) -> str | None:
+    for key in _PATH_ARG_NAMES:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
 def _dispatch_tool(ledger: ScenarioLedger, name: str, args: dict[str, Any]) -> dict[str, Any]:
-    file_path = args.get("file_path")
+    file_path = _path_arg(args)
     if not file_path:
-        return _text_result("file_path is required.", is_error=True)
+        example = ledger.config.workdir / template_filename(ledger.config.iac_type)
+        return _text_result(
+            f"No file path found in the arguments you sent (keys received: {sorted(args)}). "
+            f'Call this tool again with the path as `file_path`, for example '
+            f'{{"file_path": "{example}"}}.',
+            is_error=True,
+        )
 
     if name == "validate_iac":
         outcome = ledger.validate(file_path)

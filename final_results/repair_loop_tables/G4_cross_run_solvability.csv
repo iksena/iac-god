@@ -1,9 +1,9 @@
 lang,run,shared scenarios,failed,solved by another run,failed by all (row_number)
-CFN,(all runs),250,45,45,
-CFN,DeepSeek-V4-Flash,250,11,11,
-CFN,GLM-5.3-Flash,250,22,22,
-CFN,Gemini-3.8-Flash,250,2,2,
-CFN,OpenCode+DSV4F,250,22,22,
+CFN,(all runs),250,43,42,6
+CFN,DeepSeek-V4-Flash,250,11,10,
+CFN,GLM-5.3-Flash,250,22,21,
+CFN,Gemini-3.8-Flash,250,2,1,
+CFN,OpenCode+DSV4F,250,22,21,
 CFN,(IaCGOD models only),250,29,28,6
 TF,(all runs),250,27,26,249
 TF,DeepSeek-V4-Flash,250,4,3,

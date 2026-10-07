@@ -69,7 +69,8 @@ EXPERIMENTS = [
          organizer="CFNEvalRealAWS_Gemini38Flash_runs"),
     dict(name="CFN_RealAWS_OpenCode_DSV4F",
          dirs=["baseline_opencode_cloudformation_20260917_232736_DSV4F_Full",
-               "baseline_opencode_cloudformation_20261002_212629", "baseline_opencode_cloudformation_20261002_213054"],
+               "baseline_opencode_cloudformation_20261002_212629", "baseline_opencode_cloudformation_20261002_213054",
+               "baseline_opencode_cloudformation_20261005_222720", "baseline_opencode_cloudformation_20261006_112454"],
          dataset=CFN_REAL, organizer="OpencodeDSV4F_CFNEvalRealAWS_Full_runs",
          rerun_cmd=OC_CFN_CMD, rerun_out="baseline_opencode_cloudformation_20260917_232736_DSV4F_Full/batch4"),
     dict(name="CFN_RealAWS_Opus55", dirs=["cloudformation_20260925_001704_Opus55", "cloudformation_20260925_202548"],
@@ -161,8 +162,23 @@ def _txt(v) -> str:
     return "" if v is None or (isinstance(v, float) and pd.isna(v)) else str(v)
 
 
+def _load_tainted() -> dict:
+    """run_ids of coding-agent attempts that successfully touched a path outside their workspace (audit/opencode_workspace_audit.py).
+    Their result says nothing about the agent alone, so they are invalid whatever they scored."""
+    path = os.path.join(ROOT, "scripts", "tainted_runs.csv")
+    if not os.path.exists(path):
+        return {}
+    t = pd.read_csv(path)
+    return dict(zip(t.run_id, t.cats))
+
+
+TAINTED = _load_tainted()
+
+
 def classify(row) -> tuple[str, str]:
     status = _txt(row.get("status"))
+    if _txt(row.get("run_id")) in TAINTED:
+        return "invalid_workspace_escape", "read/wrote outside its workspace: " + str(TAINTED[_txt(row.get("run_id"))])
     passed = str(row.get("final_validation_passed")).strip().lower() == "true"
     if passed:
         return "valid_pass", ""
@@ -175,7 +191,7 @@ def classify(row) -> tuple[str, str]:
     return "valid_fail", ""
 
 
-RANK = {"valid_pass": 0, "valid_fail": 1, "invalid_environment": 2, "invalid_runtime": 3, "invalid_harness": 3}
+RANK = {"valid_pass": 0, "valid_fail": 1, "invalid_environment": 2, "invalid_runtime": 3, "invalid_harness": 3, "invalid_workspace_escape": 4}
 
 # ----------------------------------------------------------------------------------------------
 
