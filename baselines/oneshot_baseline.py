@@ -141,6 +141,15 @@ def run_scenario(
     content, usage = _call_llm_with_history(
         client, model, system, [{"role": "user", "content": user_content}]
     )
+    # An LLM backend (e.g. a CLI-wrapping proxy) can hand back an error message in the
+    # completion slot. That is an infrastructure/safeguard event, not the model's answer:
+    # scoring it would record a bogus "raw" template and a model FAIL. Raise instead so the
+    # row is recorded as runtime_error (retryable via --retry-errors).
+    if content.lstrip().startswith("API Error:"):
+        raise RuntimeError(
+            "LLM backend returned an error message instead of a completion "
+            f"(not scored as a model answer): {content.strip()[:300]}"
+        )
     template, extraction_method = extract_template(content, config.iac_type)
 
     llm_record = recorder.record_llm_call(

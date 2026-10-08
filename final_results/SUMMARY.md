@@ -12,13 +12,14 @@
 | TF_RealAWS_GLM53F                 |        250 |     228 |          226 |            2 |        22 |         0 | False       |                    0.904  |
 | TF_RealAWS_Gemini38F              |        250 |     249 |          249 |            0 |         1 |         0 | False       |                    0.996  |
 | TF_RealAWS_OpenCode_DSV4F         |        250 |     246 |          242 |            4 |         4 |         0 | False       |                    0.968  |
-| TF_RealAWS_Opus55                 |        250 |     248 |          248 |            0 |         2 |         0 | False       |                    0.992  |
+| TF_RealAWS_Opus55                 |        250 |     250 |          250 |            0 |         0 |         0 | True        |                    1      |
 | TF_IaCEval_DSV4F_LintOnly         |        372 |     367 |          367 |            0 |         5 |         0 | False       |                    0.9866 |
 | CFN_RealAWS_OneShot_DSV4F         |        250 |     244 |           97 |          147 |         6 |         0 | False       |                    0.388  |
 | TF_RealAWS_OneShot_DSV4F          |        250 |     246 |          111 |          135 |         4 |         0 | False       |                    0.444  |
 | CFN_RealAWS_OneShot_Gemini38F     |        250 |     244 |          126 |          118 |         6 |         0 | False       |                    0.504  |
 | TF_RealAWS_OneShot_Gemini38F      |        250 |     157 |           55 |          102 |        93 |         0 | False       |                    0.22   |
 | CFN_RealAWS_OneShot_GLM53F        |        250 |     246 |           68 |          178 |         4 |         0 | False       |                    0.272  |
+| TF_RealAWS_OneShot_GLM53F         |        250 |     249 |           74 |          175 |         1 |         0 | False       |                    0.296  |
 | TF_RealAWS_Gemini38F_FirstAttempt |        250 |      69 |           47 |           22 |         0 |       181 | False       |                    0.188  |
 | CFN_Ablation_IaCGOD               |         50 |      50 |           49 |            1 |         0 |         0 | True        |                    0.98   |
 | CFN_Ablation_NoDenseRAG           |         50 |      50 |           49 |            1 |         0 |         0 | True        |                    0.98   |

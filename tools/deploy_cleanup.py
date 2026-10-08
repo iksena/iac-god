@@ -420,8 +420,14 @@ _SWEEP_RESOURCE_TYPE_FILTERS = [
     "elasticloadbalancing:loadbalancer", "secretsmanager:secret", "wafv2",
     "codebuild:project", "eks:cluster", "codecommit", "sns",
     "ec2:vpc-flow-log", "cognito-identity:identitypool",
-    "dynamodb:table", "dsql:cluster",
+    "dynamodb:table", "dsql:cluster", "networkmanager",
 ]
+
+# Network Manager / Cloud WAN resources are global but their control plane --
+# and, verified live, their tag-index entries -- live only in us-west-2. A
+# sweep that queries just the deploy region never sees them, so they get one
+# extra tag query against the home region.
+_NETWORK_MANAGER_HOME_REGION = "us-west-2"
 
 
 def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
@@ -457,6 +463,17 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
         print(f"[Deploy] Orphan resource sweep error (non-fatal): {e}")
         return
 
+    if deploy_config.aws_region != _NETWORK_MANAGER_HOME_REGION:
+        try:
+            nm_tagging = session.client("resourcegroupstaggingapi", region_name=_NETWORK_MANAGER_HOME_REGION)
+            for page in nm_tagging.get_paginator("get_resources").paginate(
+                TagFilters=[{"Key": EVAL_TAG_KEY, "Values": [EVAL_TAG_VALUE]}],
+                ResourceTypeFilters=["networkmanager"],
+            ):
+                mappings.extend(page.get("ResourceTagMappingList", []))
+        except Exception as e:
+            print(f"[Deploy] Network Manager tag query error (non-fatal): {e}")
+
     if not mappings:
         return
 
@@ -478,6 +495,8 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
     cognito_identity_pool_ids: list[str] = []
     dynamodb_table_names: list[str] = []
     dsql_cluster_ids: list[str] = []
+    core_network_ids: list[str] = []
+    global_network_ids: list[str] = []
     other: list[str] = []
     for mapping in mappings:
         arn = mapping.get("ResourceARN", "")
@@ -522,6 +541,10 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
             dynamodb_table_names.append(arn.split(":table/", 1)[1])  # skips /stream/ /index/ /backup/ ARNs
         elif ":dsql:" in arn and ":cluster/" in arn:
             dsql_cluster_ids.append(arn.rsplit("/", 1)[1])
+        elif ":networkmanager::" in arn and ":core-network/" in arn:
+            core_network_ids.append(arn.rsplit("/", 1)[1])
+        elif ":networkmanager::" in arn and ":global-network/" in arn:
+            global_network_ids.append(arn.rsplit("/", 1)[1])
         elif ":cloudformation:" in arn and ":stack/" in arn:
             pass  # the stack itself -- already handled by _delete_surviving_eval_stacks
         else:
@@ -537,6 +560,8 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
     vpc_flow_log_ids = _unhandled(handled, "flowlog", region, vpc_flow_log_ids)
     cognito_identity_pool_ids = _unhandled(handled, "idpool", region, cognito_identity_pool_ids)
     dsql_cluster_ids = _unhandled(handled, "dsql", region, dsql_cluster_ids)
+    core_network_ids = _unhandled(handled, "corenet", region, core_network_ids)
+    global_network_ids = _unhandled(handled, "globalnet", region, global_network_ids)
 
     if ecs_cluster_arns:
         # ECS keeps INACTIVE (already deleted) clusters discoverable, and
@@ -839,6 +864,54 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                     _mark_handled(handled, "dsql", region, [cluster_id])
                     continue
                 print(f"  [Deploy] Warning: could not delete orphaned DSQL cluster '{cluster_id}': {e}")
+
+    if core_network_ids or global_network_ids:
+        # Cloud WAN: attachments -> core network -> global network, strictly in
+        # that order (each blocks deleting the next), and each step is
+        # asynchronous -- a core network takes minutes to delete (observed >10).
+        # Blocking the sweep on that would stall every iteration, so each pass
+        # only advances what it can and skips anything still in flight; the
+        # orphan stays tagged, so the next pass picks up where this one left off.
+        nm_client = session.client("networkmanager", region_name=_NETWORK_MANAGER_HOME_REGION)
+        for core_id in core_network_ids:
+            try:
+                state = nm_client.get_core_network(CoreNetworkId=core_id)["CoreNetwork"]["State"]
+                if state in ("CREATING", "UPDATING", "DELETING"):
+                    continue
+                pending_attachments = [
+                    a for a in nm_client.get_paginator("list_attachments").paginate(CoreNetworkId=core_id)
+                    .build_full_result().get("Attachments", []) if a.get("State") != "DELETING"
+                ]
+                for att in pending_attachments:
+                    nm_client.delete_attachment(AttachmentId=att["AttachmentId"])
+                if pending_attachments:
+                    print(f"  [Deploy] Deleting {len(pending_attachments)} attachment(s) of orphaned core network "
+                          f"'{core_id}' first (async — core network follows on the next pass)")
+                    continue
+                nm_client.delete_core_network(CoreNetworkId=core_id)
+                print(f"  [Deploy] Deleting orphaned Cloud WAN core network '{core_id}' (async ✓)")
+            except ClientError as e:
+                if _is_not_found(e):
+                    _mark_handled(handled, "corenet", region, [core_id])
+                    continue
+                print(f"  [Deploy] Warning: could not delete orphaned core network '{core_id}': {e}")
+
+        for global_id in global_network_ids:
+            try:
+                still_has_core = [
+                    c for c in nm_client.get_paginator("list_core_networks").paginate()
+                    .build_full_result().get("CoreNetworks", []) if c.get("GlobalNetworkId") == global_id
+                ]
+                if still_has_core:
+                    continue  # its core network is still deleting -- next pass
+                nm_client.delete_global_network(GlobalNetworkId=global_id)
+                _mark_handled(handled, "globalnet", region, [global_id])
+                print(f"  [Deploy] Deleted orphaned global network '{global_id}' ✓")
+            except ClientError as e:
+                if _is_not_found(e):
+                    _mark_handled(handled, "globalnet", region, [global_id])
+                    continue
+                print(f"  [Deploy] Warning: could not delete orphaned global network '{global_id}': {e}")
 
     _save_handled(handled)
 

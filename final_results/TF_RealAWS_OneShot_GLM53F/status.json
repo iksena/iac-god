@@ -1,0 +1,24 @@
+{
+ "experiment": "TF_RealAWS_OneShot_GLM53F",
+ "dataset": "tf_eval_benchmark_real_aws.csv",
+ "expected": 250,
+ "rows_with_attempt": 250,
+ "valid": 249,
+ "valid_pass": 74,
+ "valid_fail": 175,
+ "invalid": 1,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 0.2972,
+ "pass_rate_over_expected": 0.296,
+ "invalid_rows": {
+  "13": "deploy_error_message: AlreadyExists"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  13
+ ],
+ "attempts": 250,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "OneShot_GLM53F_TFEvalRealAWS_runs"
+}

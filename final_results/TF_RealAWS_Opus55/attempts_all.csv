@@ -1,14 +1,18 @@
 row_number,run_id,status,final_validation_passed,iterations_used,validity,invalid_reason,_batch
 0,20261007_112936_805bd25f,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
 1,20261002_123759_1a791a1c,ok,True,12,valid_pass,,terraform_20261002_115801_Opus55/results.csv
+1,20261008_164441_5760339d,ok,True,1,valid_pass,,terraform_20261002_115801/rerun_20261008_164439/results.csv
 2,20261002_125210_d148fba0,ok,True,4,valid_pass,,terraform_20261002_115801_Opus55/results.csv
+2,20261008_164558_d30dd0be,ok,True,1,valid_pass,,terraform_20261002_115801/rerun_20261008_164439/results.csv
 3,20261002_125827_610e41b1,ok,True,4,valid_pass,,terraform_20261002_115801_Opus55/results.csv
 4,20261002_130440_21a602f5,ok,True,7,valid_pass,,terraform_20261002_115801_Opus55/results.csv
+4,20261008_164721_ccdb655c,ok,True,1,valid_pass,,terraform_20261002_115801/rerun_20261008_164439/results.csv
 5,20261002_131329_bf966349,ok,True,4,valid_pass,,terraform_20261002_115801_Opus55/results.csv
 6,20261002_131912_0d83cebe,ok,True,4,valid_pass,,terraform_20261002_115801_Opus55/results.csv
 7,20261002_132637_8cd3b7d6,ok,True,2,valid_pass,,terraform_20261002_115801_Opus55/results.csv
 8,20261007_113202_779bf80c,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
 10,20261002_134752_a7bd382f,ok,True,15,valid_pass,,terraform_20261002_115801_Opus55/results.csv
+10,20261008_164820_13308a97,ok,True,1,valid_pass,,terraform_20261002_115801/rerun_20261008_164439/results.csv
 11,20261007_113355_03b902a5,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
 12,20261002_141906_85acdcc5,ok,True,1,valid_pass,,terraform_20261002_115801_Opus55/results.csv
 13,20261002_142153_34525abe,ok,True,1,valid_pass,,terraform_20261002_115801_Opus55/results.csv
@@ -42,8 +46,10 @@ row_number,run_id,status,final_validation_passed,iterations_used,validity,invali
 46,20261007_115327_df84a651,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
 47,20261007_115511_866eb5a2,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
 48,20261002_161014_dc7fb6c0,ok,True,3,valid_pass,,terraform_20261002_115801_Opus55/results.csv
+48,20261008_164921_83a985f2,ok,True,1,valid_pass,,terraform_20261002_115801/rerun_20261008_164439/results.csv
 49,20261002_161603_5f800f48,ok,True,2,valid_pass,,terraform_20261002_115801_Opus55/results.csv
 50,20261002_162034_1fde43e0,ok,True,15,valid_pass,,terraform_20261002_115801_Opus55/results.csv
+50,20261008_165054_dc02f2d1,ok,True,1,valid_pass,,terraform_20261002_115801/rerun_20261008_164439/results.csv
 51,20261002_164647_711ace62,ok,True,1,valid_pass,,terraform_20261002_115801_Opus55/results.csv
 52,20261002_164946_80c74fb1,ok,True,1,valid_pass,,terraform_20261002_115801_Opus55/results.csv
 53,20261002_165617_334d3961,ok,True,1,valid_pass,,terraform_20261002_115801_Opus55/results.csv
@@ -190,14 +196,17 @@ row_number,run_id,status,final_validation_passed,iterations_used,validity,invali
 242,20261003_143501_fccc8f82,ok,True,6,valid_pass,,terraform_20261002_115801_Opus55/results.csv
 243,20261003_150209_82fabb5c,ok,True,4,valid_pass,,terraform_20261002_115801_Opus55/results.csv
 244,20261003_152323_e6d92268,ok,True,7,valid_pass,,terraform_20261002_115801_Opus55/results.csv
+244,20261008_165908_1cb45a86,ok,True,1,valid_pass,,terraform_20261002_115801/rerun_20261008_164439/results.csv
 247,20261003_154419_cca1ccd3,ok,False,15,valid_fail,,terraform_20261002_115801_Opus55/results.csv
 247,20261007_121900_c23d4a3f,ok,True,3,valid_pass,,terraform_20261007_112936/results.csv
 248,20261007_124155_db71c89f,ok,True,3,valid_pass,,terraform_20261007_112936/results.csv
 249,20261007_125849_abd6d78b,ok,True,12,valid_pass,,terraform_20261007_112936/results.csv
 250,20261007_173502_df19aa9a,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
 269,20261007_173845_74bfa63f,ok,False,15,invalid_environment,latest_error_terraform-validate: Failed to install provider,terraform_20261007_112936/results.csv
+269,20261008_170730_3313a424,ok,True,1,valid_pass,,terraform_20261002_115801/rerun_20261008_164439/results.csv
 272,20261007_175605_89f29d03,ok,True,2,valid_pass,,terraform_20261007_112936/results.csv
 286,20261007_175806_d1b8e243,ok,True,6,valid_pass,,terraform_20261007_112936/results.csv
+286,20261008_170856_eee59729,ok,True,1,valid_pass,,terraform_20261002_115801/rerun_20261008_164439/results.csv
 287,20261007_180904_e3ca6475,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
 289,20261007_181050_87ee4841,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
 311,20261007_181218_2a3fde28,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
@@ -218,6 +227,7 @@ row_number,run_id,status,final_validation_passed,iterations_used,validity,invali
 332,20261007_191421_010dc899,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
 333,20261007_191525_e5413a72,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
 334,20261007_191628_c2c6d908,ok,False,15,invalid_environment,latest_error_terraform-validate: Failed to install provider,terraform_20261007_112936/results.csv
+334,20261008_171152_659f6a32,ok,True,1,valid_pass,,terraform_20261002_115801/rerun_20261008_164439/results.csv
 335,20261007_193140_f4bcf988,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
 336,20261007_193333_e4100720,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
 337,20261007_193457_1e9017c0,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
@@ -250,5 +260,6 @@ row_number,run_id,status,final_validation_passed,iterations_used,validity,invali
 366,20261007_204833_80e57b21,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv
 367,20261007_205347_cef81273,ok,True,3,valid_pass,,terraform_20261007_112936/results.csv
 368,20261007_205749_abbd0f3d,ok,True,2,valid_pass,,terraform_20261007_112936/results.csv
+368,20261008_171250_3711b67c,ok,True,2,valid_pass,,terraform_20261002_115801/rerun_20261008_164439/results.csv
 369,20261007_210349_20582aae,ok,True,2,valid_pass,,terraform_20261007_112936/results.csv
 370,20261007_210829_c701a7e1,ok,True,1,valid_pass,,terraform_20261007_112936/results.csv

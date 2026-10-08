@@ -106,6 +106,8 @@ EXPERIMENTS = [
          organizer="OneShot_Gemini38F_TFEvalRealAWS_runs"),
     dict(name="CFN_RealAWS_OneShot_GLM53F", dirs=["oneshot_cloudformation_20261007_203259"], dataset=CFN_REAL,
          organizer="OneShot_GLM53F_CFNEvalRealAWS_runs"),
+    dict(name="TF_RealAWS_OneShot_GLM53F", dirs=["oneshot_terraform_20261008_121356"], dataset=TF_REAL,
+         organizer="OneShot_GLM53F_TFEvalRealAWS_runs"),
     # first-attempt-only reruns (max_iterations=1) of the MAS rows whose first iteration was blocked by the environment.
     # Not part of the Gemini final result; used only to overlay passItr@n (see final_results/<exp>/first_attempt_override.csv).
     dict(name="TF_RealAWS_Gemini38F_FirstAttempt", dirs=["firstattempt_gemini38f_terraform_20261007_215643"], dataset=TF_REAL,
