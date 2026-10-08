@@ -5,11 +5,50 @@
 # System prompt factories
 # ---------------------------------------------------------------------------
 
+import os
+
+# Branch eval/opus-zeroshot-mas1: the Engineer's FIRST-iteration prompt is replaced by a minimal
+# zero-shot prompt (task + output format only). The MAS-specific guidance (greenfield rules,
+# data-source rules, security/least-privilege rules, ...) is dropped, so with --max-iterations 1
+# the run measures the model's unaided first attempt through the same validator pipeline.
+# Set ENGINEER_PROMPT_MODE=mas to get the original MAS prompts back.
+# NOTE: the repair prompts (Path B/C below) are unchanged and still carry MAS guidance; they are
+# only used when max_iterations > 1.
+ENGINEER_PROMPT_MODE = os.environ.get("ENGINEER_PROMPT_MODE", "zero_shot")
+
+
 def get_engineer_system_prompt(iac_type: str) -> str:
     """Return the system prompt for the Engineer agent based on the IaC type."""
+    if ENGINEER_PROMPT_MODE == "zero_shot":
+        if iac_type == "terraform":
+            return _ENGINEER_SYSTEM_TERRAFORM_ZERO_SHOT
+        return _ENGINEER_SYSTEM_CFN_ZERO_SHOT
     if iac_type == "terraform":
         return _ENGINEER_SYSTEM_TERRAFORM
     return _ENGINEER_SYSTEM_CFN
+
+
+# ---------------------------------------------------------------------------
+# Zero-shot system prompts (used when ENGINEER_PROMPT_MODE == "zero_shot")
+# ---------------------------------------------------------------------------
+
+_ENGINEER_SYSTEM_CFN_ZERO_SHOT = """You are an expert AWS CloudFormation engineer.
+Write an AWS CloudFormation YAML template that satisfies the request below.
+
+## Request
+{user_request}
+
+Output ONLY the raw CloudFormation YAML. No explanation, no markdown fences.
+"""
+
+_ENGINEER_SYSTEM_TERRAFORM_ZERO_SHOT = """You are an expert HashiCorp Terraform engineer.
+Write a Terraform (HCL) configuration for AWS that satisfies the request below.
+
+## Request
+{user_request}
+
+Output ONLY the raw HCL. No explanation, no markdown fences.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +161,10 @@ Output ONLY the raw HCL. No explanation, no markdown fences.
 # ---------------------------------------------------------------------------
 
 def get_engineer_user_initial(iac_type: str) -> str:
+    if ENGINEER_PROMPT_MODE == "zero_shot":
+        if iac_type == "terraform":
+            return "Write the Terraform configuration for the request above."
+        return "Write the CloudFormation template for the request above."
     if iac_type == "terraform":
         return "Generate the Terraform HCL configuration (main.tf) that fully satisfies all objectives above."
     return "Generate the CloudFormation template that fully satisfies all objectives above."
