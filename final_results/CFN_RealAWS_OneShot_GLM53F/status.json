@@ -1,0 +1,30 @@
+{
+ "experiment": "CFN_RealAWS_OneShot_GLM53F",
+ "dataset": "cfn_eval_benchmark_real_aws.csv",
+ "expected": 250,
+ "rows_with_attempt": 250,
+ "valid": 246,
+ "valid_pass": 68,
+ "valid_fail": 178,
+ "invalid": 4,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 0.2764,
+ "pass_rate_over_expected": 0.272,
+ "invalid_rows": {
+  "40": "deploy_error_message: Stalled in CREATE_IN_PROGRESS",
+  "45": "deploy_error_message: stalled in CREATE_IN_PROGRESS",
+  "130": "deploy_error_message: already exists",
+  "250": "deploy_error_message: Stalled in CREATE_IN_PROGRESS"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  40,
+  45,
+  130,
+  250
+ ],
+ "attempts": 250,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "OneShot_GLM53F_CFNEvalRealAWS_runs"
+}

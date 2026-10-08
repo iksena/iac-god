@@ -1,0 +1,28 @@
+{
+ "experiment": "CFN_RealAWS_DSV4F",
+ "dataset": "cfn_eval_benchmark_real_aws.csv",
+ "expected": 250,
+ "rows_with_attempt": 250,
+ "valid": 247,
+ "valid_pass": 239,
+ "valid_fail": 8,
+ "invalid": 3,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 0.9676,
+ "pass_rate_over_expected": 0.956,
+ "invalid_rows": {
+  "6": "deploy_error_message: stalled in CREATE_IN_PROGRESS",
+  "20": "deploy_error_message: already exists",
+  "106": "deploy_error_message: AlreadyExists"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  6,
+  20,
+  106
+ ],
+ "attempts": 252,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "CFNEvalRealAWS_DeepseekV4Flash_sec_runs"
+}

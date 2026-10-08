@@ -1,0 +1,30 @@
+{
+ "experiment": "TF_Ablation_OpenCodeRetriever",
+ "dataset": "tf_eval_benchmark_ablation.csv",
+ "expected": 50,
+ "rows_with_attempt": 50,
+ "valid": 46,
+ "valid_pass": 44,
+ "valid_fail": 2,
+ "invalid": 4,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 0.9565,
+ "pass_rate_over_expected": 0.88,
+ "invalid_rows": {
+  "121": "read/wrote outside its workspace: repo root listing",
+  "139": "read/wrote outside its workspace: repo root listing",
+  "249": "harness timeout",
+  "363": "read/wrote outside its workspace: harness code"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  121,
+  139,
+  249,
+  363
+ ],
+ "attempts": 50,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "Ablation_OpenCodeRetriever_TF_runs"
+}

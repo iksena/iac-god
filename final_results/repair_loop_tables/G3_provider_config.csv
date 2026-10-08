@@ -1,0 +1,15 @@
+exp,run,runs,runs with a missing provider configuration,at the first attempt,only after a working first attempt,came back after being fixed
+TF_RealAWS_DSV4F,DeepSeek-V4-Flash,250,0,0,0,0
+TF_RealAWS_GLM53F,GLM-5.3-Flash,250,75,26,49,1
+TF_RealAWS_Gemini38F,Gemini-3.8-Flash,250,230,119,111,5
+TF_RealAWS_Opus55,Claude-Opus-5.5,250,0,0,0,0
+TF_RealAWS_OpenCode_DSV4F,OpenCode+DSV4F,250,0,0,0,0
+TF_IaCEval_DSV4F_LintOnly,DSV4F IaC-Eval (lint-only),372,0,0,0,0
+TF_Ablation_IaCGOD,IaCGOD,50,0,0,0,0
+TF_Ablation_NoDenseRAG,no dense RAG,49,0,0,0,0
+TF_Ablation_OpenCodeRetriever,OpenCode+Retriever,49,0,0,0,0
+TF_Ablation_NoGraphRAG,no GraphRAG,50,0,0,0,0
+TF_Ablation_NoPlanner,no Planner,50,0,0,0,0
+TF_Ablation_TrivyAllSeverities,Trivy all severities,50,0,0,0,0
+TF_Ablation_NoRemediator,no Remediator,50,0,0,0,0
+TF_Ablation_NoQueryRewrite,no query rewrite,50,0,0,0,0

@@ -1,0 +1,11 @@
+lang,turn type,turns,turns with >=1 error fixed %,new errors introduced/turn
+CFN,context size: small (tokens 7-315),1254,70.33,0.3
+CFN,context size: medium (tokens 316-701),1255,77.37,0.32
+CFN,context size: large (tokens 702-8590),1254,80.22,0.5
+CFN,context covers a failing resource type: False,399,82.71,0.19
+CFN,context covers a failing resource type: True,2294,76.02,0.41
+TF,context size: small (tokens 9-845),1268,71.61,0.26
+TF,context size: medium (tokens 846-2479),1246,65.25,0.27
+TF,context size: large (tokens 2489-14716),1252,59.27,0.37
+TF,context covers a failing resource type: False,431,90.72,0.14
+TF,context covers a failing resource type: True,518,80.12,0.42

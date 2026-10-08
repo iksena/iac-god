@@ -1,0 +1,20 @@
+{
+ "experiment": "CFN_RealAWS_Gemini38F",
+ "dataset": "cfn_eval_benchmark_real_aws.csv",
+ "expected": 250,
+ "rows_with_attempt": 250,
+ "valid": 250,
+ "valid_pass": 248,
+ "valid_fail": 2,
+ "invalid": 0,
+ "missing": 0,
+ "fulfilled": true,
+ "pass_rate_over_valid": 0.992,
+ "pass_rate_over_expected": 0.992,
+ "invalid_rows": {},
+ "missing_rows": [],
+ "rerun_rows": [],
+ "attempts": 250,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "CFNEvalRealAWS_Gemini38Flash_runs"
+}

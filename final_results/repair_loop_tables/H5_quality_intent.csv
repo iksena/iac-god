@@ -1,0 +1,17 @@
+exp,resources/scen,extra/scen,accuracy %,coverage %,Trivy-clean %,HIGH+CRIT failed/scen,MEDIUM failed/scen,LOW failed/scen,intent strict %
+CFN_Ablation_IaCGOD,16.38,4.38,78.43,85.96,32.0,0.02,0.6,1.3,70.0
+CFN_Ablation_NoDenseRAG,16.6,4.6,77.92,86.33,36.0,0.02,0.42,1.08,72.0
+CFN_Ablation_OpenCodeRetriever,14.88,2.88,83.13,84.77,36.0,0.02,0.42,1.04,68.0
+CFN_Ablation_NoGraphRAG,17.34,5.1,76.53,86.64,38.0,0.0,0.44,1.44,72.0
+CFN_Ablation_NoPlanner,15.86,3.74,81.03,87.17,40.0,0.02,0.38,1.06,90.0
+CFN_Ablation_TrivyAllSeverities,17.94,5.68,73.07,87.8,98.0,0.02,0.0,0.0,84.0
+CFN_Ablation_NoRemediator,15.78,3.78,78.81,87.13,36.0,0.02,0.48,1.02,80.0
+CFN_Ablation_NoQueryRewrite,17.52,5.92,73.88,84.26,36.0,0.0,0.44,0.92,70.0
+TF_Ablation_IaCGOD,15.96,5.04,75.97,84.56,20.0,0.0,1.36,1.86,82.0
+TF_Ablation_NoDenseRAG,18.2,7.1,71.33,86.27,20.41,0.02,0.82,1.43,83.67
+TF_Ablation_OpenCodeRetriever,16.32,4.92,78.11,85.8,24.0,0.0,1.5,1.94,84.0
+TF_Ablation_NoGraphRAG,18.12,6.72,71.93,87.14,22.0,0.0,1.32,1.34,88.0
+TF_Ablation_NoPlanner,15.42,4.16,81.07,86.83,28.0,0.0,1.3,1.2,86.0
+TF_Ablation_TrivyAllSeverities,24.24,12.78,56.14,88.32,100.0,0.0,0.0,0.0,84.0
+TF_Ablation_NoRemediator,17.66,5.86,77.24,90.08,24.0,0.0,1.34,1.32,90.0
+TF_Ablation_NoQueryRewrite,17.46,6.28,68.01,84.88,22.0,0.0,1.48,1.4,76.0

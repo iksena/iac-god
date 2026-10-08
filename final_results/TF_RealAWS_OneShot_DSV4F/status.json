@@ -1,0 +1,30 @@
+{
+ "experiment": "TF_RealAWS_OneShot_DSV4F",
+ "dataset": "tf_eval_benchmark_real_aws.csv",
+ "expected": 250,
+ "rows_with_attempt": 250,
+ "valid": 246,
+ "valid_pass": 111,
+ "valid_fail": 135,
+ "invalid": 4,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 0.4512,
+ "pass_rate_over_expected": 0.444,
+ "invalid_rows": {
+  "54": "deploy_error_message: Failed to install provider",
+  "84": "latest_error_terraform-validate: Failed to install provider",
+  "332": "latest_error_terraform-validate: throttling",
+  "344": "latest_error_terraform-validate: already exists"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  54,
+  84,
+  332,
+  344
+ ],
+ "attempts": 250,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "OneShot_DSV4F_TFEvalRealAWS_runs"
+}

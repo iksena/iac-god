@@ -58,7 +58,10 @@ class ClaudeCodeDriver:
         state_dir: Path,
         debug_log_path: Path,
     ) -> list[str]:
-        mcp_path = self._write_mcp_config(workdir, scenario)
+        # In the run directory (the parent of state_dir), not the workspace:
+        # it names the repo's absolute paths and the model can read its own
+        # workspace.
+        mcp_path = self._write_mcp_config(state_dir.parent, scenario)
 
         return [
             "claude",
@@ -91,13 +94,20 @@ class ClaudeCodeDriver:
             # trading Write away for.
             "--tools",
             "Read,Write,Edit",
+            # Only the three MCP tools are pre-approved. Read/Write/Edit are
+            # deliberately NOT listed: a bare tool name in --allowedTools
+            # approves it for EVERY path, which measured as a completely
+            # unconfined session (reads of datasets, prior results and .env,
+            # and writes inside and outside the checkout all succeeded).
+            # Left unlisted, Claude Code permits them inside its working
+            # directory (the workspace; --permission-mode acceptEdits covers
+            # the edits) and refuses anything outside it, since a headless
+            # session has nobody to approve the prompt. Verified by
+            # scripts/verify_sandbox.py.
             "--allowedTools",
             "mcp__iacgod__validate_iac",
             "mcp__iacgod__deploy_iac",
             "mcp__iacgod__submit_template",
-            "Read",
-            "Write",
-            "Edit",
             "--permission-mode",
             "acceptEdits",
             "--setting-sources",

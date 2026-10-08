@@ -1,0 +1,24 @@
+{
+ "experiment": "CFN_Ablation_NoPlanner",
+ "dataset": "cfn_eval_benchmark_ablation.csv",
+ "expected": 50,
+ "rows_with_attempt": 50,
+ "valid": 49,
+ "valid_pass": 48,
+ "valid_fail": 1,
+ "invalid": 1,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 0.9796,
+ "pass_rate_over_expected": 0.96,
+ "invalid_rows": {
+  "85": "deploy_error_message: AlreadyExists"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  85
+ ],
+ "attempts": 50,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "Ablation_NoPlanner_CFN_runs"
+}

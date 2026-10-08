@@ -49,6 +49,7 @@ What is NOT yet verified, and should be treated as open until it is:
 from __future__ import annotations
 
 import json
+import subprocess
 import os
 from datetime import datetime
 from pathlib import Path
@@ -78,6 +79,48 @@ def _empty_tokens() -> dict[str, int]:
     }
 
 
+def config_path_for(state_dir: Path) -> Path:
+    """Where this attempt's opencode.json lives: the run directory (the
+    parent of state_dir, see run_harness), outside the model-visible
+    workspace."""
+    return (state_dir.parent / "opencode.json").resolve()
+
+
+def _confine_workspace(workdir: Path) -> None:
+    """Make the workspace its own git root so it IS opencode's project.
+
+    opencode treats the enclosing git repository as the project and only
+    gates paths outside it (external_directory). The workspace sits at
+    runs/<id>/workspace inside the repo checkout, so without this the whole
+    checkout counts as "the project": measured with the real driver config,
+    the model could read data/, final_results/, other runs' artifacts and
+    .env, and could WRITE into the repo (a run wrote hcl2.py and
+    sitecustomize.py into the checkout root, which the MCP server imports).
+    With the workspace as its own git root every path above it is external
+    and denied, including ../ traversal. This depends on opencode's
+    project-root behaviour, so it is verified by scripts/verify_sandbox.py
+    rather than assumed.
+    """
+    workdir = workdir.resolve()
+    if not (workdir / ".git").exists():
+        result = subprocess.run(
+            ["git", "init", "-q"], cwd=workdir, capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"Could not git-init the workspace {workdir}, so it cannot be isolated "
+                f"from the repository: {result.stderr.strip()}"
+            )
+    top = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], cwd=workdir, capture_output=True, text=True
+    )
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != workdir:
+        raise RuntimeError(
+            f"Workspace {workdir} is not its own git root (got {top.stdout.strip()!r}); "
+            "refusing to run opencode with the enclosing repository inside its project."
+        )
+
+
 class OpenCodeDriver:
     name = "opencode"
 
@@ -100,6 +143,7 @@ class OpenCodeDriver:
         scenario: "ScenarioConfig",
         config: "BaselineConfig",
         system_prompt_path: Path,
+        state_dir: Path,
     ) -> None:
         model_id = config.model or config.harness_model
         base = (
@@ -153,11 +197,27 @@ class OpenCodeDriver:
                     # counter and break "one validate_iac call == one
                     # iteration" comparability — the same requirement
                     # ClaudeCodeDriver enforces via --tools.
+                    #
+                    # read/edit are "allow" with no path patterns ON PURPOSE:
+                    # OpenCode matches path rules against paths relative to its
+                    # project root, not absolute ones (verified from its own
+                    # "evaluated permission" log), so a pattern here would be
+                    # silently wrong whenever the project root is not exactly
+                    # the workspace. Confinement comes from making the
+                    # workspace its own project root instead — see
+                    # _confine_workspace. external_directory is denied
+                    # explicitly rather than left to the "*" catch-all, and
+                    # glob/grep/list are denied because the model has one file
+                    # to work on and no use for repo-wide search.
                     "permission": {
                         "*": "deny",
                         "read": "allow",
                         "write": "allow",
                         "edit": "allow",
+                        "glob": "deny",
+                        "grep": "deny",
+                        "list": "deny",
+                        "external_directory": {"*": "deny"},
                         f"{MCP_SERVER_NAME}_validate_iac": "allow",
                         f"{MCP_SERVER_NAME}_deploy_iac": "allow",
                         f"{MCP_SERVER_NAME}_submit_template": "allow",
@@ -186,7 +246,8 @@ class OpenCodeDriver:
                 }
             }
 
-        (workdir / "opencode.json").write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+        config_path = config_path_for(state_dir)
+        config_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
 
     def build_command(
         self,
@@ -203,11 +264,16 @@ class OpenCodeDriver:
         # not present in `opencode run --help`'s flag list) — the agent's
         # own "prompt" field (a {file:...} reference, written here) is the
         # documented mechanism instead.
-        system_prompt_path = (workdir / "SYSTEM_PROMPT.md").resolve()
+        _confine_workspace(workdir)
+        # The prompt and config live in the run directory, NOT the workspace:
+        # the model can read its own workspace, and opencode.json names the
+        # repo's absolute paths (MCP server command, runs dir). Loaded via
+        # OPENCODE_CONFIG (build_env) instead of opencode's cwd discovery.
+        system_prompt_path = (state_dir.parent / "SYSTEM_PROMPT.md").resolve()
         system_prompt_path.write_text(system_prompt, encoding="utf-8")
         self._write_config(
             workdir=workdir, scenario=scenario, config=config,
-            system_prompt_path=system_prompt_path,
+            system_prompt_path=system_prompt_path, state_dir=state_dir,
         )
 
         return [
@@ -251,6 +317,7 @@ class OpenCodeDriver:
                 "XDG_DATA_HOME": str(data_dir),
                 "XDG_CONFIG_HOME": str(config_dir),
                 "XDG_STATE_HOME": str(xdg_state),
+                "OPENCODE_CONFIG": str(config_path_for(state_dir)),
             }
         )
 

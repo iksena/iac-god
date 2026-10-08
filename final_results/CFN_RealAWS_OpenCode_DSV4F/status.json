@@ -1,0 +1,26 @@
+{
+ "experiment": "CFN_RealAWS_OpenCode_DSV4F",
+ "dataset": "cfn_eval_benchmark_real_aws.csv",
+ "expected": 250,
+ "rows_with_attempt": 250,
+ "valid": 248,
+ "valid_pass": 228,
+ "valid_fail": 20,
+ "invalid": 2,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 0.9194,
+ "pass_rate_over_expected": 0.912,
+ "invalid_rows": {
+  "2": "harness error",
+  "174": "harness timeout"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  2,
+  174
+ ],
+ "attempts": 295,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "OpencodeDSV4F_CFNEvalRealAWS_Full_runs"
+}

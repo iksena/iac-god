@@ -1,0 +1,30 @@
+{
+ "experiment": "TF_RealAWS_OpenCode_DSV4F",
+ "dataset": "tf_eval_benchmark_real_aws.csv",
+ "expected": 250,
+ "rows_with_attempt": 250,
+ "valid": 246,
+ "valid_pass": 242,
+ "valid_fail": 4,
+ "invalid": 4,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 0.9837,
+ "pass_rate_over_expected": 0.968,
+ "invalid_rows": {
+  "201": "deploy_error_message: AlreadyExists",
+  "249": "deploy_error_message: AlreadyExists",
+  "287": "deploy_error_message: LimitExceeded",
+  "323": "deploy_error_message: AlreadyExists"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  201,
+  249,
+  287,
+  323
+ ],
+ "attempts": 421,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "TFEvalRealAWS_OpencodeDSV4F_runs"
+}

@@ -1,0 +1,28 @@
+{
+ "experiment": "CFN_Ablation_OpenCodeRetriever",
+ "dataset": "cfn_eval_benchmark_ablation.csv",
+ "expected": 50,
+ "rows_with_attempt": 50,
+ "valid": 47,
+ "valid_pass": 45,
+ "valid_fail": 2,
+ "invalid": 3,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 0.9574,
+ "pass_rate_over_expected": 0.9,
+ "invalid_rows": {
+  "47": "read/wrote outside its workspace: knowledge base; repo root listing",
+  "93": "deploy_error_message: InternalError",
+  "240": "read/wrote outside its workspace: repo root listing"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  47,
+  93,
+  240
+ ],
+ "attempts": 50,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "Ablation_OpenCodeRetriever_CFN_runs"
+}

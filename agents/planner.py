@@ -38,7 +38,7 @@ def planner_agent(state: GraphState, recorder: ResearchRecorder) -> GraphState:
     llm_record = recorder.record_llm_call(
         state=state,
         agent="planner",
-        model=model,
+        model=usage.get("reported_model") or model,
         prompt=f"SYSTEM:\n{system_prompt}\n\nUSER:\n{user_msg['content']}",
         response=content,
         token_usage=usage,

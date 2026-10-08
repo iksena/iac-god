@@ -1,0 +1,10 @@
+identifier,DeepSeek-V4-Flash,GLM-5.3-Flash,Gemini-3.8-Flash,OpenCode+DSV4F
+AWS::IAM::Role,41 (2),40 (0),13 (0),29 (2)
+parameter,29 (0),22 (1),20 (0),23 (0)
+stack-level,19 (2),28 (7),11 (0),10 (0)
+unknown-resource,16 (0),12 (0),9 (0),7 (0)
+AWS::Logs::LogGroup,10 (0),12 (0),1 (0),7 (2)
+AWS::KMS::Key,13 (1),8 (1),5 (0),4 (0)
+AWS::Cognito::UserPoolClient,12 (0),7 (0),1 (0),9 (0)
+AWS::EC2::InternetGateway,11 (1),8 (0),1 (0),4 (1)
+(any),116 (8),117 (15),65 (2),91 (8)

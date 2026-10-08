@@ -1,0 +1,19 @@
+run_id,exp,row,cats,kinds
+20260925_172028_b3717dad,TF_RealAWS_OpenCode_DSV4F,19,config/.env/nuke; pipeline code; repo root / other; repo root listing,read/search
+20260926_050002_7a51c5a0,TF_RealAWS_OpenCode_DSV4F,37,benchmark data; config/.env/nuke; harness code; own run folder; pipeline code; prompts; repo root / other; repo root listing,read/search
+20260926_101616_a81b93f1,TF_RealAWS_OpenCode_DSV4F,56,benchmark data; config/.env/nuke; docs; knowledge base; own run folder; pipeline code; repo root / other; repo root listing; volume/state,read/search
+20261004_112945_a71d8f27,TF_RealAWS_OpenCode_DSV4F,74,harness code; own run folder; pipeline code; repo root / other,read/search
+20261004_142002_28976c39,TF_RealAWS_OpenCode_DSV4F,111,config/.env/nuke; harness code; knowledge base; own run folder; pipeline code; repo root listing,read/search
+20261004_143451_5b821a42,TF_RealAWS_OpenCode_DSV4F,119,benchmark data; harness code; pipeline code; prompts; repo root / other; repo root listing,read/search
+20261004_151441_5956213e,TF_RealAWS_OpenCode_DSV4F,129,config/.env/nuke; pipeline code; prompts; repo root listing,read/search
+20261004_165846_1d55e187,TF_RealAWS_OpenCode_DSV4F,148,own run folder; pipeline code; repo root / other; repo root listing,read/search
+20261004_172244_689287f7,TF_RealAWS_OpenCode_DSV4F,150,config/.env/nuke; harness code; pipeline code,read/search
+20261004_175059_0817a21b,TF_RealAWS_OpenCode_DSV4F,156,docs,read/search
+20261004_181337_97f2f1ce,TF_RealAWS_OpenCode_DSV4F,161,config/.env/nuke; pipeline code,read/search
+20261004_184741_fd17b445,TF_RealAWS_OpenCode_DSV4F,168,benchmark data; config/.env/nuke; docs; knowledge base; own run folder; pipeline code; repo root / other; repo root listing; volume/state,read/search
+20261004_194756_45bd90e0,TF_RealAWS_OpenCode_DSV4F,182,harness code; pipeline code; repo root / other,read/search
+20261004_200532_63da83b7,TF_RealAWS_OpenCode_DSV4F,184,benchmark data; benchmark results; config/.env/nuke; knowledge base; own run folder; repo root / other; repo root listing; volume/state,read/search
+20261004_214828_5162f5a7,TF_RealAWS_OpenCode_DSV4F,188,config/.env/nuke; pipeline code,read/search
+20261004_234159_a94895a4,TF_RealAWS_OpenCode_DSV4F,193,config/.env/nuke; own run folder; pipeline code; repo root / other; repo root listing,read/search
+20261005_122444_c24f34d9,TF_RealAWS_OpenCode_DSV4F,358,config/.env/nuke; harness code; other run folders; own run folder; pipeline code; repo root / other; repo root listing,read/search
+20261005_131712_ed05b68d,TF_RealAWS_OpenCode_DSV4F,369,config/.env/nuke; harness code; pipeline code,read/search

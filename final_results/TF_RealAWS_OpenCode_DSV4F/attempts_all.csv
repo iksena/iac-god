@@ -1,0 +1,422 @@
+row_number,run_id,status,final_validation_passed,iterations_used,validity,invalid_reason,_batch
+0,20260925_104635_961bd988,harness_error,False,0,invalid_harness,harness error,baseline_opencode_terraform_20260925_104635/results.csv
+0,20260925_110527_d9efca57,harness_error,False,0,invalid_harness,harness error,baseline_opencode_terraform_20260925_110527/results.csv
+0,20260925_112038_a87d9913,harness_error,False,0,invalid_harness,harness error,baseline_opencode_terraform_20260925_112038/results.csv
+0,20260925_120023_3bae6e95,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+0,20261003_201904_0ec6b2fc,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+1,20260925_105353_fde0e75a,harness_error,False,0,invalid_harness,harness error,baseline_opencode_terraform_20260925_104635/results.csv
+1,20260925_112805_ab74ea06,harness_error,False,0,invalid_harness,harness error,baseline_opencode_terraform_20260925_112038/results.csv
+1,20260925_121805_eba28759,ok,True,4,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+1,20261003_203426_02d8b18f,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+2,20260925_113524_cb3ebb98,harness_error,False,0,invalid_harness,harness error,baseline_opencode_terraform_20260925_112038/results.csv
+2,20260925_123028_c5c90afe,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+2,20261003_204916_6b3548fc,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+3,20260925_123546_fed30b28,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+3,20261003_211103_8a270909,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+4,20260925_124135_47430251,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+4,20261003_212531_a9da8ab4,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+5,20260925_124721_2ab44d2a,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+5,20261003_213954_fdfcc436,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+6,20260925_125307_df476cfa,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+6,20261003_215424_7cef6301,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+7,20260925_130925_61fe2342,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+7,20261003_220908_6452911e,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+8,20260925_132509_02b331b3,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+8,20261003_222359_8f356674,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+10,20260925_134116_14c19e63,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+10,20261003_223855_b081e88c,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+11,20260925_135654_8d4baad1,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+11,20261003_225301_33926853,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+12,20260925_141547_1c9ef4cb,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+12,20261003_230715_77a270b1,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+13,20260925_143111_0bcf5ab6,ok,True,4,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+13,20261003_232128_426b4b78,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+14,20260925_151324_85bec7d6,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+14,20261003_233556_229c5702,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+15,20260925_153835_31a8d146,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+15,20261003_235002_cca0ecf6,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+16,20260925_160351_59b09a88,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+16,20261004_000434_894c33c9,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+17,20260925_162931_7e4e7923,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+17,20261004_001907_df9556ac,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+18,20260925_165508_1531ad39,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+18,20261004_003329_fc54a16a,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+19,20260925_172028_b3717dad,ok,True,6,invalid_workspace_escape,read/wrote outside its workspace: config/.env/nuke; pipeline code; repo root / other; repo root listing,baseline_opencode_terraform_20260925_120023/results.csv
+19,20261004_004740_31654c2b,ok,True,7,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+20,20260925_185151_d051244d,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+20,20261004_014615_685e9b3f,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+21,20260925_191659_ee17aac4,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+21,20261004_030014_535387ca,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+22,20260925_194240_705e375a,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+22,20261004_031442_43698872,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+23,20260925_200816_7ad1a488,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+23,20261004_032908_03c6fe51,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+24,20260925_202346_6d58e971,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+24,20261004_034333_240818a6,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+25,20260925_203851_60e0bdf1,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+25,20261004_035736_768146d0,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+26,20260925_205634_1850bf50,ok,True,3,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+26,20261004_041144_21a1c903,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+28,20260925_213025_073fc3a9,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+28,20261004_042604_da91e424,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+30,20260925_215552_87d9d2e5,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+30,20261004_044005_9ff120af,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+31,20260925_223152_4d979ef9,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+31,20261004_045444_aa8dff19,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+33,20260925_231305_dddb5176,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+33,20261004_050912_3684d8a4,ok,True,4,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+34,20260926_000046_b4640033,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+34,20261004_053904_f3b1cab7,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+35,20260926_004621_7f8114c9,harness_timeout,True,5,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+35,20261004_055401_3d33de0a,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+36,20260926_035330_f3f748e8,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+36,20261004_060818_9db790ea,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+37,20260926_050002_7a51c5a0,ok,True,1,invalid_workspace_escape,read/wrote outside its workspace: benchmark data; config/.env/nuke; harness code; own run folder; pipeline code; prompts; repo root / other; repo root listing,baseline_opencode_terraform_20260925_120023/results.csv
+37,20261004_062225_482a91cb,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+38,20260926_060659_696558e9,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+38,20261004_063704_a7b72b75,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+39,20260926_071218_510b57a1,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+39,20261004_065112_6f2becb6,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+40,20260926_081712_76fd4175,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+40,20261004_070530_fa9a04f3,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+41,20260926_082223_7949fd8a,ok,True,3,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+41,20261004_072005_628cd093,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+43,20260926_084053_7c9a1685,ok,True,3,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+43,20261004_074203_67084d61,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+45,20260926_085849_2dba1ab0,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+45,20261004_075625_167c4bf0,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+46,20260926_090830_1db6372c,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+46,20261004_081043_123e16f0,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+47,20260926_091320_cca798b0,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+47,20261004_082501_6206f58b,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+48,20260926_091817_4513a48e,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+48,20261004_084001_1b246ec9,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+49,20260926_092337_7330ed4e,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+49,20261004_085422_9d318677,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+50,20260926_092924_e88bbb54,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+50,20261004_090852_510aa9f7,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+51,20260926_094224_6dbac08d,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+51,20261004_092338_a5b77c68,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+52,20260926_094909_bc739aca,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+52,20261004_093750_6892ac55,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+53,20260926_100200_f2a21728,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+53,20261004_095525_a609dc1f,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+54,20260926_100907_b4909e08,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+54,20261004_100955_32353ed8,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+56,20260926_101616_a81b93f1,ok,True,2,invalid_workspace_escape,read/wrote outside its workspace: benchmark data; config/.env/nuke; docs; knowledge base; own run folder; pipeline code; repo root / other; repo root listing; volume/state,baseline_opencode_terraform_20260925_120023/results.csv
+56,20261004_102533_e17f3b11,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+60,20260926_102542_9ed7f9c8,ok,True,3,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+60,20261004_104048_a9fd10c1,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+61,20260926_104058_335cfbbb,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+61,20261004_104741_59a9c9bf,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+62,20260926_104720_963e4cd6,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+62,20261004_105408_89138105,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+63,20260926_105259_fa741c16,ok,True,5,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+63,20261004_105825_01da6f8f,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+66,20260926_114213_e8cd4a12,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+66,20261004_111455_094d6a06,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+67,20260926_114802_3a076b1c,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+67,20261004_111928_4bb1835a,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+72,20260926_115442_c4bfa73f,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+72,20261004_112355_42b92354,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+74,20260926_120243_e8370d4f,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+74,20261004_112945_a71d8f27,ok,True,6,invalid_workspace_escape,read/wrote outside its workspace: harness code; own run folder; pipeline code; repo root / other,baseline_opencode_terraform_20261003_201904/results.csv
+75,20260926_121155_cb846536,ok,True,1,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+75,20261004_115942_e81345e5,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+76,20260926_122331_aaedd01b,ok,True,3,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+76,20261004_120418_6b86aeed,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+77,20260926_124139_9da13440,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+77,20261004_121144_1d4e8752,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+79,20260926_125011_e7d6551c,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+79,20261004_121606_e5e66e49,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+80,20260926_130206_3798030a,ok,True,2,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+80,20261004_122022_41b458d2,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+81,20260926_131232_19547177,ok,True,3,valid_pass,,baseline_opencode_terraform_20260925_120023/results.csv
+81,20261004_122436_462244be,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+82,20261004_123924_7d939a97,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+83,20261004_124345_bc3cb24f,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+84,20261004_124822_f2dde0a6,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+85,20261004_125409_72583361,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+86,20261004_125937_b5e92d3b,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+89,20261004_130356_de742e96,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+90,20261004_131147_a9a2b9fe,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+91,20261004_131652_59b7e567,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+92,20261004_132406_84f9534a,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+93,20261004_132845_34fc77ee,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+94,20261004_133547_4630d4d9,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+95,20261004_134222_65271163,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+97,20261004_134636_c96e3055,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+98,20261004_135126_b2404b7b,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+101,20261004_135602_67c8b68e,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+103,20261004_140034_ab1e5701,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+104,20261004_140827_d4ba20f0,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+106,20261004_141251_54821131,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+109,20261004_141707_1bbafbf6,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+111,20261004_142002_28976c39,ok,True,2,invalid_workspace_escape,read/wrote outside its workspace: config/.env/nuke; harness code; knowledge base; own run folder; pipeline code; repo root listing,baseline_opencode_terraform_20261003_201904/results.csv
+111,20261005_184014_94691c48,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+112,20261004_142442_e843ff4b,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+114,20261004_142724_b8573e80,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+115,20261004_143137_bd04f040,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+119,20261004_143451_5b821a42,ok,True,1,invalid_workspace_escape,read/wrote outside its workspace: benchmark data; harness code; pipeline code; prompts; repo root / other; repo root listing,baseline_opencode_terraform_20261003_201904/results.csv
+119,20261005_184204_3232c550,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+120,20261004_144118_db4b921f,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+121,20261004_144601_e2430cd4,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+122,20261004_144855_2e86ae88,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+123,20261004_145430_b2bcc6b4,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+124,20261004_145808_c01b813a,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+127,20261004_150141_d185c3a0,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+128,20261004_150819_95f05b43,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+129,20261004_151441_5956213e,ok,True,1,invalid_workspace_escape,read/wrote outside its workspace: config/.env/nuke; pipeline code; prompts; repo root listing,baseline_opencode_terraform_20261003_201904/results.csv
+129,20261005_184615_963c85c7,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+130,20261004_152208_da892f2a,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+131,20261004_152730_831b4ba3,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+132,20261004_153329_a66314a9,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+137,20261004_154249_4fcc458f,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+138,20261004_154829_111c35b3,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+139,20261004_155645_1a71bfa9,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+142,20261004_160436_55a9ffce,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+143,20261004_160953_ade27fe3,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+144,20261004_161751_abdeb6ac,ok,True,6,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+145,20261004_163443_c6e5390f,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+146,20261004_164043_8ba8d32e,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+147,20261004_164940_7bc023c7,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+148,20261004_165846_1d55e187,ok,True,3,invalid_workspace_escape,read/wrote outside its workspace: own run folder; pipeline code; repo root / other; repo root listing,baseline_opencode_terraform_20261003_201904/results.csv
+148,20261005_184828_a5b277d3,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+149,20261004_171644_bd84e09a,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+150,20261004_172244_689287f7,ok,True,2,invalid_workspace_escape,read/wrote outside its workspace: config/.env/nuke; harness code; pipeline code,baseline_opencode_terraform_20261003_201904/results.csv
+150,20261005_185053_eea7091c,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+152,20261004_173246_781b64ac,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+154,20261004_173935_4032cd38,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+155,20261004_174515_dd577808,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+156,20261004_175059_0817a21b,ok,True,2,invalid_workspace_escape,read/wrote outside its workspace: docs,baseline_opencode_terraform_20261003_201904/results.csv
+156,20261005_185347_2285185d,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+158,20261004_180017_f0e3d94d,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+159,20261004_180359_3f93a689,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+160,20261004_180733_f29e9c91,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+161,20261004_181337_97f2f1ce,ok,True,1,invalid_workspace_escape,read/wrote outside its workspace: config/.env/nuke; pipeline code,baseline_opencode_terraform_20261003_201904/results.csv
+161,20261005_185932_b6e1e28a,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+163,20261004_181849_2e0540f0,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+164,20261004_182247_176e607f,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+165,20261004_182945_1d163fcf,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+166,20261004_183608_0ea655db,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+167,20261004_184045_053879cf,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+168,20261004_184741_fd17b445,ok,True,2,invalid_workspace_escape,read/wrote outside its workspace: benchmark data; config/.env/nuke; docs; knowledge base; own run folder; pipeline code; repo root / other; repo root listing; volume/state,baseline_opencode_terraform_20261003_201904/results.csv
+168,20261005_190301_9e52878e,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+169,20261004_185521_b90f78ba,ok,True,5,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+170,20261004_190208_04558fa1,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+172,20261004_190949_ace3e615,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+173,20261004_191532_4cc137f4,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+174,20261004_191912_f35e4276,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+175,20261004_192710_30d83d3d,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+177,20261004_193405_58e479d8,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+178,20261004_193920_f40e1a38,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+179,20261004_194229_b5ce6951,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+182,20261004_194756_45bd90e0,ok,True,4,invalid_workspace_escape,read/wrote outside its workspace: harness code; pipeline code; repo root / other,baseline_opencode_terraform_20261003_201904/results.csv
+182,20261005_190606_b2c72def,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+183,20261004_195826_9f88f251,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+184,20261004_200532_63da83b7,ok,True,7,invalid_workspace_escape,read/wrote outside its workspace: benchmark data; benchmark results; config/.env/nuke; knowledge base; own run folder; repo root / other; repo root listing; volume/state,baseline_opencode_terraform_20261003_201904/results.csv
+184,20261005_191247_1e27a5dd,ok,False,15,valid_fail,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+185,20261004_203809_c5666417,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+186,20261004_205709_5adf3540,ok,True,4,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+187,20261004_211806_d101eab8,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+188,20261004_214828_5162f5a7,ok,True,2,invalid_workspace_escape,read/wrote outside its workspace: config/.env/nuke; pipeline code,baseline_opencode_terraform_20261003_201904/results.csv
+188,20261005_200911_b74e5f63,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+189,20261004_220747_073101c8,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+190,20261004_222801_2feda1af,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+192,20261004_224653_25abf878,ok,True,7,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+193,20261004_234159_a94895a4,harness_timeout,False,5,invalid_workspace_escape,read/wrote outside its workspace: config/.env/nuke; own run folder; pipeline code; repo root / other; repo root listing,baseline_opencode_terraform_20261003_201904/results.csv
+193,20261005_201515_5eeaf9a3,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+194,20261005_010849_24262a84,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+194,20261006_213849_9236b496,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+195,20261005_014915_6fc8dfa6,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+195,20261006_214103_520b5037,ok,True,4,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+197,20261005_020248_b33ebb3f,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+197,20261006_214606_9c96545e,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+198,20261005_020859_8354c5cf,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+198,20261006_214718_a1c6cb0f,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+199,20261005_021134_0d207388,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+199,20261006_214835_ef6d1856,ok,True,9,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+200,20261005_021819_9e31edf4,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+200,20261006_220112_578dc546,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+201,20261005_022856_5b755ed5,ok,True,7,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+201,20261006_220939_3daf27e9,ok,False,15,invalid_environment,deploy_error_message: AlreadyExists,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+204,20261005_033115_fe5ce83e,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+204,20261006_223525_0e2627b2,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+205,20261005_033448_0397951a,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+205,20261006_223751_40f80a07,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+206,20261005_034129_a0c13a33,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+206,20261006_224321_2363d7ee,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+207,20261005_034647_2c83d707,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+207,20261006_224733_f8b70f01,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+208,20261005_035035_142ef75f,ok,True,4,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+208,20261006_224916_1ed39d34,ok,True,6,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+209,20261005_035750_562601dd,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+209,20261006_225516_215799b4,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+210,20261005_040046_0ab6de3c,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+210,20261006_225659_80737ae8,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+211,20261005_040323_cfca194c,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+211,20261006_225756_bae71a9c,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+212,20261005_040617_3cd6fe30,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+212,20261006_230002_de191d41,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+213,20261005_040929_80d03211,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+213,20261006_230146_9d0d7ada,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+214,20261005_041221_fef46f2a,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+214,20261006_230409_e35c6102,ok,True,5,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+216,20261005_041540_836934cc,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+216,20261006_230944_97a4a753,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+217,20261005_041853_bec50404,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+217,20261006_231213_4c2d7a89,ok,True,6,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+218,20261005_042233_7824406c,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+218,20261006_232757_6d016c19,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+219,20261005_042529_5091c108,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+219,20261006_232914_8a5fe267,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+220,20261005_042813_4853e416,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+220,20261006_233039_01aa7c86,ok,True,11,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+222,20261005_043054_008d1c8c,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+222,20261006_233340_0544f34d,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+223,20261005_043805_95b35940,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+223,20261006_234252_056b32ed,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+224,20261005_044049_b65f5fd9,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+224,20261006_234419_cc8c29c9,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+225,20261005_044326_a415c2ad,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+225,20261006_234553_b3733015,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+226,20261005_044604_ff505725,ok,True,3,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+226,20261006_234708_2f2880ae,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+228,20261005_044922_0ce6eb6d,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+228,20261006_234838_e90ce840,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+229,20261005_045221_840f073c,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+229,20261006_235037_72ba0532,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+230,20261005_045528_0cc3b431,ok,True,3,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+230,20261006_235254_0fc55a01,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+231,20261005_050252_1522e658,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+231,20261005_201700_e455806e,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+232,20261005_050830_bdef492e,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+232,20261007_000143_62eabc9f,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+233,20261005_051151_3ae269ae,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+233,20261007_000513_d35f5550,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+234,20261005_051458_dd1860fc,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+234,20261007_001007_457171fc,ok,False,15,valid_fail,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+235,20261005_051920_90f45461,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+235,20261007_002352_4b1dd26f,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+236,20261005_052552_7640c2df,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+236,20261005_202018_0dd75866,ok,True,4,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+238,20261005_053447_8c6f788a,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+238,20261007_002814_d17ad6f5,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+239,20261005_053943_2c92ca21,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+239,20261007_004048_6bf48b39,ok,True,15,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+240,20261005_054356_8ab1eb5e,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+240,20261007_010429_649a5b46,ok,True,6,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+241,20261005_055111_d1caf6df,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+241,20261007_014028_4594f31e,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+242,20261005_055528_0966be71,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+242,20261005_203014_a16c27f5,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+243,20261005_060257_4b340157,ok,True,3,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+243,20261007_015434_edc9f8a2,ok,True,5,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+244,20261005_062150_e92e4f20,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+244,20261007_022740_e7fe3577,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+247,20261005_062729_94c7f480,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+247,20261007_024311_94a5307d,ok,True,9,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+248,20261005_063839_a83b516b,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+248,20261007_040023_203a9e58,ok,True,4,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+249,20261005_064803_c27ea4ee,harness_stalled,False,0,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+249,20261007_042755_b78bc440,ok,False,15,invalid_environment,deploy_error_message: AlreadyExists,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+250,20261005_065317_f195a453,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+250,20261005_203332_17cf7f4f,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+269,20261005_070147_b8fb21d5,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+269,20261007_064151_8f790f3f,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+272,20261005_070659_1777cf71,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+272,20261007_065824_ec568d83,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+286,20261005_071227_dbdd8822,ok,True,4,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+286,20261007_071424_239ed88a,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+287,20261005_072842_436d0158,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+287,20261007_074930_1db81db7,ok,False,15,invalid_environment,deploy_error_message: LimitExceeded,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+289,20261005_073408_2e829e4a,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+289,20261007_101116_5d08ab12,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+311,20261005_073948_a01439f5,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+311,20261005_203529_ca884e7b,ok,True,5,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+312,20261005_075353_e2aa9d4a,ok,True,3,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+312,20261007_103603_ba7c17ad,ok,True,8,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+313,20261005_080126_314e0a22,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+313,20261007_105722_bd9cdfc5,ok,True,7,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+319,20261005_080834_8fdb320c,ok,True,4,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+319,20261007_110953_6de1ed7b,ok,True,9,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+320,20261005_082000_eceff809,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+320,20261007_111941_53ea74e2,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+321,20261005_082512_2bb203d2,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+321,20261007_112128_bb18c13d,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+322,20261005_083118_7a3ad2bb,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+322,20261007_112336_f161332d,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+323,20261005_083634_78525b7c,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+323,20261007_112452_803f8809,ok,False,15,invalid_environment,deploy_error_message: AlreadyExists,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+324,20261005_084512_87794a84,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+324,20261007_114251_ac5e4690,ok,True,8,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+326,20261005_085410_7ee89853,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+326,20261005_205836_4f999854,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+327,20261005_090757_f3a4bfe1,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+327,20261007_115914_925e99c5,ok,False,15,valid_fail,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+328,20261005_091803_1e7893aa,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+328,20261007_121933_6fb2a77b,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+329,20261005_092523_7a760a42,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+329,20261007_122432_c0aebcd7,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+330,20261005_093046_2b2f738f,ok,True,6,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+330,20261005_210217_41cefe26,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+331,20261005_095058_777c1f59,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+331,20261007_122540_af0823ae,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+332,20261005_095734_ead42681,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+332,20261007_122847_bc4f8c16,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+333,20261005_100248_feb3dcb4,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+333,20261007_123012_8064131c,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+334,20261005_100802_78e76294,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+334,20261007_123113_e28731f9,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+335,20261005_101320_bb91cbf2,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+335,20261007_123240_1ca71bfc,ok,False,15,valid_fail,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+336,20261005_101907_79d59376,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+336,20261007_125153_b244594f,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+337,20261005_102442_885579ea,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+337,20261007_125345_56449c7e,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+338,20261005_103004_1c0d7ee2,ok,True,4,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+338,20261005_210335_9d4a3f47,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+339,20261005_104650_fe286a22,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+339,20261007_125504_e3164c83,ok,True,4,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+340,20261005_105520_3e86cbc0,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+340,20261007_130012_f4923609,ok,True,5,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+341,20261005_110422_40ee2dd9,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+341,20261007_130729_2bc6da54,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+342,20261005_111021_a89434a0,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+342,20261007_130956_5c26d541,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+343,20261005_111539_23f96904,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+343,20261007_131215_1ceb28eb,ok,True,5,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+344,20261005_112117_875af71c,ok,True,2,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+344,20261007_132525_4991e922,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+345,20261005_112852_3eba3c68,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+345,20261007_132807_5e54881d,ok,True,14,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+346,20261005_113416_a58aa881,ok,True,3,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+346,20261007_134144_3220a874,ok,True,4,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+347,20261005_114022_3758ffd9,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+347,20261007_134525_03de2072,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+348,20261005_114544_0c879b00,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+348,20261007_134655_eafa8893,ok,True,6,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+349,20261005_115241_edf788c0,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+349,20261007_135354_28f29feb,ok,True,11,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+350,20261005_115826_01ecdf91,ok,True,1,superseded,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable),baseline_opencode_terraform_20261003_201904/results.csv
+350,20261007_140554_da23f815,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261006_213849/results.csv
+351,20261005_120418_7b1192be,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+353,20261005_120906_76ff1e0a,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+354,20261005_121206_4843187c,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+355,20261005_121516_d758ef3c,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+356,20261005_121821_7fcbee54,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+357,20261005_122134_ffb101b7,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+358,20261005_122444_c24f34d9,harness_error,False,7,invalid_harness,harness error,baseline_opencode_terraform_20261003_201904/results.csv
+358,20261005_210438_0a10c5be,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+359,20261005_123304_f0769663,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+360,20261005_123618_1f48d801,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+361,20261005_123937_8c4311f1,ok,True,3,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+362,20261005_124627_641d46e3,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+363,20261005_125311_6899d438,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+364,20261005_125737_f975a68f,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+366,20261005_130102_178d4f4c,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+367,20261005_130735_4ab2f81b,ok,True,1,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+368,20261005_131051_eaeecde6,ok,True,2,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv
+369,20261005_131712_ed05b68d,ok,False,1,valid_fail,,baseline_opencode_terraform_20261003_201904/results.csv
+369,20261005_210803_57e49876,ok,True,6,valid_pass,,baseline_opencode_terraform_20261003_201904/rerun_20261005_184014/results.csv
+370,20261005_132550_30664af1,ok,True,4,valid_pass,,baseline_opencode_terraform_20261003_201904/results.csv

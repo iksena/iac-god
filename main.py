@@ -6,14 +6,7 @@ import traceback
 from graph import build_graph
 from state import GraphState
 from tracking.recorder import ResearchRecorder
-from config import DEFAULT_CONFIG, DEFAULT_DEPLOY_CONFIG, LLMProvider, DeployTarget, DeployConfig
-
-
-def _parse_csv_arg(value: str | None) -> tuple[str, ...]:
-    if not value:
-        return ()
-    parts = [part.strip() for part in value.split(",")]
-    return tuple(part for part in parts if part)
+from config import DEFAULT_CONFIG, DEFAULT_DEPLOY_CONFIG, LLMProvider, DeployTarget, DeployConfig, configure_llm
 
 
 def run_pipeline(
@@ -29,50 +22,25 @@ def run_pipeline(
     openrouter_reasoning_max_tokens: int | None = None,
     disable_reasoning: bool = False,
     max_tokens: int | None = None,
+    no_max_tokens: bool = False,
     skip_security: bool = False,
     iac_type: str = "cloudformation",
 ) -> GraphState:
 
     # ------------------------------------------------------------------
-    # Configure LLM provider
+    # Configure LLM provider (shared with baselines/oneshot_baseline.py)
     # ------------------------------------------------------------------
-    if provider == "claude":
-        DEFAULT_CONFIG.provider = LLMProvider.CLAUDE
-        DEFAULT_CONFIG.model = model or "claude-3-5-sonnet-20241022"
-
-    elif provider == "openai":
-        DEFAULT_CONFIG.provider = LLMProvider.OPENAI
-        # Fallback order: explicit --model arg → OPENAI_MODEL env var → o3-mini
-        DEFAULT_CONFIG.model = model or os.getenv("OPENAI_MODEL", "o3-mini")
-        # api_key and base_url are already populated from .env by LLMConfig,
-        # but allow callers to override them via the existing DEFAULT_CONFIG fields.
-        if not DEFAULT_CONFIG.openai_api_key:
-            raise ValueError(
-                "OPENAI_API_KEY is not set. "
-                "Add it to your .env file or set the environment variable directly."
-            )
-
-    else:  # openrouter (default)
-        DEFAULT_CONFIG.provider = LLMProvider.OPENROUTER
-        DEFAULT_CONFIG.model = model or "arcee-ai/trinity-large-preview:free"
-
-        if openrouter_provider_only is not None:
-            DEFAULT_CONFIG.openrouter_provider_only = _parse_csv_arg(openrouter_provider_only)
-        if openrouter_min_quantization is not None:
-            DEFAULT_CONFIG.openrouter_min_quantization = openrouter_min_quantization.strip().lower()
-        if openrouter_reasoning_effort is not None:
-            DEFAULT_CONFIG.openrouter_reasoning_effort = openrouter_reasoning_effort.strip().lower()
-        if openrouter_reasoning_max_tokens is not None:
-            DEFAULT_CONFIG.openrouter_reasoning_max_tokens = openrouter_reasoning_max_tokens
-        if disable_reasoning:
-            DEFAULT_CONFIG.reasoning_enabled = False
-
-    # max_tokens is shared across all providers (OpenRouter, OpenAI direct,
-    # and Anthropic direct all read DEFAULT_CONFIG.max_tokens — see
-    # agents/llm_client.py), so it's set unconditionally here rather than
-    # inside a provider-specific branch above.
-    if max_tokens is not None:
-        DEFAULT_CONFIG.max_tokens = max_tokens
+    configure_llm(
+        provider,
+        model,
+        openrouter_provider_only=openrouter_provider_only,
+        openrouter_min_quantization=openrouter_min_quantization,
+        openrouter_reasoning_effort=openrouter_reasoning_effort,
+        openrouter_reasoning_max_tokens=openrouter_reasoning_max_tokens,
+        disable_reasoning=disable_reasoning,
+        max_tokens=max_tokens,
+        no_max_tokens=no_max_tokens,
+    )
 
     # ------------------------------------------------------------------
     # Configure deploy target
@@ -150,9 +118,13 @@ if __name__ == "__main__":
     parser.add_argument("--max-iterations", type=int, default=30)
     parser.add_argument(
         "--provider",
-        choices=["openrouter", "claude", "openai"],
+        choices=["openrouter", "claude", "openai", "deepseek"],
         default="openrouter",
-        help="LLM provider to use. 'openai' reads OPENAI_API_KEY / OPENAI_MODEL from .env",
+        help=(
+            "LLM provider to use. 'openai' reads OPENAI_API_KEY / OPENAI_MODEL "
+            "from .env. 'deepseek' reads DEEPSEEK_API_KEY / DEEPSEEK_MODEL "
+            "(default deepseek-chat; also supports deepseek-reasoner) from .env."
+        ),
     )
     parser.add_argument(
         "--model",
@@ -241,6 +213,18 @@ if __name__ == "__main__":
         ),
     )
     parser.add_argument(
+        "--no-max-tokens",
+        action="store_true",
+        help=(
+            "Send no max_tokens/max_completion_tokens at all, letting the "
+            "provider apply its own (usually much larger) default ceiling "
+            "instead of any fixed number we pick. Takes precedence over "
+            "--max-tokens if both are given. Only supported for OpenRouter/"
+            "OpenAI direct — Anthropic's API requires an explicit max_tokens, "
+            "so this errors out if combined with --provider claude."
+        ),
+    )
+    parser.add_argument(
         "--deploy-target",
         choices=["none", "localstack", "aws"],
         default="localstack",
@@ -275,6 +259,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.skip_deploy:
         args.deploy_target = "none"
+    if args.no_max_tokens and args.provider == "claude":
+        parser.error("--no-max-tokens is not supported with --provider claude (Anthropic requires an explicit max_tokens)")
 
     try:
         result = run_pipeline(
@@ -290,6 +276,7 @@ if __name__ == "__main__":
             openrouter_reasoning_max_tokens=args.openrouter_reasoning_max_tokens,
             disable_reasoning=args.disable_reasoning,
             max_tokens=args.max_tokens,
+            no_max_tokens=args.no_max_tokens,
             skip_security=args.skip_security,
             iac_type=args.iac_type,
         )

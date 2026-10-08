@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 import json
 import shutil
 import time
@@ -274,26 +275,205 @@ def filter_runtime_error_rows(
     )
     return filtered_df
 
+
+def find_timeout_retry_candidates(
+    input_csv,
+    output_csv=None,
+    status_col="status",
+    cap_reached_col="iteration_cap_reached",
+):
+    """Find harness_timeout rows worth retrying with a bigger --scenario-timeout.
+
+    Not every harness_timeout row is the same kind of failure: one that also
+    has iteration_cap_reached=True legitimately used its whole iteration
+    budget and only incidentally also ran past the wall-clock limit around
+    the same time -- a bigger --scenario-timeout isn't obviously the fix for
+    that one. A row with iteration_cap_reached=False got killed by the
+    process-level timeout with iteration budget still unused -- that one
+    genuinely needed more TIME, not more iterations, and is exactly what
+    --scenario-timeout 7200 (or higher) is for.
+
+    Deliberately keyed on iteration_cap_reached rather than comparing
+    iterations_used against a --max-iterations value passed in separately:
+    that column is written per-row by the run that produced it, so this
+    stays correct even against a results_merged.csv stitched together from
+    runs that used different --max-iterations settings (e.g. 15 vs 30) --
+    supplying the "right" threshold by hand for a mixed file would silently
+    get some rows wrong.
+
+    Prints a --rows-ready comma-separated row_number list (paste straight
+    into the CLI flag, e.g. the resume/retry commands in baselines/README.md)
+    and, if output_csv is given, writes the matching rows there too.
+    """
+    if not os.path.exists(input_csv):
+        raise FileNotFoundError(f"Input CSV not found: {input_csv}")
+
+    df = pd.read_csv(input_csv)
+    for col in (status_col, cap_reached_col, "row_number"):
+        if col not in df.columns:
+            raise ValueError(f"Column '{col}' not found in {input_csv}")
+
+    status_values = df[status_col].fillna("").astype(str).str.strip().str.lower()
+    # Written as the literal string "True"/"False" by csv.DictWriter (the
+    # underlying value is a Python bool) -- read back as text, not a bool
+    # dtype, so compare case-insensitively rather than relying on pandas'
+    # own (inconsistent across dtypes) truthiness.
+    cap_reached = (
+        df[cap_reached_col].fillna("").astype(str).str.strip().str.lower() == "true"
+    )
+    candidates = df[(status_values == "harness_timeout") & ~cap_reached].copy()
+
+    row_numbers = sorted(int(float(x)) for x in candidates["row_number"].tolist())
+    print(
+        f"{len(row_numbers)} harness_timeout row(s) with iteration budget still "
+        f"unused (out of {int((status_values == 'harness_timeout').sum())} "
+        f"harness_timeout row(s) total) in '{input_csv}':"
+    )
+    for _, row in candidates.sort_values("row_number").iterrows():
+        extra = []
+        if "iterations_used" in candidates.columns:
+            extra.append(f"iters={row['iterations_used']}")
+        if "duration_seconds" in candidates.columns:
+            extra.append(f"duration={row['duration_seconds']}")
+        print(f"  row {int(float(row['row_number']))}: {', '.join(extra)}")
+
+    print(f"\n--rows \"{','.join(str(n) for n in row_numbers)}\"")
+
+    if output_csv:
+        candidates.to_csv(output_csv, index=False)
+        print(f"\nWrote {len(candidates)} row(s) to '{output_csv}'")
+
+    return row_numbers
+
+
+def audit_workspace_escapes(runs_dir, results_csv=None, output_csv=None):
+    """List harness sessions that read or wrote outside their own workspace.
+
+    Scans every runs_dir/**/harness_stream.jsonl (OpenCode and Claude Code)
+    and reports runs where a tool call SUCCEEDED on a path outside
+    runs/<run_id>/workspace -- denied attempts returned nothing and are
+    ignored. Such a session may have seen the benchmark dataset, an earlier
+    run's template, prior results or credentials, so its result is not a clean
+    measurement of the model. Written for sweeps that ran before the harness
+    drivers confined the workspace; sessions from after that are checked
+    live (status ``workspace_escape``).
+
+    With results_csv, run_id is joined to row_number/status so the affected
+    rows can be re-run. Prints a --rows-ready list. Returns a DataFrame.
+    """
+    import re
+    from baselines.sandbox_audit import is_inside, tool_calls
+
+    def category(path, repo_root, run_id):
+        rel = path[len(repo_root):].lstrip("/") if repo_root and path.startswith(repo_root) else None
+        if rel is None:
+            return "outside the repository"
+        if rel == "":
+            return "repository root"
+        top = rel.split("/")[0]
+        if top == "runs":
+            parts = rel.split("/")
+            if len(parts) > 1 and parts[1] and parts[1] != run_id:
+                return "another run's artifacts"
+            return "runs listing / own run directory"
+        if rel.endswith(".env") or top == ".env":
+            return ".env (credentials)"
+        if top in ("final_results", "benchmark_runs"):
+            return "prior results"
+        if top == "data" or top.startswith(("cfn_templates", "iac_benchmark")):
+            return "dataset / ground truth"
+        if top in ("tools", "baselines", "agents", "scripts", "prompts", "graph.py", "config.py",
+                   "main.py", "benchmark.py", "benchmark_common.py", "state.py"):
+            return "harness / validator source"
+        return "other repository file"
+
+    rows = []
+    for stream_path in sorted(Path(runs_dir).rglob("harness_stream.jsonl")):
+        run_id = stream_path.parent.name
+        try:
+            text = stream_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        harness = "claude_code" if '"claude_code_version"' in text[:4000] else "opencode"
+        calls = tool_calls(text, harness)
+        marker_re = re.compile(r"^(.*/" + re.escape(run_id) + r"/workspace)(?:/|$)")
+        workspace = next(
+            (m.group(1) for c in calls for p in c.paths if (m := marker_re.match(p))),
+            f"/__no_workspace_seen__/{run_id}/workspace",
+        )
+        repo_root = workspace.split("/runs/")[0] if "/runs/" in workspace else ""
+        hits = [(c, p) for c in calls if c.ok for p in c.paths if not is_inside(p, workspace)]
+        if not hits:
+            continue
+        rows.append({
+            "run_id": run_id,
+            "harness": harness,
+            "escaped_calls": len(hits),
+            "wrote_outside": any(c.tool.lower() in ("write", "edit") for c, _ in hits),
+            "reached": " | ".join(sorted({category(p, repo_root, run_id) for _, p in hits})),
+            "example_paths": " | ".join(sorted({p for _, p in hits})[:4]),
+        })
+
+    df = pd.DataFrame(rows, columns=["run_id", "harness", "escaped_calls", "wrote_outside", "reached", "example_paths"])
+    if results_csv and len(df):
+        res = pd.read_csv(results_csv)
+        keep = [c for c in ("run_id", "row_number", "status", "final_validation_passed") if c in res.columns]
+        df = df.merge(res[keep], on="run_id", how="left")
+
+    print(f"{len(df)} run(s) with at least one successful out-of-workspace call (scanned '{runs_dir}')")
+    if len(df):
+        for reached, n in df["reached"].str.split(" \\| ").explode().value_counts().items():
+            print(f"  {n:4d}  {reached}")
+        print(f"  {int(df['wrote_outside'].sum()):4d}  run(s) also WROTE outside the workspace")
+        if "row_number" in df.columns and df["row_number"].notna().any():
+            rows_list = sorted(int(float(x)) for x in df["row_number"].dropna().unique())
+            print(f"\n--rows \"{','.join(str(r) for r in rows_list)}\"")
+    if output_csv:
+        df.to_csv(output_csv, index=False)
+        print(f"Wrote {output_csv}")
+    return df
+
+
 def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_csv="results_merged.csv"):
+    """
+    ``base_dir`` is searched RECURSIVELY for ``final_report.json`` files, at
+    any depth -- it can be pointed straight at the whole ``runs/`` folder,
+    not just a single flat directory of ``<run_id>/final_report.json``
+    folders. This matters because ``move_run_folders_from_csv`` (and manual
+    archiving) commonly organizes a batch's run folders into a named
+    subfolder first, e.g. ``runs/<model_batch_name>/<run_id>/final_report.json``
+    -- a non-recursive scan of ``runs/`` directly would see
+    ``<model_batch_name>`` as if it were itself a run_id, find no
+    ``final_report.json`` immediately inside it, and silently skip every
+    report nested one level deeper, with no error or warning. If the SAME
+    run_id is found more than once (e.g. a partially-completed archive move
+    left a stale copy behind), the LAST one found wins and a warning is
+    printed -- this should be rare, since a real archive move (see
+    ``move_run_folders_from_csv``) removes the original location.
+    """
     if not os.path.exists(input_csv):
         print(f"Error: The input CSV '{input_csv}' does not exist.")
         return
 
     # 1. Load the existing results
     df_results = pd.read_csv(input_csv)
-    
-    # 2. Extract additional data from the runs directory
-    aggregated_extra_data = []
-    
+
+    # 2. Extract additional data from the runs directory (recursively --
+    # see the docstring above for why this can't just check one level down).
+    # Keyed by the row's own resolved run_id (not just the folder name it was
+    # found at) so a genuine duplicate is caught by the same identity the
+    # later merge join actually uses.
+    aggregated_extra_data = {}
+    seen_report_paths = {}
+    duplicate_run_id_examples = {}
+
     if os.path.exists(base_dir):
-        for run_id in os.listdir(base_dir):
-            run_dir = os.path.join(base_dir, run_id)
-            if not os.path.isdir(run_dir):
+        for root, _dirs, files in os.walk(base_dir):
+            if "final_report.json" not in files:
                 continue
 
-            report_path = os.path.join(run_dir, "final_report.json")
-            if not os.path.exists(report_path):
-                continue
+            run_id = os.path.basename(root)
+            report_path = os.path.join(root, "final_report.json")
 
             with open(report_path, "r", encoding="utf-8") as f:
                 try:
@@ -465,14 +645,29 @@ def merge_results_with_reports(input_csv="results.csv", base_dir="runs", output_
                 stage_name = stage_res.get("stage", "unknown")
                 row_extra[f"val_stage_{stage_name}_passed"] = stage_res.get("passed", False)
 
-            aggregated_extra_data.append(row_extra)
+            resolved_run_id = row_extra["run_id"]
+            if resolved_run_id in aggregated_extra_data:
+                duplicate_run_id_examples.setdefault(
+                    resolved_run_id, (seen_report_paths[resolved_run_id], report_path)
+                )
+            aggregated_extra_data[resolved_run_id] = row_extra
+            seen_report_paths[resolved_run_id] = report_path
+
+        if duplicate_run_id_examples:
+            n = len(duplicate_run_id_examples)
+            example_id, (path_a, path_b) = next(iter(duplicate_run_id_examples.items()))
+            print(
+                f"Warning: {n} run_id(s) found at more than one path under '{base_dir}' "
+                f"(used the later one found for each); e.g. '{example_id}' at both "
+                f"'{path_a}' and '{path_b}'."
+            )
     else:
         print(f"Warning: The directory '{base_dir}' does not exist. No extra data will be merged.")
 
     # 3. Merge the dataframes
     if aggregated_extra_data:
-        df_extra = pd.DataFrame(aggregated_extra_data)
-        
+        df_extra = pd.DataFrame(list(aggregated_extra_data.values()))
+
         # Merge on 'run_id' using a left join so we keep all rows from results.csv
         df_merged = pd.merge(df_results, df_extra, on="run_id", how="left")
     else:
@@ -753,7 +948,7 @@ def display_results_table(
     *,
     failed_only: bool = False,
     min_iterations: int | None = None,
-    prompt_chars: int = 20,
+    prompt_chars: int = 100,
     print_table: bool = True,
 ) -> str:
     """Render a results CSV as a markdown table for terminal display.
@@ -890,35 +1085,263 @@ def display_results_table(
 
 if __name__ == "__main__":
     # filter_runtime_error_rows(
-    #     input_csv='benchmark_runs/cloudformation_20260829_102210/results.csv',
-    #     output_csv='benchmark_runs/cloudformation_20260829_102210/results_without_runtime_error.csv',
+    #     input_csv='benchmark_runs/cloudformation_20260925_193209/results.csv',
+    #     output_csv='benchmark_runs/cloudformation_20260925_193209/results_without_runtime_error.csv',
     #     status_col='status',
     # )
 
     # merge_results_from_directory(
-    #     base_dir="./benchmark_runs/cloudformation_20260826_185515_CFNEvalRealAWS",
+    #     base_dir="./benchmark_runs/cloudformation_20260925_001704_Opus55",
+    #     benchmark_csv="data/cfn_eval_benchmark_real_aws.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/cloudformation_20260922_235243_GLM53Flash",
+    #     benchmark_csv="data/cfn_eval_benchmark_real_aws.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    merge_results_from_directory(
+        base_dir="./benchmark_runs/cloudformation_20260922_232123_DPIaCEval_O3Mini",
+        benchmark_csv="data/iac_with_difficulty_levels.csv",
+        prefer_final_validation_passed=True,
+    )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/terraform_20260908_171434_IaCEval",
+    #     benchmark_csv="data/iac_eval_benchmark.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/cloudformation_20260908_115729_DSV4F_Dep",
     #     benchmark_csv="data/cfn_eval_benchmark_real_aws_diff345.csv",
     #     prefer_final_validation_passed=True,
     # )
     # merge_results_from_directory(
-    #     base_dir="./benchmark_runs/terraform_20260823_213429 TFEvalV2",
-    #     benchmark_csv="data/tf_benchmark_diff_345.csv",
+    #     base_dir="./benchmark_runs/ClaudeCodeDSVF4_CFNEvalRealAWS_20260910_230629",
+    #     benchmark_csv="data/cfn_eval_benchmark_real_aws_diff345.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    merge_results_from_directory(
+        base_dir="./benchmark_runs/baseline_opencode_cloudformation_20260917_232736_DSV4F_Full",
+        benchmark_csv="data/cfn_eval_benchmark_real_aws.csv",
+        prefer_final_validation_passed=True,
+    )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/cloudformation_20260915_154934_Gemini36Flash",
+    #     benchmark_csv="data/cfn_eval_benchmark_real_aws_diff345_12Sep.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/cloudformation_20260917_170146_DSV4F_Full",
+    #     benchmark_csv="data/cfn_eval_benchmark_real_aws.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/baseline_opencode_retriever_terraform_20260919_211653_Ablation_HarnessAndRetriever",
+    #     benchmark_csv="data/tf_eval_benchmark_ablation.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/terraform_20260920_044840_Ablation_DSV4F",
+    #     benchmark_csv="data/tf_eval_benchmark_ablation.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/terraform_20260920_135237_DSV4_Full",
+    #     benchmark_csv="data/tf_eval_benchmark_real_aws.csv",
+    #     prefer_final_validation_passed=True,
+    # )
+    # merge_results_from_directory(
+    #     base_dir="./benchmark_runs/cloudformation_20260921_132308_Ablation_DSV4F",
+    #     benchmark_csv="data/cfn_eval_benchmark_ablation.csv",
     #     prefer_final_validation_passed=True,
     # )
 
+    # display_results_table(
+    #     "benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/results_merged.csv",
+    #     dataset_csv="data/cfn_eval_benchmark_real_aws.csv",
+    #     failed_only=True,
+    #     min_iterations=10,
+    # )
+    # display_results_table(
+    #     "benchmark_runs/baseline_opencode_cloudformation_20260917_232736_DSV4F_Full/results_merged.csv",
+    #     dataset_csv="data/cfn_eval_benchmark_real_aws.csv",
+    #     failed_only=True,
+    #     min_iterations=10,
+    # )
+    # display_results_table(
+    #     "benchmark_runs/terraform_20260920_135237_DSV4_Full/results_merged.csv",
+    #     dataset_csv="data/tf_eval_benchmark_real_aws.csv",
+    #     failed_only=True,
+    #     min_iterations=10,
+    # )
+    # display_results_table(
+    #     "benchmark_runs/cloudformation_20260922_235243_GLM53Flash/results_merged.csv",
+    #     dataset_csv="data/cfn_eval_benchmark_real_aws.csv",
+    #     failed_only=True,
+    #     min_iterations=10,
+    # )
+
     # move_run_folders_from_csv(
-    #     input_csv='benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/results_merged.csv',
+    #     input_csv='benchmark_runs/cloudformation_20260922_235243_GLM53Flash/results_merged.csv',
     #     runs_dir='runs',
-    #     target_subfolder_name='CFNEvalV2_DeepseekV4Flash_security_runs',
+    #     target_subfolder_name='CFNEvalRealAWS_GLM53Flash_sec_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='CFNEvalRealAWS_DeepseekV4Flash_sec_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/terraform_20260920_135237_DSV4_Full/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='TFEvalRealAWS_DeepseekV4Flash_sec_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/baseline_opencode_cloudformation_20260917_232736_DSV4F_Full/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='CFNEvalRealAWS_Opencode_DeepseekV4Flash_sec_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/terraform_20260908_171434_IaCEval/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='IaCEval_DeepseekV4Flash_lint_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/cloudformation_20260908_115729_DSV4F_Dep/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='CFNEvalRealAWS_DeepseekV4Flash_deployability_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/ClaudeCodeDSVF4_CFNEvalRealAWS_20260910_230629/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='ClaudeCodeDSVF4_CFNEvalRealAWS_20260910_230629',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/baseline_opencode_cloudformation_20260917_232736_DSV4F_Full/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='OpencodeDSV4F_CFNEvalRealAWS_Full_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/cloudformation_20260915_154934_Gemini36Flash/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='Gemini36Flash_CFNEvalRealAWS_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/terraform_20260926_174102_Ablation_NoDenseRAG_DSV4F/results.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='Ablation_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/cloudformation_20260926_150304_Ablation_NoDenseRAG_DSV4F/results.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='Ablation_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/terraform_20260920_044840_Ablation_DSV4F/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='Ablation_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/cloudformation_20260921_132308_Ablation_DSV4F/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='Ablation_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/baseline_opencode_retriever_cloudformation_20260919_173443_Ablation_HarnessAndRetriever/results.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='Ablation_runs',
+    #     run_id_col='run_id',
+    #     dry_run=False,
+    # )
+    # move_run_folders_from_csv(
+    #     input_csv='benchmark_runs/baseline_opencode_retriever_terraform_20260919_211653_Ablation_HarnessAndRetriever/results_merged.csv',
+    #     runs_dir='runs',
+    #     target_subfolder_name='Ablation_runs',
     #     run_id_col='run_id',
     #     dry_run=False,
     # )
 
-    merge_results_with_reports(
-        input_csv="benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/results_merged.csv", 
-        base_dir="runs/CFNEvalV2_DeepseekV4Flash_security_runs", 
-        output_csv="benchmark_runs/cloudformation_20260819_214458_CFNEvalV2/CFNEvalV2_DeepseekV4Flash_security_runs.csv"
-    )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/terraform_20260926_174102_Ablation_NoDenseRAG_DSV4F/results.csv", 
+    #     base_dir="runs/Ablation_runs", 
+    #     output_csv="benchmark_runs/terraform_20260926_174102_Ablation_NoDenseRAG_DSV4F/TF_Ablation_NoDenseRAG_DSV4F.csv"
+    # )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/cloudformation_20260926_150304_Ablation_NoDenseRAG_DSV4F/results.csv", 
+    #     base_dir="runs/Ablation_runs", 
+    #     output_csv="benchmark_runs/cloudformation_20260926_150304_Ablation_NoDenseRAG_DSV4F/CFN_Ablation_NoDenseRAG_DSV4F.csv"
+    # )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/terraform_20260920_044840_Ablation_DSV4F/results_merged.csv", 
+    #     base_dir="runs/Ablation_runs", 
+    #     output_csv="benchmark_runs/terraform_20260920_044840_Ablation_DSV4F/TF_Ablation_DSV4F.csv"
+    # )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/cloudformation_20260921_132308_Ablation_DSV4F/results_merged.csv", 
+    #     base_dir="runs/Ablation_runs", 
+    #     output_csv="benchmark_runs/cloudformation_20260921_132308_Ablation_DSV4F/CFN_Ablation_DSV4F.csv"
+    # )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/baseline_opencode_retriever_cloudformation_20260919_173443_Ablation_HarnessAndRetriever/results.csv", 
+    #     base_dir="runs/Ablation_runs", 
+    #     output_csv="benchmark_runs/baseline_opencode_retriever_cloudformation_20260919_173443_Ablation_HarnessAndRetriever/CFN_Ablation_HarnessAndRetriever.csv"
+    # )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/baseline_opencode_retriever_terraform_20260919_211653_Ablation_HarnessAndRetriever/results_merged.csv", 
+    #     base_dir="runs/Ablation_runs", 
+    #     output_csv="benchmark_runs/baseline_opencode_retriever_terraform_20260919_211653_Ablation_HarnessAndRetriever/TF_Ablation_HarnessAndRetriever.csv"
+    # )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/baseline_opencode_cloudformation_20260917_232736_DSV4F_Full/results_merged.csv", 
+    #     base_dir="runs/CFNEvalRealAWS_Opencode_DeepseekV4Flash_sec_runs", 
+    #     output_csv="benchmark_runs/baseline_opencode_cloudformation_20260917_232736_DSV4F_Full/CFNEvalRealAWS_Opencode_DeepseekV4Flash_sec_runs.csv"
+    # )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/results_merged.csv", 
+    #     base_dir="runs/CFNEvalRealAWS_DeepseekV4Flash_sec_runs", 
+    #     output_csv="benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/CFNEvalRealAWS_DeepseekV4Flash_sec_runs.csv"
+    # )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/results_merged.csv", 
+    #     base_dir="runs/CFNEvalRealAWS_DeepseekV4Flash_sec_runs", 
+    #     output_csv="benchmark_runs/cloudformation_20260917_170146_DSV4F_Full/CFNEvalRealAWS_DeepseekV4Flash_sec_runs.csv"
+    # )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/cloudformation_20260922_235243_GLM53Flash/results_merged.csv", 
+    #     base_dir="runs/CFNEvalRealAWS_GLM53Flash_sec_runs", 
+    #     output_csv="benchmark_runs/cloudformation_20260922_235243_GLM53Flash/CFNEvalRealAWS_GLM53Flash_sec_runs.csv"
+    # )
+    # merge_results_with_reports(
+    #     input_csv="benchmark_runs/terraform_20260920_135237_DSV4_Full/results_merged.csv", 
+    #     base_dir="runs/TFEvalRealAWS_DeepseekV4Flash_sec_runs", 
+    #     output_csv="benchmark_runs/terraform_20260920_135237_DSV4_Full/TFEvalRealAWS_DeepseekV4Flash_sec_runs.csv"
+    # )
 
     # merge_results(
     #     csv_paths=[

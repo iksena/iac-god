@@ -1,0 +1,10 @@
+identifier,DeepSeek-V4-Flash,GLM-5.3-Flash,Gemini-3.8-Flash
+apply: Invalid provider configuration,-,75 (0),230 (0)
+apply: invalid AWS Region:,-,75 (0),230 (0)
+aws_iam_role,18 (0),25 (0),12 (1)
+aws_kms_alias,19 (0),15 (0),7 (1)
+aws_s3_bucket,13 (0),16 (0),8 (0)
+apply: No value for required variable,13 (0),4 (0),1 (0)
+aws_key_pair,4 (0),5 (0),4 (1)
+aws_iam_policy,6 (0),6 (0),1 (0)
+(any),84 (2),130 (2),235 (1)

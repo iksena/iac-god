@@ -1,0 +1,26 @@
+{
+ "experiment": "TF_Ablation_NoGraphRAG",
+ "dataset": "tf_eval_benchmark_ablation.csv",
+ "expected": 50,
+ "rows_with_attempt": 50,
+ "valid": 48,
+ "valid_pass": 48,
+ "valid_fail": 0,
+ "invalid": 2,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 1.0,
+ "pass_rate_over_expected": 0.96,
+ "invalid_rows": {
+  "174": "deploy_error_message: tflocal apply timed out",
+  "249": "deploy_error_message: tflocal apply timed out"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  174,
+  249
+ ],
+ "attempts": 50,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "Ablation_NoGraphRAG_TF_runs"
+}

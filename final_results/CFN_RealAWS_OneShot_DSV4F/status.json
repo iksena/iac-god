@@ -1,0 +1,34 @@
+{
+ "experiment": "CFN_RealAWS_OneShot_DSV4F",
+ "dataset": "cfn_eval_benchmark_real_aws.csv",
+ "expected": 250,
+ "rows_with_attempt": 250,
+ "valid": 244,
+ "valid_pass": 97,
+ "valid_fail": 147,
+ "invalid": 6,
+ "missing": 0,
+ "fulfilled": false,
+ "pass_rate_over_valid": 0.3975,
+ "pass_rate_over_expected": 0.388,
+ "invalid_rows": {
+  "1": "deploy_error_message: AlreadyExists",
+  "6": "deploy_error_message: Resource handler returned message: \"null\"",
+  "13": "deploy_error_message: already exists",
+  "56": "deploy_error_message: already exists",
+  "74": "deploy_error_message: Stalled in CREATE_IN_PROGRESS",
+  "213": "deploy_error_message: Stalled in CREATE_IN_PROGRESS"
+ },
+ "missing_rows": [],
+ "rerun_rows": [
+  1,
+  6,
+  13,
+  56,
+  74,
+  213
+ ],
+ "attempts": 250,
+ "extra_rows_outside_dataset": 0,
+ "organizer": "OneShot_DSV4F_CFNEvalRealAWS_runs"
+}

@@ -21,11 +21,22 @@ matching the two different risks it addresses:
     ../nuke-config.yml), same assumption the rest of this project makes.
 """
 
+import json
+import os
+import tempfile
+from contextlib import contextmanager
 import boto3
 from botocore.exceptions import ClientError
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from config import DeployConfig, DeployTarget
 import requests
 import time
+
+try:
+    import fcntl  # POSIX advisory file locks; absent on Windows (cache then runs unlocked)
+except ImportError:  # pragma: no cover
+    fcntl = None
 
 from tools.cfn_utils import build_cfn_client, wait_for_stack_deletion
 from scripts.nuke_vpc_dependencies import (
@@ -51,6 +62,8 @@ from scripts.nuke_vpc_dependencies import (
     nuke_egress_only_igw,
     nuke_one_kms_key,
     nuke_one_eks_cluster,
+    nuke_s3_access_points,
+    nuke_multi_region_access_points,
 )
 
 # Applied to every CloudFormation stack this harness creates (and, by CFN's
@@ -142,24 +155,30 @@ def _delete_surviving_eval_stacks(deploy_config: DeployConfig):
             print("[Deploy] No surviving evaluation stacks found — clean slate confirmed")
             return
 
-        print(f"[Deploy] Deleting {len(targets)} surviving evaluation stack(s)...")
+        print(f"[Deploy] Deleting {len(targets)} surviving evaluation stack(s) (in parallel)...")
         for stack_id, stack_name in targets:
-            print(f"  [Deploy] Deleting '{stack_name}'...")
             try:
                 cfn_client.delete_stack(StackName=stack_id)
-                wait_for_stack_deletion(
-                    cfn_client, stack_id, stack_name,
-                    deploy_config.stack_deletion_timeout,
-                )
+            except Exception as e:
+                print(f"  [Deploy] Warning: could not start delete of '{stack_name}': {e}")
+
+        # One shared wait: total time is the slowest stack, not the sum of all.
+        def wait_one(target):
+            stack_id, stack_name = target
+            try:
+                wait_for_stack_deletion(cfn_client, stack_id, stack_name, deploy_config.stack_deletion_timeout)
                 print(f"  [Deploy] '{stack_name}' deleted ✓")
             except Exception as e:
                 print(f"  [Deploy] Warning: could not delete '{stack_name}': {e}")
+
+        with ThreadPoolExecutor(max_workers=min(len(targets), 16)) as ex:
+            list(ex.map(wait_one, targets))
 
     except Exception as e:
         print(f"[Deploy] Stack sweep error: {e}")
 
 
-def _empty_and_delete_bucket(s3_client, bucket_name: str) -> None:
+def _empty_and_delete_bucket(s3_client, bucket_name: str, session=None, region: str | None = None) -> None:
     """Empty every object version + delete marker, then delete the bucket
     itself.
 
@@ -182,6 +201,11 @@ def _empty_and_delete_bucket(s3_client, bucket_name: str) -> None:
       2. Object Lock legal holds / GOVERNANCE-mode retention likewise block
          DeleteObject regardless of IAM permissions; COMPLIANCE-mode has no
          bypass by design and is left alone until it expires.
+
+    A bucket with S3 access points attached (regional, or a Multi-Region
+    Access Point spanning it) refuses delete_bucket with
+    BucketHasAccessPointsAttached; when *session*/*region* are given, those
+    access points are deleted and the bucket delete is retried once.
     """
     try:
         s3_client.delete_bucket_policy(Bucket=bucket_name)
@@ -228,7 +252,15 @@ def _empty_and_delete_bucket(s3_client, bucket_name: str) -> None:
                 BypassGovernanceRetention=lock_enabled,
             )
 
-    s3_client.delete_bucket(Bucket=bucket_name)
+    try:
+        s3_client.delete_bucket(Bucket=bucket_name)
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") != "BucketHasAccessPointsAttached" or session is None:
+            raise
+        access_point_actions = _NukeActions(dry_run=False)
+        nuke_s3_access_points(session, region, access_point_actions, bucket=bucket_name)
+        nuke_multi_region_access_points(session, access_point_actions, bucket=bucket_name, force=True)
+        s3_client.delete_bucket(Bucket=bucket_name)
 
 
 def _delete_orphaned_ecs_cluster(ecs_client, cluster_arn: str) -> None:
@@ -248,6 +280,154 @@ def _delete_orphaned_ecs_cluster(ecs_client, cluster_arn: str) -> None:
         ecs_client.stop_task(cluster=cluster_arn, task=task_arn)
 
     ecs_client.delete_cluster(cluster=cluster_arn)
+
+
+# The tagging API keeps listing resources long after they are gone: Cognito
+# pools and deleted-then-recreated names linger in its index, ECS keeps
+# INACTIVE clusters discoverable (and delete_cluster "succeeds" on them every
+# time), and a KMS key stays tagged for its whole 7-30 day pending-deletion
+# window. Without memory, every sweep re-finds, re-describes and re-"deletes"
+# the same things (hundreds of calls, ~80-110s observed). So: remember what
+# has been confirmed gone -- across processes too, via a file in the temp dir
+# next to the Terraform plugin cache.
+#
+# Only for resources whose IDs are unique and never reused (KMS key IDs,
+# Cognito pool IDs, ELB/secret/WAF ARNs with random suffixes, flow-log IDs).
+# Name-keyed resources (ECS clusters, S3 buckets, ...) are deliberately NOT
+# cached: a later scenario can legitimately recreate the same name, and
+# skipping it would leak it. An ID is recorded only after a confirmed delete
+# or NotFound, never after a failure, so failures are retried next sweep.
+_HANDLED_CACHE = Path(tempfile.gettempdir()) / "iac-god-handled-resources.json"
+_HANDLED_LOCK = _HANDLED_CACHE.with_suffix(".lock")
+_HANDLED_TTL_SECONDS = 35 * 24 * 3600  # past KMS's max 30-day pending window
+
+# Safe for several benchmark processes (e.g. a CFN run and a Terraform run)
+# sharing this file: readers never need a lock because writers replace the
+# file atomically; writers take an exclusive lock, MERGE with whatever other
+# processes saved since this one loaded (so nobody's entries are lost), and
+# write through a per-process temp file (a shared temp name lets two
+# simultaneous saves clobber each other).
+
+
+@contextmanager
+def _handled_cache_lock():
+    lock_file = None
+    try:
+        lock_file = open(_HANDLED_LOCK, "a")
+        if fcntl:
+            fcntl.flock(lock_file, fcntl.LOCK_EX)
+    except Exception:
+        pass  # can't lock (read-only tmp, Windows) -- still better to save than to skip
+    try:
+        yield
+    finally:
+        if lock_file:
+            try:
+                if fcntl:
+                    fcntl.flock(lock_file, fcntl.LOCK_UN)
+                lock_file.close()
+            except Exception:
+                pass
+
+
+def _read_handled_file() -> dict[str, float]:
+    try:
+        raw = json.loads(_HANDLED_CACHE.read_text())
+        cutoff = time.time() - _HANDLED_TTL_SECONDS
+        return {k: v for k, v in raw.items() if v >= cutoff}
+    except Exception:
+        return {}  # missing or half-written by an older version -- treat as empty
+
+
+def _load_handled() -> dict[str, float]:
+    return _read_handled_file()
+
+
+def _save_handled(handled: dict[str, float]) -> None:
+    try:
+        with _handled_cache_lock():
+            merged = _read_handled_file()
+            for k, ts in handled.items():
+                merged[k] = max(ts, merged.get(k, 0.0))
+            tmp = _HANDLED_CACHE.with_name(f"{_HANDLED_CACHE.name}.{os.getpid()}.tmp")
+            tmp.write_text(json.dumps(merged))
+            tmp.replace(_HANDLED_CACHE)
+            handled.update(merged)
+    except Exception:
+        pass
+
+
+def _is_not_found(e: ClientError) -> bool:
+    """A parallel sweep may have deleted the resource between our listing and
+    our delete -- that's success, not a failure to warn about."""
+    code = e.response.get("Error", {}).get("Code", "")
+    return any(t in code for t in ("NotFound", "NoSuch", "DoesNotExist"))
+
+
+def _unhandled(handled: dict[str, float], kind: str, region: str, ids: list[str]) -> list[str]:
+    return [i for i in ids if f"{kind}:{region}:{i}" not in handled]
+
+
+def _mark_handled(handled: dict[str, float], kind: str, region: str, ids) -> None:
+    now = time.time()
+    for i in ids:
+        handled[f"{kind}:{region}:{i}"] = now
+
+
+def _schedule_orphaned_kms_keys(session, region: str, key_ids: list[str], handled: dict[str, float]) -> None:
+    """key_ids are already filtered against the handled cache. Describe the
+    rest in parallel; keys already pending deletion / gone are recorded as
+    handled, the rest get deletion scheduled."""
+    kms_client = session.client("kms", region_name=region)
+
+    def describe(key_id):
+        try:
+            m = kms_client.describe_key(KeyId=key_id)["KeyMetadata"]
+            return key_id, m["KeyState"], m["KeyManager"]
+        except ClientError as e:
+            gone = e.response.get("Error", {}).get("Code") == "NotFoundException"
+            return key_id, "Gone" if gone else None, None
+
+    with ThreadPoolExecutor(max_workers=16) as ex:
+        described = list(ex.map(describe, key_ids))
+
+    settled, active = [], []
+    for key_id, state, manager in described:
+        if state in ("PendingDeletion", "PendingReplicaDeletion", "Gone") or manager == "AWS":
+            settled.append(key_id)
+        elif state:
+            active.append(key_id)
+    _mark_handled(handled, "kms", region, settled)
+    print(f"[Deploy] {len(key_ids)} new tagged KMS key(s): {len(settled)} already pending deletion/gone, "
+          f"{len(active)} to schedule...")
+
+    if active:
+        try:
+            caller_arn = session.client("sts", region_name=region).get_caller_identity()["Arn"]
+        except Exception:
+            caller_arn = None
+        nuke_actions = _NukeActions(dry_run=False)
+        for key_id in active:
+            nuke_one_kms_key(kms_client, key_id, nuke_actions, caller_arn)
+
+
+# Only the resource types the sweep below knows how to delete -- asking the
+# tagging API for everything also returned ~40 Batch job definitions, Config
+# conformance packs, DataZone domains etc. every time, none of which we act on.
+_SWEEP_RESOURCE_TYPE_FILTERS = [
+    "s3", "cognito-idp:userpool", "ecs:cluster", "logs:log-group", "kms:key",
+    "elasticache:cluster", "elasticache:replicationgroup",
+    "elasticloadbalancing:loadbalancer", "secretsmanager:secret", "wafv2",
+    "codebuild:project", "eks:cluster", "codecommit", "sns",
+    "ec2:vpc-flow-log", "cognito-identity:identitypool",
+    "dynamodb:table", "dsql:cluster", "networkmanager",
+]
+
+# Network Manager / Cloud WAN resources are global but their control plane --
+# and, verified live, their tag-index entries -- live only in us-west-2. A
+# sweep that queries just the deploy region never sees them, so they get one
+# extra tag query against the home region.
+_NETWORK_MANAGER_HOME_REGION = "us-west-2"
 
 
 def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
@@ -276,11 +456,23 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
         mappings = []
         for page in paginator.paginate(
             TagFilters=[{"Key": EVAL_TAG_KEY, "Values": [EVAL_TAG_VALUE]}],
+            ResourceTypeFilters=_SWEEP_RESOURCE_TYPE_FILTERS,
         ):
             mappings.extend(page.get("ResourceTagMappingList", []))
     except Exception as e:
         print(f"[Deploy] Orphan resource sweep error (non-fatal): {e}")
         return
+
+    if deploy_config.aws_region != _NETWORK_MANAGER_HOME_REGION:
+        try:
+            nm_tagging = session.client("resourcegroupstaggingapi", region_name=_NETWORK_MANAGER_HOME_REGION)
+            for page in nm_tagging.get_paginator("get_resources").paginate(
+                TagFilters=[{"Key": EVAL_TAG_KEY, "Values": [EVAL_TAG_VALUE]}],
+                ResourceTypeFilters=["networkmanager"],
+            ):
+                mappings.extend(page.get("ResourceTagMappingList", []))
+        except Exception as e:
+            print(f"[Deploy] Network Manager tag query error (non-fatal): {e}")
 
     if not mappings:
         return
@@ -301,6 +493,10 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
     sns_topic_arns: list[str] = []
     vpc_flow_log_ids: list[str] = []
     cognito_identity_pool_ids: list[str] = []
+    dynamodb_table_names: list[str] = []
+    dsql_cluster_ids: list[str] = []
+    core_network_ids: list[str] = []
+    global_network_ids: list[str] = []
     other: list[str] = []
     for mapping in mappings:
         arn = mapping.get("ResourceARN", "")
@@ -341,32 +537,64 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
             vpc_flow_log_ids.append(arn.rsplit("/", 1)[1])
         elif ":cognito-identity:" in arn and "identitypool/" in arn:
             cognito_identity_pool_ids.append(arn.rsplit("/", 1)[1])
+        elif ":dynamodb:" in arn and ":table/" in arn and "/" not in arn.split(":table/", 1)[1]:
+            dynamodb_table_names.append(arn.split(":table/", 1)[1])  # skips /stream/ /index/ /backup/ ARNs
+        elif ":dsql:" in arn and ":cluster/" in arn:
+            dsql_cluster_ids.append(arn.rsplit("/", 1)[1])
+        elif ":networkmanager::" in arn and ":core-network/" in arn:
+            core_network_ids.append(arn.rsplit("/", 1)[1])
+        elif ":networkmanager::" in arn and ":global-network/" in arn:
+            global_network_ids.append(arn.rsplit("/", 1)[1])
         elif ":cloudformation:" in arn and ":stack/" in arn:
             pass  # the stack itself -- already handled by _delete_surviving_eval_stacks
         else:
             other.append(arn)
 
-    if other:
-        preview = ", ".join(other[:10]) + (" ..." if len(other) > 10 else "")
-        print(
-            f"[Deploy] ⚠️  {len(other)} other tagged resource(s) found with no "
-            f"owning stack (not auto-cleaned, needs a type-specific delete): {preview}"
-        )
+    region = deploy_config.aws_region
+    handled = _load_handled()
+    cognito_pool_ids = _unhandled(handled, "cognito-pool", region, cognito_pool_ids)
+    kms_key_ids = _unhandled(handled, "kms", region, kms_key_ids)
+    elbv2_arns = _unhandled(handled, "elbv2", region, elbv2_arns)
+    secret_arns = _unhandled(handled, "secret", region, secret_arns)
+    webacl_arns = _unhandled(handled, "webacl", region, webacl_arns)
+    vpc_flow_log_ids = _unhandled(handled, "flowlog", region, vpc_flow_log_ids)
+    cognito_identity_pool_ids = _unhandled(handled, "idpool", region, cognito_identity_pool_ids)
+    dsql_cluster_ids = _unhandled(handled, "dsql", region, dsql_cluster_ids)
+    core_network_ids = _unhandled(handled, "corenet", region, core_network_ids)
+    global_network_ids = _unhandled(handled, "globalnet", region, global_network_ids)
+
+    if ecs_cluster_arns:
+        # ECS keeps INACTIVE (already deleted) clusters discoverable, and
+        # delete_cluster on one "succeeds" every time -- one batched
+        # describe_clusters lets us touch only the ACTIVE ones.
+        ecs_probe = session.client("ecs", region_name=region)
+        active_ecs: list[str] = []
+        for i in range(0, len(ecs_cluster_arns), 100):
+            try:
+                resp = ecs_probe.describe_clusters(clusters=ecs_cluster_arns[i:i + 100])
+                active_ecs += [c["clusterArn"] for c in resp.get("clusters", []) if c.get("status") != "INACTIVE"]
+            except ClientError:
+                active_ecs += ecs_cluster_arns[i:i + 100]  # can't tell -- fall back to trying them
+        ecs_cluster_arns = active_ecs
+
 
     if s3_buckets:
         print(f"[Deploy] {len(s3_buckets)} orphaned eval S3 bucket(s) found — emptying and deleting...")
         s3_client = session.client("s3", region_name=deploy_config.aws_region)
         for bucket_name in s3_buckets:
             try:
-                _empty_and_delete_bucket(s3_client, bucket_name)
+                _empty_and_delete_bucket(s3_client, bucket_name, session=session, region=deploy_config.aws_region)
                 print(f"  [Deploy] Deleted orphaned bucket '{bucket_name}' ✓")
             except Exception as e:
+                if isinstance(e, ClientError) and _is_not_found(e):
+                    continue
                 print(f"  [Deploy] Warning: could not delete orphaned bucket '{bucket_name}': {e}")
 
     if cognito_pool_ids:
         print(f"[Deploy] {len(cognito_pool_ids)} orphaned eval Cognito user pool(s) found — deleting...")
         cognito_client = session.client("cognito-idp", region_name=deploy_config.aws_region)
-        for pool_id in cognito_pool_ids:
+
+        def delete_pool(pool_id):
             try:
                 # DeletionProtection ('ACTIVE'/'INACTIVE') blocks delete_user_pool
                 # outright, same as ALB deletion protection -- clear it first.
@@ -377,11 +605,18 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 except ClientError:
                     pass  # couldn't check/clear -- still attempt the delete below
                 cognito_client.delete_user_pool(UserPoolId=pool_id)
-                print(f"  [Deploy] Deleted orphaned user pool '{pool_id}' ✓")
+                return pool_id, True, f"  [Deploy] Deleted orphaned user pool '{pool_id}' ✓"
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
-                    continue
-                print(f"  [Deploy] Warning: could not delete orphaned user pool '{pool_id}': {e}")
+                    return pool_id, True, None  # already gone -- just a stale tag-index entry
+                return pool_id, False, f"  [Deploy] Warning: could not delete orphaned user pool '{pool_id}': {e}"
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for pool_id, done, line in ex.map(delete_pool, cognito_pool_ids):
+                if done:
+                    _mark_handled(handled, "cognito-pool", region, [pool_id])
+                if line:
+                    print(line)
 
     if ecs_cluster_arns:
         print(f"[Deploy] {len(ecs_cluster_arns)} orphaned eval ECS cluster(s) found — draining and deleting...")
@@ -391,6 +626,8 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 _delete_orphaned_ecs_cluster(ecs_client, cluster_arn)
                 print(f"  [Deploy] Deleted orphaned ECS cluster '{cluster_arn}' ✓")
             except ClientError as e:
+                if _is_not_found(e):
+                    continue
                 print(f"  [Deploy] Warning: could not delete orphaned ECS cluster '{cluster_arn}': {e}")
 
     if log_group_names:
@@ -418,9 +655,11 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                         Attributes=[{"Key": "deletion_protection.enabled", "Value": "false"}],
                     )
                 elbv2_client.delete_load_balancer(LoadBalancerArn=lb_arn)
+                _mark_handled(handled, "elbv2", region, [lb_arn])
                 print(f"  [Deploy] Deleted orphaned load balancer '{lb_arn}' ✓")
             except ClientError as e:
-                if e.response.get("Error", {}).get("Code") == "LoadBalancerNotFoundException":
+                if e.response.get("Error", {}).get("Code", "").startswith("LoadBalancerNotFound"):
+                    _mark_handled(handled, "elbv2", region, [lb_arn])
                     continue
                 print(f"  [Deploy] Warning: could not delete orphaned load balancer '{lb_arn}': {e}")
 
@@ -441,7 +680,7 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 ec_client.delete_cache_cluster(CacheClusterId=cluster_id)
                 print(f"  [Deploy] Deleted orphaned ElastiCache cluster '{cluster_id}' ✓")
             except ClientError as e:
-                if e.response.get("Error", {}).get("Code") == "CacheClusterNotFoundFault":
+                if e.response.get("Error", {}).get("Code", "").startswith("CacheClusterNotFound"):
                     continue
                 print(f"  [Deploy] Warning: could not delete orphaned cache cluster '{cluster_id}': {e}")
 
@@ -451,9 +690,11 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
         for secret_arn in secret_arns:
             try:
                 sm_client.delete_secret(SecretId=secret_arn, ForceDeleteWithoutRecovery=True)
+                _mark_handled(handled, "secret", region, [secret_arn])
                 print(f"  [Deploy] Deleted orphaned secret '{secret_arn}' ✓")
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+                    _mark_handled(handled, "secret", region, [secret_arn])
                     continue
                 print(f"  [Deploy] Warning: could not delete orphaned secret '{secret_arn}': {e}")
 
@@ -465,6 +706,8 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 cb_client.delete_project(name=name)
                 print(f"  [Deploy] Deleted orphaned CodeBuild project '{name}' ✓")
             except ClientError as e:
+                if _is_not_found(e):
+                    continue
                 print(f"  [Deploy] Warning: could not delete orphaned CodeBuild project '{name}': {e}")
 
     if webacl_arns:
@@ -483,22 +726,16 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                     waf_client.disassociate_web_acl(ResourceArn=resource_arn)
                 lock_token = waf_client.get_web_acl(Name=name, Scope=scope, Id=webacl_id)["LockToken"]
                 waf_client.delete_web_acl(Name=name, Scope=scope, Id=webacl_id, LockToken=lock_token)
+                _mark_handled(handled, "webacl", region, [webacl_arn])
                 print(f"  [Deploy] Deleted orphaned WAF web ACL '{name}' ✓")
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") == "WAFNonexistentItemException":
+                    _mark_handled(handled, "webacl", region, [webacl_arn])
                     continue
                 print(f"  [Deploy] Warning: could not delete orphaned WAF web ACL '{webacl_arn}': {e}")
 
     if kms_key_ids:
-        print(f"[Deploy] {len(kms_key_ids)} orphaned eval KMS key(s) found — scheduling deletion...")
-        kms_client = session.client("kms", region_name=deploy_config.aws_region)
-        try:
-            caller_arn = session.client("sts", region_name=deploy_config.aws_region).get_caller_identity()["Arn"]
-        except Exception:
-            caller_arn = None
-        nuke_actions = _NukeActions(dry_run=False)
-        for key_id in kms_key_ids:
-            nuke_one_kms_key(kms_client, key_id, nuke_actions, caller_arn)
+        _schedule_orphaned_kms_keys(session, region, kms_key_ids, handled)
 
     if eks_cluster_names:
         # An EKS cluster's control-plane ENI blocks its VPC's subnet/security
@@ -523,6 +760,8 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 cc_client.delete_repository(repositoryName=repo_name)
                 print(f"  [Deploy] Deleted orphaned CodeCommit repo '{repo_name}' ✓")
             except ClientError as e:
+                if _is_not_found(e):
+                    continue
                 print(f"  [Deploy] Warning: could not delete orphaned CodeCommit repo '{repo_name}': {e}")
 
     if sns_topic_arns:
@@ -538,11 +777,19 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
                 print(f"  [Deploy] Warning: could not delete orphaned SNS topic '{topic_arn}': {e}")
 
     if vpc_flow_log_ids:
-        print(f"[Deploy] {len(vpc_flow_log_ids)} orphaned eval VPC flow log(s) found — deleting...")
-        ec2_client = session.client("ec2", region_name=deploy_config.aws_region)
+        # delete_flow_logs on a batch fails *entirely* with InvalidFlowLogId.NotFound
+        # if any one ID is already gone -- and the tag index keeps listing deleted
+        # flow logs, so a single call warned on every sweep and never made
+        # progress. Ask which still exist (the filter form tolerates missing IDs),
+        # delete just those, and record every ID as handled (flow-log IDs are unique).
+        ec2_client = session.client("ec2", region_name=region)
         try:
-            ec2_client.delete_flow_logs(FlowLogIds=vpc_flow_log_ids)
-            print(f"  [Deploy] Deleted {len(vpc_flow_log_ids)} orphaned VPC flow log(s) ✓")
+            existing = [f["FlowLogId"] for f in ec2_client.describe_flow_logs(
+                Filters=[{"Name": "flow-log-id", "Values": vpc_flow_log_ids}]).get("FlowLogs", [])]
+            if existing:
+                ec2_client.delete_flow_logs(FlowLogIds=existing)
+                print(f"  [Deploy] Deleted {len(existing)} orphaned VPC flow log(s) ✓")
+            _mark_handled(handled, "flowlog", region, vpc_flow_log_ids)
         except ClientError as e:
             print(f"  [Deploy] Warning: could not delete orphaned VPC flow log(s): {e}")
 
@@ -553,11 +800,120 @@ def _delete_orphaned_eval_resources(deploy_config: DeployConfig):
         for pool_id in cognito_identity_pool_ids:
             try:
                 ci_client.delete_identity_pool(IdentityPoolId=pool_id)
+                _mark_handled(handled, "idpool", region, [pool_id])
                 print(f"  [Deploy] Deleted orphaned identity pool '{pool_id}' ✓")
             except ClientError as e:
                 if e.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+                    _mark_handled(handled, "idpool", region, [pool_id])
                     continue
                 print(f"  [Deploy] Warning: could not delete orphaned identity pool '{pool_id}': {e}")
+
+    if dynamodb_table_names:
+        # DeletionProtectionEnabled blocks delete_table outright (neither
+        # CloudFormation rollback nor aws-nuke clears it). Name-keyed, so not
+        # cached; describe_table first keeps stale tag-index entries cheap and
+        # quiet, and tables already DELETING are left alone.
+        ddb_client = session.client("dynamodb", region_name=region)
+
+        def delete_table(name):
+            try:
+                table = ddb_client.describe_table(TableName=name)["Table"]
+                if table.get("TableStatus") == "DELETING":
+                    return None
+                if table.get("DeletionProtectionEnabled"):
+                    ddb_client.update_table(TableName=name, DeletionProtectionEnabled=False)
+                for attempt in range(3):  # the protection update can leave the table briefly UPDATING
+                    try:
+                        ddb_client.delete_table(TableName=name)
+                        return f"  [Deploy] Deleted orphaned DynamoDB table '{name}' ✓"
+                    except ClientError as e:
+                        if e.response.get("Error", {}).get("Code") != "ResourceInUseException" or attempt == 2:
+                            raise
+                        time.sleep(2)
+            except ClientError as e:
+                if _is_not_found(e) or e.response.get("Error", {}).get("Code") == "ResourceInUseException":
+                    return None
+                return f"  [Deploy] Warning: could not delete orphaned DynamoDB table '{name}': {e}"
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for line in ex.map(delete_table, dynamodb_table_names):
+                if line:
+                    print(line)
+
+    if dsql_cluster_ids:
+        # Aurora DSQL clusters are created with deletion protection on by
+        # default; delete_cluster fails until update_cluster turns it off.
+        # Deletion is asynchronous, so a cluster in DELETING is just skipped;
+        # IDs are unique, so one confirmed gone is cached.
+        dsql_client = session.client("dsql", region_name=region)
+        for cluster_id in dsql_cluster_ids:
+            try:
+                cluster = dsql_client.get_cluster(identifier=cluster_id)
+                status = cluster.get("status")
+                if status == "DELETED":
+                    _mark_handled(handled, "dsql", region, [cluster_id])
+                    continue
+                if status in ("DELETING", "PENDING_DELETE"):
+                    continue
+                if cluster.get("deletionProtectionEnabled"):
+                    dsql_client.update_cluster(identifier=cluster_id, deletionProtectionEnabled=False)
+                dsql_client.delete_cluster(identifier=cluster_id)
+                print(f"  [Deploy] Deleted orphaned DSQL cluster '{cluster_id}' ✓ (async)")
+            except ClientError as e:
+                if _is_not_found(e):
+                    _mark_handled(handled, "dsql", region, [cluster_id])
+                    continue
+                print(f"  [Deploy] Warning: could not delete orphaned DSQL cluster '{cluster_id}': {e}")
+
+    if core_network_ids or global_network_ids:
+        # Cloud WAN: attachments -> core network -> global network, strictly in
+        # that order (each blocks deleting the next), and each step is
+        # asynchronous -- a core network takes minutes to delete (observed >10).
+        # Blocking the sweep on that would stall every iteration, so each pass
+        # only advances what it can and skips anything still in flight; the
+        # orphan stays tagged, so the next pass picks up where this one left off.
+        nm_client = session.client("networkmanager", region_name=_NETWORK_MANAGER_HOME_REGION)
+        for core_id in core_network_ids:
+            try:
+                state = nm_client.get_core_network(CoreNetworkId=core_id)["CoreNetwork"]["State"]
+                if state in ("CREATING", "UPDATING", "DELETING"):
+                    continue
+                pending_attachments = [
+                    a for a in nm_client.get_paginator("list_attachments").paginate(CoreNetworkId=core_id)
+                    .build_full_result().get("Attachments", []) if a.get("State") != "DELETING"
+                ]
+                for att in pending_attachments:
+                    nm_client.delete_attachment(AttachmentId=att["AttachmentId"])
+                if pending_attachments:
+                    print(f"  [Deploy] Deleting {len(pending_attachments)} attachment(s) of orphaned core network "
+                          f"'{core_id}' first (async — core network follows on the next pass)")
+                    continue
+                nm_client.delete_core_network(CoreNetworkId=core_id)
+                print(f"  [Deploy] Deleting orphaned Cloud WAN core network '{core_id}' (async ✓)")
+            except ClientError as e:
+                if _is_not_found(e):
+                    _mark_handled(handled, "corenet", region, [core_id])
+                    continue
+                print(f"  [Deploy] Warning: could not delete orphaned core network '{core_id}': {e}")
+
+        for global_id in global_network_ids:
+            try:
+                still_has_core = [
+                    c for c in nm_client.get_paginator("list_core_networks").paginate()
+                    .build_full_result().get("CoreNetworks", []) if c.get("GlobalNetworkId") == global_id
+                ]
+                if still_has_core:
+                    continue  # its core network is still deleting -- next pass
+                nm_client.delete_global_network(GlobalNetworkId=global_id)
+                _mark_handled(handled, "globalnet", region, [global_id])
+                print(f"  [Deploy] Deleted orphaned global network '{global_id}' ✓")
+            except ClientError as e:
+                if _is_not_found(e):
+                    _mark_handled(handled, "globalnet", region, [global_id])
+                    continue
+                print(f"  [Deploy] Warning: could not delete orphaned global network '{global_id}': {e}")
+
+    _save_handled(handled)
 
 
 # ---------------------------------------------------------------------------

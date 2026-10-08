@@ -1,0 +1,9 @@
+condition,L1-2,L3,L4-5
+IaCGOD,1.9,3.0,3.2333333333333334
+OpenCode+Retriever,1.9,1.6,2.3
+Trivy all severities,3.2,3.2,4.533333333333333
+no GraphRAG,2.2,2.7,2.933333333333333
+no Planner,1.9,1.7,2.0
+no Remediator,1.9,2.9,2.566666666666667
+no dense RAG,5.0,2.888888888888889,4.466666666666667
+no query rewrite,1.7,1.8,2.6333333333333333
