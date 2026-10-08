@@ -92,7 +92,7 @@ EXPERIMENTS = [
     dict(name="TF_RealAWS_OpenCode_DSV4F", dirs=sorted(os.path.basename(p) for p in glob.glob(os.path.join(BENCH, "baseline_opencode_terraform_2026*"))
                     if not p.endswith("_20261003_201836")),      # 201836 = empty stub of the 201904 run
          dataset=TF_REAL, organizer="TFEvalRealAWS_OpencodeDSV4F_runs"),
-    dict(name="TF_RealAWS_Opus55", dirs=["terraform_20261002_115801", "terraform_20261002_115801_Opus55"], dataset=TF_REAL, organizer="TFEvalRealAWS_Opus55_runs"),
+    dict(name="TF_RealAWS_Opus55", dirs=["terraform_20261002_115801", "terraform_20261002_115801_Opus55", "terraform_20261007_112936"], dataset=TF_REAL, organizer="TFEvalRealAWS_Opus55_runs"),
     dict(name="TF_IaCEval_DSV4F_LintOnly", dirs=["terraform_20260908_171434_IaCEval"], dataset="iac_eval_benchmark.csv",
          organizer="IaCEval_DeepseekV4Flash_lint_runs", expected_n=372),
     # --- One-shot baseline (max_iterations=1, no repair loop), live AWS, real-AWS benchmark; run in batches of rows
@@ -100,6 +100,16 @@ EXPERIMENTS = [
          organizer="OneShot_DSV4F_CFNEvalRealAWS_runs"),
     dict(name="TF_RealAWS_OneShot_DSV4F", dirs=["oneshot_terraform_20261005_112650", "oneshot_terraform_20261005_122639"], dataset=TF_REAL,
          organizer="OneShot_DSV4F_TFEvalRealAWS_runs"),
+    dict(name="CFN_RealAWS_OneShot_Gemini38F", dirs=["oneshot_cloudformation_20261006_172747"], dataset=CFN_REAL,
+         organizer="OneShot_Gemini38F_CFNEvalRealAWS_runs"),
+    dict(name="TF_RealAWS_OneShot_Gemini38F", dirs=["oneshot_terraform_20261007_142435"], dataset=TF_REAL,
+         organizer="OneShot_Gemini38F_TFEvalRealAWS_runs"),
+    dict(name="CFN_RealAWS_OneShot_GLM53F", dirs=["oneshot_cloudformation_20261007_203259"], dataset=CFN_REAL,
+         organizer="OneShot_GLM53F_CFNEvalRealAWS_runs"),
+    # first-attempt-only reruns (max_iterations=1) of the MAS rows whose first iteration was blocked by the environment.
+    # Not part of the Gemini final result; used only to overlay passItr@n (see final_results/<exp>/first_attempt_override.csv).
+    dict(name="TF_RealAWS_Gemini38F_FirstAttempt", dirs=["firstattempt_gemini38f_terraform_20261007_215643"], dataset=TF_REAL,
+         organizer="FirstAttempt_Gemini38F_TFEvalRealAWS_runs"),
     # --- Ablations (LocalStack, 50 scenarios per language) ------------------------------------
     dict(name="CFN_Ablation_IaCGOD", dirs=["cloudformation_20260921_132308_Ablation_DSV4F", "cloudformation_20260928_223453_Ablation_Normal"],
          dataset=CFN_ABL, organizer="Ablation_IaCGOD_CFN_runs"),
@@ -175,8 +185,22 @@ def _load_tainted() -> dict:
 TAINTED = _load_tainted()
 
 
+def _load_superseded() -> dict:
+    """run_ids that a deliberate rerun replaces (scripts/superseded_runs.csv: run_id, exp, row, reason). Never picked while another attempt of the row exists."""
+    path = os.path.join(ROOT, "scripts", "superseded_runs.csv")
+    if not os.path.exists(path):
+        return {}
+    t = pd.read_csv(path)
+    return dict(zip(t.run_id.astype(str), t.reason))
+
+
+SUPERSEDED = _load_superseded()
+
+
 def classify(row) -> tuple[str, str]:
     status = _txt(row.get("status"))
+    if _txt(row.get("run_id")) in SUPERSEDED:
+        return "superseded", SUPERSEDED[_txt(row.get("run_id"))]
     if _txt(row.get("run_id")) in TAINTED:
         return "invalid_workspace_escape", "read/wrote outside its workspace: " + str(TAINTED[_txt(row.get("run_id"))])
     passed = str(row.get("final_validation_passed")).strip().lower() == "true"
@@ -191,7 +215,7 @@ def classify(row) -> tuple[str, str]:
     return "valid_fail", ""
 
 
-RANK = {"valid_pass": 0, "valid_fail": 1, "invalid_environment": 2, "invalid_runtime": 3, "invalid_harness": 3, "invalid_workspace_escape": 4}
+RANK = {"valid_pass": 0, "valid_fail": 1, "invalid_environment": 2, "invalid_runtime": 3, "invalid_harness": 3, "invalid_workspace_escape": 4, "superseded": 5}
 
 # ----------------------------------------------------------------------------------------------
 
@@ -366,9 +390,11 @@ def write_rerun(e, out, rerun):
                f"--model {sj.get('model')} --no-retry-proxy --scenario-timeout 14400 --keep-workspace \\\n"
                f"  --output-dir benchmark_runs/{e['dirs'][0]}/rerun_$(date +%Y%m%d_%H%M%S)")
     else:
+        oneshot = "OneShot" in e["name"]   # one-shot baseline: its own module, no iteration budget
         flags = [f"--iac-type {sj.get('iac_type')}", f"--dataset {ds}", f"--rows \"{rows}\"", f"--provider {sj.get('provider')}",
-                 f"--model {sj.get('model')}", f"--deploy-target {sj.get('deploy_target')}",
-                 f"--max-iterations {sj.get('max_iterations')}"]
+                 f"--model {sj.get('model')}", f"--deploy-target {sj.get('deploy_target')}"]
+        if not oneshot:
+            flags.append(f"--max-iterations {sj.get('max_iterations')}")
         for k, f in (("openrouter_provider_only", "--openrouter-provider-only"),
                      ("openrouter_reasoning_max_tokens", "--openrouter-reasoning-max-tokens"),
                      ("openrouter_reasoning_effort", "--openrouter-reasoning-effort"),
@@ -380,7 +406,7 @@ def write_rerun(e, out, rerun):
         if sj.get("skip_security"):
             flags.append("--skip-security")
         cmd = ("# reconstructed from summary.json of the first run folder; check against how you launched it\n"
-               "python benchmark.py " + " ".join(flags) +
+               + ("python -m baselines.oneshot_baseline " if oneshot else "python benchmark.py ") + " ".join(flags) +
                f" \\\n  --output-dir benchmark_runs/{e['dirs'][0]}/rerun_$(date +%Y%m%d_%H%M%S)")
     open(path, "w").write(cmd + "\n")
 

@@ -1,3 +1,3 @@
 # reconstructed from summary.json of the first run folder; check against how you launched it
-python benchmark.py --iac-type terraform --dataset data/tf_eval_benchmark_real_aws.csv --rows "0,8,11,33,34,35,36,37,38,39,40,41,43,45,46,47,236,241,248,249,250,269,272,286,287,289,311,312,313,319,320,321,322,323,324,326,327,328,329,330,331,332,333,334,335,336,337,338,339,340,341,342,343,344,345,346,347,348,349,350,351,353,354,355,356,357,358,359,360,361,362,363,364,366,367,368,369,370" --provider openai --model claude-opus-5.5 --deploy-target aws --max-iterations 15 --openrouter-reasoning-max-tokens "3000" --no-max-tokens \
+python benchmark.py --iac-type terraform --dataset data/tf_eval_benchmark_real_aws.csv --rows "269,334" --provider openai --model claude-opus-5.5 --deploy-target aws --max-iterations 15 --openrouter-reasoning-max-tokens "3000" --no-max-tokens \
   --output-dir benchmark_runs/terraform_20261002_115801/rerun_$(date +%Y%m%d_%H%M%S)
