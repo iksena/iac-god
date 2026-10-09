@@ -4,7 +4,7 @@
 | CFN_RealAWS_GLM53F                |        250 |     247 |          228 |           19 |         3 |         0 | False       |                    0.912  |
 | CFN_RealAWS_Gemini38F             |        250 |     250 |          248 |            2 |         0 |         0 | True        |                    0.992  |
 | CFN_RealAWS_OpenCode_DSV4F        |        250 |     248 |          228 |           20 |         2 |         0 | False       |                    0.912  |
-| CFN_RealAWS_Opus55                |        250 |     250 |          249 |            1 |         0 |         0 | True        |                    0.996  |
+| CFN_RealAWS_Opus55                |        250 |     250 |          247 |            3 |         0 |         0 | True        |                    0.988  |
 | CFN_RealAWS_Gemini36F_L345        |        150 |     137 |          136 |            1 |         0 |        13 | False       |                    0.9067 |
 | CFN_RealAWS_DSV4F_DeployOnly_L345 |        150 |     132 |          124 |            8 |         2 |        16 | False       |                    0.8267 |
 | CFN_DPIaCEval_o3mini_DeployOnly   |        153 |     151 |          138 |           13 |         2 |         0 | False       |                    0.902  |
@@ -20,6 +20,7 @@
 | TF_RealAWS_OneShot_Gemini38F      |        250 |     157 |           55 |          102 |        93 |         0 | False       |                    0.22   |
 | CFN_RealAWS_OneShot_GLM53F        |        250 |     246 |           68 |          178 |         4 |         0 | False       |                    0.272  |
 | TF_RealAWS_OneShot_GLM53F         |        250 |     249 |           74 |          175 |         1 |         0 | False       |                    0.296  |
+| CFN_RealAWS_ZeroShot_Opus55       |        250 |     247 |          159 |           88 |         3 |         0 | False       |                    0.636  |
 | TF_RealAWS_Gemini38F_FirstAttempt |        250 |      69 |           47 |           22 |         0 |       181 | False       |                    0.188  |
 | CFN_Ablation_IaCGOD               |         50 |      50 |           49 |            1 |         0 |         0 | True        |                    0.98   |
 | CFN_Ablation_NoDenseRAG           |         50 |      50 |           49 |            1 |         0 |         0 | True        |                    0.98   |

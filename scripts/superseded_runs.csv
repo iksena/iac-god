@@ -78,3 +78,13 @@ run_id,row_number,exp,reason
 20261005_114544_0c879b00,348,TF_RealAWS_OpenCode_DSV4F,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable)
 20261005_115241_edf788c0,349,TF_RealAWS_OpenCode_DSV4F,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable)
 20261005_115826_01ecdf91,350,TF_RealAWS_OpenCode_DSV4F,superseded by the confined rerun rerun_20261006_213849 (original run folder lost; rerun is fully auditable)
+20261008_230928_9956f10b,150,CFN_RealAWS_ZeroShot_Opus55,response was a "stopped by a safety classifier" message not a template; replaced by rerun_20261009_105855
+20261009_011952_eb4516f2,201,CFN_RealAWS_ZeroShot_Opus55,Claude session limit text returned as the answer (old proxy); replaced by rerun_20261009_105855
+20261009_012003_2b1fd3c7,202,CFN_RealAWS_ZeroShot_Opus55,Claude session limit text returned as the answer (old proxy); replaced by rerun_20261009_105855
+20261009_012012_b022d1ba,203,CFN_RealAWS_ZeroShot_Opus55,Claude session limit text returned as the answer (old proxy); replaced by rerun_20261009_105855
+20261009_012021_82f6fca3,204,CFN_RealAWS_ZeroShot_Opus55,Claude session limit text returned as the answer (old proxy); replaced by rerun_20261009_105855
+20261009_012030_24c59b3a,205,CFN_RealAWS_ZeroShot_Opus55,Claude session limit text returned as the answer (old proxy); replaced by rerun_20261009_105855
+20261009_002820_2dab417a,175,CFN_RealAWS_Opus55,Claude session limit text in 19 of 44 calls (old proxy); replaced by rerun_20261009_132742
+20261009_011857_91780ecc,257,CFN_RealAWS_Opus55,Claude session limit text in 44 of 44 calls (old proxy); replaced by rerun_20261009_132742
+20261005_175332_70d5105f,99,CFN_RealAWS_Opus55,pass obtained with hidden tool use (8 and 16 CLI turns in engineer calls; tools were enabled in the proxy); replaced by clean locked-proxy rerun 20261008_193913_129d60e6
+20261006_080926_fab39c0f,174,CFN_RealAWS_Opus55,pass obtained with hidden tool use (HTTP probes of public S3 buckets by the remediator; multi-turn engineer calls); replaced by clean locked-proxy rerun 20261008_202003_4a72b6bb

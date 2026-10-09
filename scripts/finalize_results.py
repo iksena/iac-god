@@ -108,6 +108,9 @@ EXPERIMENTS = [
          organizer="OneShot_GLM53F_CFNEvalRealAWS_runs"),
     dict(name="TF_RealAWS_OneShot_GLM53F", dirs=["oneshot_terraform_20261008_121356"], dataset=TF_REAL,
          organizer="OneShot_GLM53F_TFEvalRealAWS_runs"),
+    # Zero-shot through the MAS harness: branch eval/opus-zeroshot-mas1 (planner removed, minimal engineer prompt, --max-iterations 1)
+    dict(name="CFN_RealAWS_ZeroShot_Opus55", dirs=["opus_mas1_cloudformation_20261008_182531"], dataset=CFN_REAL,
+         organizer="ZeroShotMAS1_Opus55_CFNEvalRealAWS_runs"),
     # first-attempt-only reruns (max_iterations=1) of the MAS rows whose first iteration was blocked by the environment.
     # Not part of the Gemini final result; used only to overlay passItr@n (see final_results/<exp>/first_attempt_override.csv).
     dict(name="TF_RealAWS_Gemini38F_FirstAttempt", dirs=["firstattempt_gemini38f_terraform_20261007_215643"], dataset=TF_REAL,
@@ -257,6 +260,12 @@ def load_attempts(exp) -> pd.DataFrame:
         return pd.DataFrame()
     a = pd.concat(frames, ignore_index=True)
     a["_exp"] = exp["name"]
+    # A batch with a blank final_validation_passed (e.g. a one-row runtime-error stub) makes pandas turn the whole column
+    # numeric (1.0/0.0), which classify() would then read as "not True" for every row. Normalise to True/False/NaN.
+    if "final_validation_passed" in a:
+        _m = {"true": True, "1": True, "1.0": True, "false": False, "0": False, "0.0": False}
+        a["final_validation_passed"] = a["final_validation_passed"].map(
+            lambda v: _m.get(str(v).strip().lower(), float("nan")) if not (isinstance(v, float) and pd.isna(v)) else float("nan"))
     # the same attempt can appear in a parent folder and in its nested/sibling copy
     has_id = a["run_id"].notna()
     a = pd.concat([a[has_id].drop_duplicates("run_id", keep="last"), a[~has_id]], ignore_index=True)
