@@ -3,7 +3,7 @@ CFN_RealAWS_DSV4F,cfn_eval_benchmark_real_aws.csv,250,250,247,239,8,3,0,False,0.
 CFN_RealAWS_GLM53F,cfn_eval_benchmark_real_aws.csv,250,250,247,228,19,3,0,False,0.9231,0.912,250,0,CFNEvalRealAWS_GLM53Flash_sec_runs
 CFN_RealAWS_Gemini38F,cfn_eval_benchmark_real_aws.csv,250,250,250,248,2,0,0,True,0.992,0.992,250,0,CFNEvalRealAWS_Gemini38Flash_runs
 CFN_RealAWS_OpenCode_DSV4F,cfn_eval_benchmark_real_aws.csv,250,250,248,228,20,2,0,False,0.9194,0.912,295,0,OpencodeDSV4F_CFNEvalRealAWS_Full_runs
-CFN_RealAWS_Opus55,cfn_eval_benchmark_real_aws.csv,250,250,250,249,1,0,0,True,0.996,0.996,250,0,CFNEvalRealAWS_Opus55_runs
+CFN_RealAWS_Opus55,cfn_eval_benchmark_real_aws.csv,250,250,250,247,3,0,0,True,0.988,0.988,335,0,CFNEvalRealAWS_Opus55_runs
 CFN_RealAWS_Gemini36F_L345,cfn_eval_benchmark_real_aws_diff345.csv,150,137,137,136,1,0,13,False,0.9927,0.9067,150,13,Gemini36Flash_CFNEvalRealAWS_runs
 CFN_RealAWS_DSV4F_DeployOnly_L345,cfn_eval_benchmark_real_aws_diff345.csv,150,134,132,124,8,2,16,False,0.9394,0.8267,147,13,CFNEvalRealAWS_DeepseekV4Flash_deployability_runs
 CFN_DPIaCEval_o3mini_DeployOnly,iac_with_difficulty_levels.csv,153,153,151,138,13,2,0,False,0.9139,0.902,160,0,DPIaCEval_O3Mini_deployability_runs
@@ -19,6 +19,7 @@ CFN_RealAWS_OneShot_Gemini38F,cfn_eval_benchmark_real_aws.csv,250,250,244,126,11
 TF_RealAWS_OneShot_Gemini38F,tf_eval_benchmark_real_aws.csv,250,250,157,55,102,93,0,False,0.3503,0.22,250,0,OneShot_Gemini38F_TFEvalRealAWS_runs
 CFN_RealAWS_OneShot_GLM53F,cfn_eval_benchmark_real_aws.csv,250,250,246,68,178,4,0,False,0.2764,0.272,250,0,OneShot_GLM53F_CFNEvalRealAWS_runs
 TF_RealAWS_OneShot_GLM53F,tf_eval_benchmark_real_aws.csv,250,250,249,74,175,1,0,False,0.2972,0.296,250,0,OneShot_GLM53F_TFEvalRealAWS_runs
+CFN_RealAWS_ZeroShot_Opus55,cfn_eval_benchmark_real_aws.csv,250,250,247,159,88,3,0,False,0.6437,0.636,256,0,ZeroShotMAS1_Opus55_CFNEvalRealAWS_runs
 TF_RealAWS_Gemini38F_FirstAttempt,tf_eval_benchmark_real_aws.csv,250,69,69,47,22,0,181,False,0.6812,0.188,69,0,FirstAttempt_Gemini38F_TFEvalRealAWS_runs
 CFN_Ablation_IaCGOD,cfn_eval_benchmark_ablation.csv,50,50,50,49,1,0,0,True,0.98,0.98,50,0,Ablation_IaCGOD_CFN_runs
 CFN_Ablation_NoDenseRAG,cfn_eval_benchmark_ablation.csv,50,50,50,49,1,0,0,True,0.98,0.98,50,0,Ablation_NoDenseRAG_CFN_runs

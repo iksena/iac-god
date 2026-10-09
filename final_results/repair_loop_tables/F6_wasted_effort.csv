@@ -2,7 +2,7 @@ exp,run,failed runs,iters passed,iters failed,ktokens passed,ktokens failed,% of
 CFN_RealAWS_DSV4F,DeepSeek-V4-Flash,11,3.55,15.0,128,1007.0,26.6,174,20.0,126.3
 CFN_RealAWS_GLM53F,GLM-5.3-Flash,22,3.5,15.0,122,946.0,42.7,214,19.3,71.0
 CFN_RealAWS_Gemini38F,Gemini-3.8-Flash,2,2.0,15.0,55,1387.0,16.8,66,12.0,83.2
-CFN_RealAWS_Opus55,Claude-Opus-5.5,1,2.0,15.0,25,45.0,0.7,25,12.8,11.9
+CFN_RealAWS_Opus55,Claude-Opus-5.5,3,1.57,15.0,17,179.0,11.2,19,6.0,92.1
 CFN_RealAWS_OpenCode_DSV4F,OpenCode+DSV4F,22,2.77,7.14,33,129.0,27.2,46,12.7,33.1
 CFN_RealAWS_Gemini36F_L345,Gemini-3.6-Flash (L3-5),1,2.48,15.0,44,642.0,9.7,49,9.9,42.4
 CFN_RealAWS_DSV4F_DeployOnly_L345,DSV4F deploy-only (L3-5),10,3.49,15.0,150,1549.0,45.5,275,29.7,186.7
@@ -10,7 +10,7 @@ CFN_DPIaCEval_o3mini_DeployOnly,o3-mini DPIaC-Eval,15,3.05,15.0,58,736.0,58.1,13
 TF_RealAWS_DSV4F,DeepSeek-V4-Flash,4,2.91,15.0,115,1768.0,20.0,144,15.8,74.0
 TF_RealAWS_GLM53F,GLM-5.3-Flash,24,3.74,15.0,169,1163.0,42.2,292,13.0,33.2
 TF_RealAWS_Gemini38F,Gemini-3.8-Flash,1,3.18,15.0,101,3543.0,12.3,115,11.3,180.4
-TF_RealAWS_Opus55,Claude-Opus-5.5,2,1.67,15.0,14,58.0,3.2,15,6.8,16.1
+TF_RealAWS_Opus55,Claude-Opus-5.5,0,1.42,,13,,0.0,13,6.5,
 TF_RealAWS_OpenCode_DSV4F,OpenCode+DSV4F,8,2.13,15.0,18,218.0,28.1,26,6.4,51.6
 TF_IaCEval_DSV4F_LintOnly,DSV4F IaC-Eval (lint-only),5,3.45,15.0,90,1021.0,13.3,104,7.0,21.5
 CFN_Ablation_IaCGOD,IaCGOD,1,3.04,15.0,130,2612.0,29.1,183,8.9,29.2
